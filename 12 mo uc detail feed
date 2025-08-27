@@ -1,0 +1,42 @@
+/* ===== View: last 12 months detail with derived System & Commitment ===== */
+CREATE OR ALTER VIEW dbo.v_UF_12M_Detail AS
+WITH bounds AS (
+    SELECT
+        AsOfMonthEnd  = (SELECT MAX(n.LoadDt) FROM crdadmprd.dbo.NAC_Net_Available_Commitments_Monthly_History AS n),
+        Dummy         = 1
+),
+win AS (
+    SELECT
+        b.AsOfMonthEnd,
+        StartMonthEnd = DATEADD(MONTH, -11, b.AsOfMonthEnd)
+    FROM bounds b
+)
+SELECT
+    -- Standardized column names for Power BI
+    LoadDate          = CONVERT(date, n.LoadDt),               -- month end
+    ApplID            = n.ApplID,                              -- if not present in source, drop this column
+    CreditLineNumber  = n.CrLineID,
+    SecUnfunded       = n.SEC_Unfunded,
+    NetUtilized       = n.NetUtilized,
+    Commitment        = n.NetUtilized + n.SEC_Unfunded,
+    -- Derived System (cards match wins first)
+    System = CASE
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM crdadmprd.dbo.CDM_Cards_Loan AS cc
+                    WHERE cc.Cust_Line_Number = n.CrLineID
+                ) THEN 'Cards'
+                WHEN n.Source = 'CF'                  THEN 'CFD'
+                WHEN n.CrLineID LIKE '%iMX%'          THEN 'iMX'
+                WHEN n.Source = 'LN'                  THEN 'CBS'
+                WHEN n.Source = 'LO'                  THEN 'UBS'
+                WHEN n.Source = 'LJ'                  THEN 'LJ'
+                ELSE ISNULL(NULLIF(n.Source,''), 'Unknown')
+            END
+FROM crdadmprd.dbo.NAC_Net_Available_Commitments_Monthly_History AS n
+CROSS APPLY win w
+WHERE
+    -- LoadDt is already month-end per your notes; sargable date window
+    n.LoadDt >= w.StartMonthEnd
+    AND n.LoadDt <= w.AsOfMonthEnd;
+GO
