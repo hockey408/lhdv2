@@ -1,5 +1,4 @@
-/* ===== View: last 12 months MoM by System with $/% change & ≥5% flag ===== */
-CREATE OR ALTER VIEW dbo.v_UF_MoM_System_12M AS
+/* ===== Last 12 months MoM by System with $/% changes & ≥5% abs flag ===== */
 WITH bounds AS (
     SELECT
         AsOfMonthEnd  = (SELECT MAX(n.LoadDt) FROM crdadmprd.dbo.NAC_Net_Available_Commitments_Monthly_History AS n)
@@ -10,7 +9,7 @@ win AS (
         StartMonthEnd = DATEADD(MONTH, -11, AsOfMonthEnd)
     FROM bounds
 ),
--- Derive System at the row level, then aggregate to System x MonthEnd
+-- Derive System at row level, then aggregate to System x MonthEnd
 base AS (
     SELECT
         MonthEnd = CONVERT(date, n.LoadDt),
@@ -20,17 +19,17 @@ base AS (
                         FROM crdadmprd.dbo.CDM_Cards_Loan AS cc
                         WHERE cc.Cust_Line_Number = n.CrLineID
                     ) THEN 'Cards'
-                    WHEN n.Source = 'CF'                  THEN 'CFD'
-                    WHEN n.CrLineID LIKE '%iMX%'          THEN 'iMX'
-                    WHEN n.Source = 'LN'                  THEN 'CBS'
-                    WHEN n.Source = 'LO'                  THEN 'UBS'
-                    WHEN n.Source = 'LJ'                  THEN 'LJ'
+                    WHEN n.Source = 'CF'                 THEN 'CFD'
+                    WHEN n.CrLineID LIKE '%iMX%'         THEN 'iMX'
+                    WHEN n.Source = 'LN'                 THEN 'CBS'
+                    WHEN n.Source = 'LO'                 THEN 'UBS'
+                    WHEN n.Source = 'LJ'                 THEN 'LJ'
                     ELSE ISNULL(NULLIF(n.Source,''), 'Unknown')
                 END,
         SecUnfunded = n.SEC_Unfunded,
         NetUtilized = n.NetUtilized
     FROM crdadmprd.dbo.NAC_Net_Available_Commitments_Monthly_History AS n
-    CROSS APPLY win w
+    CROSS JOIN win w
     WHERE n.LoadDt >= w.StartMonthEnd
       AND n.LoadDt <= w.AsOfMonthEnd
 ),
@@ -62,11 +61,13 @@ SELECT
     SecUnfunded,
     NetUtilized,
     Commitment,
+
     -- MoM $ Changes
     MoM_Change_SecUnfunded = SecUnfunded - Prev_SecUnfunded,
     MoM_Change_NetUtilized = NetUtilized - Prev_NetUtilized,
     MoM_Change_Commitment  = Commitment  - Prev_Commitment,
-    -- MoM % Changes (decimal fractions; format as % in Power BI)
+
+    -- MoM % Changes (decimal; format as % in Power BI)
     MoM_Pct_SecUnfunded = CASE WHEN Prev_SecUnfunded IS NULL OR Prev_SecUnfunded = 0
                                THEN NULL
                                ELSE (SecUnfunded - Prev_SecUnfunded) / Prev_SecUnfunded
@@ -79,14 +80,13 @@ SELECT
                                THEN NULL
                                ELSE (Commitment - Prev_Commitment) / Prev_Commitment
                           END,
-    -- Flag absolute % ≥ 5% (use for conditional formatting)
-    MoM_Pct_Abs_GE_5_Flag =
+
+    -- Flag absolute % ≥ 5% on Commitment (use for conditional formatting)
+    MoM_Pct_Commitment_Abs_GE_5_Flag =
         CASE
             WHEN Prev_Commitment IS NOT NULL AND Prev_Commitment <> 0
                  AND ABS( (Commitment - Prev_Commitment) / Prev_Commitment ) >= 0.05
             THEN 1 ELSE 0
         END
 FROM chg
--- Keep all months; the first month per System will have NULL MoM (no prior)
 ORDER BY MonthEnd, System;
-GO
