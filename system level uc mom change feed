@@ -1,37 +1,34 @@
 /* ===== Last 12 months MoM by System with $/% changes & ≥5% abs flag ===== */
 WITH bounds AS (
-    SELECT
-        AsOfMonthEnd  = (SELECT MAX(n.LoadDt) FROM crdadmprd.dbo.NAC_Net_Available_Commitments_Monthly_History AS n)
+    SELECT AsOfMonthEnd = (SELECT MAX(m.LoadDate) FROM CRDLMTUFCALC.dbo.Credit_Line_Monthly AS m)
 ),
 win AS (
-    SELECT
-        AsOfMonthEnd,
-        StartMonthEnd = DATEADD(MONTH, -11, AsOfMonthEnd)
+    SELECT AsOfMonthEnd, StartMonthEnd = DATEADD(MONTH, -11, AsOfMonthEnd)
     FROM bounds
 ),
--- Derive System at row level, then aggregate to System x MonthEnd
-base AS (
+base AS (  -- derive System at row level, then aggregate to System x MonthEnd
     SELECT
-        MonthEnd = CONVERT(date, n.LoadDt),
+        MonthEnd = CONVERT(date, m.LoadDate),
         System = CASE
-                    WHEN EXISTS (
-                        SELECT 1
-                        FROM crdadmprd.dbo.CDM_Cards_Loan AS cc
-                        WHERE cc.Cust_Line_Number = n.CrLineID
-                    ) THEN 'Cards'
-                    WHEN n.Source = 'CF'                 THEN 'CFD'
-                    WHEN n.CrLineID LIKE '%iMX%'         THEN 'iMX'
-                    WHEN n.Source = 'LN'                 THEN 'CBS'
-                    WHEN n.Source = 'LO'                 THEN 'UBS'
-                    WHEN n.Source = 'LJ'                 THEN 'LJ'
-                    ELSE ISNULL(NULLIF(n.Source,''), 'Unknown')
-                END,
-        SecUnfunded = n.SEC_Unfunded,
-        NetUtilized = n.NetUtilized
-    FROM crdadmprd.dbo.NAC_Net_Available_Commitments_Monthly_History AS n
+                    WHEN c.Cust_Line_Number IS NOT NULL      THEN 'Cards'
+                    WHEN m.Source = 'CF'                     THEN 'CFD'
+                    WHEN m.CreditLineNumber LIKE '%iMX%'     THEN 'iMX'
+                    WHEN m.Source = 'LN'                     THEN 'CBS'
+                    WHEN m.Source = 'LO'                     THEN 'UBS'
+                    WHEN m.Source = 'LJ'                     THEN 'LJ'
+                    ELSE ISNULL(NULLIF(m.Source,''), 'Unknown')
+                 END,
+        SecUnfunded = u.SecUnfunded,
+        NetUtilized = m.NetUtilized
+    FROM CRDLMTUFCALC.dbo.Credit_Line_Monthly AS m
+    JOIN CRDLMTUFCALC.dbo.Calculated_Unfunded AS u
+      ON u.CreditLineNumber = m.CreditLineNumber
+     AND u.LoadDate         = m.LoadDate
+    LEFT JOIN crdadmprd.dbo.CDM_Cards_Loan    AS c
+      ON c.Cust_Line_Number = m.CreditLineNumber
     CROSS JOIN win w
-    WHERE n.LoadDt >= w.StartMonthEnd
-      AND n.LoadDt <= w.AsOfMonthEnd
+    WHERE m.LoadDate >= w.StartMonthEnd
+      AND m.LoadDate <= w.AsOfMonthEnd
 ),
 sys_month AS (
     SELECT
@@ -81,7 +78,7 @@ SELECT
                                ELSE (Commitment - Prev_Commitment) / Prev_Commitment
                           END,
 
-    -- Flag absolute % ≥ 5% on Commitment (use for conditional formatting)
+    -- Flag absolute % ≥ 5% on Commitment (for conditional formatting)
     MoM_Pct_Commitment_Abs_GE_5_Flag =
         CASE
             WHEN Prev_Commitment IS NOT NULL AND Prev_Commitment <> 0
