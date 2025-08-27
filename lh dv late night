@@ -1,0 +1,111 @@
+import os
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+pd.set_option("display.float_format", "${:,.2f}".format)
+
+# --- Load your Excel extract ---
+FILE_PATH = "portfolio_two_months_grouped.xlsx"   # change to your file path
+SHEET_NAME = 0
+df = pd.read_excel(FILE_PATH, sheet_name=SHEET_NAME, engine="openpyxl")
+
+# --- Clean and prep ---
+df.columns = [c.strip() for c in df.columns]
+df["END_OF_MONTH_DATE"] = pd.to_datetime(df["END_OF_MONTH_DATE"], errors="coerce").dt.date
+df["GL_BALANCE"] = pd.to_numeric(df["GL_BALANCE"], errors="coerce").fillna(0)
+
+# Confirm we have the right EOMs
+eoms = sorted([d for d in df["END_OF_MONTH_DATE"].dropna().unique()])
+print("Detected month-ends:", eoms)
+if len(eoms) < 2:
+    raise ValueError("Need at least 2 month-end dates.")
+prior_eom, current_eom = eoms[-2], eoms[-1]
+
+cur = df[df["END_OF_MONTH_DATE"] == current_eom].copy()
+prev = df[df["END_OF_MONTH_DATE"] == prior_eom].copy()
+
+# --- MoM GL_BALANCE by BANK_CODE ---
+bank_cur  = cur.groupby("BANK_CODE")["GL_BALANCE"].sum()
+bank_prev = prev.groupby("BANK_CODE")["GL_BALANCE"].sum()
+bank = pd.concat([bank_prev.rename("Prior"), bank_cur.rename("Current")], axis=1).fillna(0)
+bank["MoM_$"] = bank["Current"] - bank["Prior"]
+bank["MoM_%"] = np.where(bank["Prior"]==0, np.nan, bank["MoM_$"]/bank["Prior"])
+
+print(f"=== MoM GL_BALANCE by BANK_CODE ({prior_eom} -> {current_eom}) ===")
+display(bank.sort_values("MoM_$", key=np.abs, ascending=False))
+
+plt.figure()
+bank[["Prior","Current"]].plot(kind="bar")
+plt.title(f"GL_BALANCE by BANK_CODE ({prior_eom} vs {current_eom})")
+plt.ylabel("GL_BALANCE")
+plt.tight_layout(); plt.show()
+
+# --- Current composition by BANK_CODE ---
+comp_bank = cur.groupby("BANK_CODE")["GL_BALANCE"].sum().sort_values(ascending=False).to_frame("GL_BALANCE")
+comp_bank["Share_%"] = comp_bank["GL_BALANCE"]/comp_bank["GL_BALANCE"].sum()
+print("\n=== Current Composition by BANK_CODE ===")
+display(comp_bank)
+
+plt.figure()
+comp_bank["GL_BALANCE"].plot(kind="bar")
+plt.title(f"Composition by BANK_CODE (Current {current_eom})")
+plt.ylabel("GL_BALANCE")
+plt.tight_layout(); plt.show()
+
+# --- Current composition by INDUSTRY_DESCRIPTION ---
+comp_ind = (cur.groupby("INDUSTRY_DESCRIPTION")["GL_BALANCE"]
+              .sum().sort_values(ascending=False).to_frame("GL_BALANCE"))
+comp_ind["Share_%"] = comp_ind["GL_BALANCE"]/comp_ind["GL_BALANCE"].sum()
+print("\n=== Current Composition by INDUSTRY_DESCRIPTION (top 20) ===")
+display(comp_ind.head(20))
+
+plt.figure()
+comp_ind.head(15)["GL_BALANCE"].plot(kind="bar")
+plt.title(f"Top Industries by GL_BALANCE (Current {current_eom})")
+plt.ylabel("GL_BALANCE")
+plt.tight_layout(); plt.show()
+
+# --- Maturity distribution ---
+mat_dist = cur.groupby("MATURITY_YEAR_BUCKET")["GL_BALANCE"].sum().sort_values(ascending=False).to_frame("GL_BALANCE")
+mat_dist["Share_%"] = mat_dist["GL_BALANCE"]/mat_dist["GL_BALANCE"].sum()
+print("\n=== Maturity Distribution (Current) ===")
+display(mat_dist)
+
+plt.figure()
+mat_dist["GL_BALANCE"].plot(kind="bar")
+plt.title(f"Maturity Distribution (Current {current_eom})")
+plt.ylabel("GL_BALANCE")
+plt.tight_layout(); plt.show()
+
+# --- BANK_CODE × MATURITY_YEAR pivot ---
+bank_mat = cur.pivot_table(index="BANK_CODE",
+                           columns="MATURITY_YEAR_BUCKET",
+                           values="GL_BALANCE",
+                           aggfunc="sum",
+                           fill_value=0)
+print("\n=== BANK_CODE × MATURITY_YEAR_BUCKET (Current) ===")
+display(bank_mat)
+
+# --- KPIs ---
+tot_prior   = prev["GL_BALANCE"].sum()
+tot_current = cur["GL_BALANCE"].sum()
+kpis = {
+    "Total GL (Prior)":   tot_prior,
+    "Total GL (Current)": tot_current,
+    "MoM $":              tot_current - tot_prior,
+    "MoM %":              (tot_current - tot_prior)/tot_prior if tot_prior else np.nan
+}
+print("\n=== KPIs ===")
+display(pd.DataFrame([kpis]))
+
+# --- Save to outputs folder ---
+os.makedirs("outputs", exist_ok=True)
+bank.to_csv("outputs/mom_by_bank.csv")
+comp_bank.to_csv("outputs/comp_by_bank_current.csv")
+comp_ind.to_csv("outputs/comp_by_industry_current.csv")
+mat_dist.to_csv("outputs/maturity_distribution_current.csv")
+bank_mat.to_csv("outputs/bank_x_maturity_current.csv")
+pd.DataFrame([kpis]).to_csv("outputs/kpis.csv", index=False)
+
+print("\nFiles saved in ./outputs/")
