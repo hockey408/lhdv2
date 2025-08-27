@@ -1,0 +1,65 @@
+WITH Months AS (
+  SELECT DATE '2025-07-31' AS EOM
+  UNION ALL
+  SELECT DATE '2025-06-30'
+)
+SELECT
+  DATE(t.END_OF_MONTH_DATE)                         AS END_OF_MONTH_DATE,
+  t.CONTRACT_SOURCE_SYSTEM,
+  t.BANK_CODE,
+  t.RISK_UNIT,
+  /* (IDs removed) */
+  t.FDIC_CALL_CODE,
+  t.LIFESTAGE,
+  t.NICHE_CD,
+  t.NICHE_CD_DESC,
+  t.INDUSTRY_CODE,
+  t.INDUSTRY_DESCRIPTION,
+  t.PAST_DUE_FLAG,
+  t.NON_ACCRUAL_FLAG,
+  /* Optional “informational” fields you still want to slice by */
+  t.RATE_TYPE,
+  t.BORROWER_RISK_RATING,
+  t.PD_GRADE,
+  t.GL_ACCOUNT_HIER_LEVEL_4,
+  /* Date slices for cohorting; keep if useful */
+  t.MATURITY_DATE,
+  t.VINTAGE_DATE,
+
+  /* --- SUM the balance fields --- */
+  SUM(t.SOURCE_SYSTEM_BALANCE)                      AS SOURCE_SYSTEM_BALANCE,
+  SUM(t.GL_BALANCE)                                 AS GL_BALANCE,
+  SUM(t.AVAILABLE_BALANCE)                          AS AVAILABLE_BALANCE,
+  SUM(t.SEC_UNFUNDED)                               AS SEC_UNFUNDED,
+  SUM(t.LC_ISSUED_AMT)                              AS LC_ISSUED_AMT,
+
+  /* --- Helpful GL-weighted averages (optional but useful) --- */
+  CASE WHEN SUM(t.GL_BALANCE) = 0 THEN NULL
+       ELSE SUM(t.INTEREST_RATE * t.GL_BALANCE) / NULLIF(SUM(t.GL_BALANCE),0)
+  END                                               AS WAVG_INTEREST_RATE,
+  CASE WHEN SUM(t.GL_BALANCE) = 0 THEN NULL
+       ELSE SUM(t.DAYS_PAST_DUE * t.GL_BALANCE) / NULLIF(SUM(t.GL_BALANCE),0)
+  END                                               AS WAVG_DPD
+
+FROM SCHEMA.SOURCE_TABLE t
+WHERE DATE(t.END_OF_MONTH_DATE) IN (SELECT EOM FROM Months)
+GROUP BY
+  DATE(t.END_OF_MONTH_DATE),
+  t.CONTRACT_SOURCE_SYSTEM,
+  t.BANK_CODE,
+  t.RISK_UNIT,
+  t.FDIC_CALL_CODE,
+  t.LIFESTAGE,
+  t.NICHE_CD,
+  t.NICHE_CD_DESC,
+  t.INDUSTRY_CODE,
+  t.INDUSTRY_DESCRIPTION,
+  t.PAST_DUE_FLAG,
+  t.NON_ACCRUAL_FLAG,
+  t.RATE_TYPE,
+  t.BORROWER_RISK_RATING,
+  t.PD_GRADE,
+  t.GL_ACCOUNT_HIER_LEVEL_4,
+  t.MATURITY_DATE,
+  t.VINTAGE_DATE
+;
