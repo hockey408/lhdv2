@@ -1,0 +1,244 @@
+# ========== 0) Setup ==========
+import os, pandas as pd, numpy as np
+import pyodbc
+import matplotlib.pyplot as plt
+
+pd.set_option("display.float_format", "${:,.2f}".format)
+
+# ---- Connection (ODBC to Netezza) ----
+server   = "<your_netezza_host>"     # e.g., "nzhost.bank.com"
+database = "<your_db>"               # e.g., "LOANDB"
+uid      = "<user>"
+pwd      = "<password>"
+
+conn_str = (
+    "DRIVER={NetezzaSQL};"
+    f"SERVER={server};PORT=5480;"
+    f"DATABASE={database};UID={uid};PWD={pwd};"
+)
+
+# ---- SQL: paste Option A or B here ----
+SQL_TEXT = """
+SELECT
+  DATE(END_OF_MONTH_DATE) AS END_OF_MONTH_DATE,
+  CONTRACT_SOURCE_SYSTEM,
+  BANK_CODE,
+  RISK_UNIT,
+  ACCOUNT_IDENTIFIER,
+  FACILITY_ID,
+  FDIC_CALL_CODE,
+  LIFESTAGE,
+  NICHE_CD,
+  NICHE_CD_DESC,
+  INDUSTRY_CODE,
+  INDUSTRY_DESCRIPTION,
+  PAST_DUE_FLAG,
+  NON_ACCRUAL_FLAG,
+  DAYS_PAST_DUE,
+  INTEREST_RATE,
+  RATE_TYPE,
+  BORROWER_RISK_RATING,
+  SOURCE_SYSTEM_BALANCE,
+  GL_BALANCE,
+  AVAILABLE_BALANCE,
+  PD_GRADE,
+  GL_ACCOUNT_HIER_LEVEL_4,
+  SEC_UNFUNDED,
+  LC_ISSUED_AMT,
+  MATURITY_DATE,
+  VINTAGE_DATE
+FROM SCHEMA.VIEW_OR_TABLE
+WHERE DATE(END_OF_MONTH_DATE) IN (DATE '2025-07-31', DATE '2025-06-30');
+"""
+
+# ========== 1) Extract ==========
+with pyodbc.connect(conn_str) as conn:
+    df = pd.read_sql(SQL_TEXT, conn)
+
+# ========== 2) Clean types / standardize ==========
+date_cols = ["END_OF_MONTH_DATE","MATURITY_DATE","VINTAGE_DATE"]
+for c in date_cols:
+    if c in df.columns:
+        df[c] = pd.to_datetime(df[c], errors="coerce").dt.date
+
+num_cols = [
+    "GL_BALANCE","SOURCE_SYSTEM_BALANCE","AVAILABLE_BALANCE",
+    "SEC_UNFUNDED","LC_ISSUED_AMT","INTEREST_RATE","DAYS_PAST_DUE"
+]
+for c in num_cols:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+# Identify prior/current explicitly (you gave exact dates)
+all_eoms = sorted(df["END_OF_MONTH_DATE"].dropna().unique())
+if all_eoms != [pd.to_datetime("2025-06-30").date(), pd.to_datetime("2025-07-31").date()]:
+    print("Warning: Detected EOMs differ from expected:", all_eoms)
+prior_eom, current_eom = pd.to_datetime("2025-06-30").date(), pd.to_datetime("2025-07-31").date()
+
+cur  = df[df["END_OF_MONTH_DATE"] == current_eom].copy()
+prev = df[df["END_OF_MONTH_DATE"] == prior_eom].copy()
+
+# Helper: safe pivot
+def pivot_sum(d, index, columns, values="GL_BALANCE"):
+    return d.pivot_table(index=index, columns=columns, values=values, aggfunc="sum", fill_value=0)
+
+# ========== 3) MoM GL_BALANCE by BANK_CODE ==========
+bank_cur  = cur.groupby("BANK_CODE", dropna=False)["GL_BALANCE"].sum()
+bank_prev = prev.groupby("BANK_CODE", dropna=False)["GL_BALANCE"].sum()
+bank_all  = pd.concat([bank_prev.rename("Prior"), bank_cur.rename("Current")], axis=1).fillna(0)
+bank_all["MoM_$"]  = bank_all["Current"] - bank_all["Prior"]
+bank_all["MoM_%"]  = np.where(bank_all["Prior"] == 0, np.nan, bank_all["MoM_$"]/bank_all["Prior"])
+
+print("=== MoM GL_BALANCE by BANK_CODE ===")
+display(bank_all.sort_values("MoM_$", key=np.abs, ascending=False))
+
+# Chart
+plt.figure()
+bank_all[["Prior","Current"]].plot(kind="bar")
+plt.title("GL_BALANCE by BANK_CODE (Prior vs Current)")
+plt.ylabel("GL_BALANCE")
+plt.tight_layout()
+plt.show()
+
+# ========== 4) Latest month composition ==========
+# a) by BANK_CODE
+comp_bank = (cur.groupby("BANK_CODE", dropna=False)["GL_BALANCE"].sum()
+               .sort_values(ascending=False).to_frame("GL_BALANCE"))
+comp_bank["Share_%"] = comp_bank["GL_BALANCE"] / comp_bank["GL_BALANCE"].sum()
+
+print("\n=== Latest Month Composition by BANK_CODE ===")
+display(comp_bank)
+
+plt.figure()
+comp_bank["GL_BALANCE"].plot(kind="bar")
+plt.title("Composition by BANK_CODE (Current Month)")
+plt.ylabel("GL_BALANCE")
+plt.tight_layout()
+plt.show()
+
+# b) by INDUSTRY_CODE (top 15)
+comp_ind = (cur.groupby(["INDUSTRY_CODE","INDUSTRY_DESCRIPTION"], dropna=False)["GL_BALANCE"]
+              .sum().reset_index().sort_values("GL_BALANCE", ascending=False))
+comp_ind["Share_%"] = comp_ind["GL_BALANCE"] / comp_ind["GL_BALANCE"].sum()
+
+print("\n=== Latest Month Composition by INDUSTRY (top 15) ===")
+display(comp_ind.head(15))
+
+plt.figure()
+comp_ind.head(15).set_index("INDUSTRY_CODE")["GL_BALANCE"].plot(kind="bar")
+plt.title("Top 15 Industries by GL_BALANCE (Current Month)")
+plt.ylabel("GL_BALANCE")
+plt.tight_layout()
+plt.show()
+
+# ========== 5) Totals & KPIs ==========
+kpis = {
+    "Total GL (Prior)":   prev["GL_BALANCE"].sum(),
+    "Total GL (Current)": cur["GL_BALANCE"].sum(),
+    "MoM $":              cur["GL_BALANCE"].sum() - prev["GL_BALANCE"].sum(),
+}
+kpis["MoM %"] = (kpis["MoM $"] / kpis["Total GL (Prior)"]) if kpis["Total GL (Prior)"] else np.nan
+print("\n=== KPIs ===")
+display(pd.DataFrame([kpis]))
+
+# ========== 6) Risk slices ==========
+# Non-accrual %
+def ratio(flag_col):
+    cur_tot = cur["GL_BALANCE"].sum()
+    num = cur.loc[cur[flag_col].astype(str).str.upper().str.startswith("Y"), "GL_BALANCE"].sum()
+    return (num / cur_tot) if cur_tot else np.nan
+
+nonaccrual_pct = ratio("NON_ACCRUAL_FLAG") if "NON_ACCRUAL_FLAG" in cur.columns else np.nan
+pastdue_pct    = ratio("PAST_DUE_FLAG")    if "PAST_DUE_FLAG"    in cur.columns else np.nan
+
+print("\n=== Risk Slices (Current Month) ===")
+risk_tbl = {
+    "Non-accrual % (GL-weighted)": nonaccrual_pct,
+    "Past-due % (GL-weighted)":    pastdue_pct
+}
+display(pd.DataFrame([risk_tbl]))
+
+# DPD buckets (0, 1–29, 30–59, 60–89, 90+)
+if "DAYS_PAST_DUE" in cur.columns:
+    def dpd_bucket(x):
+        if x <= 0:   return "0"
+        if x < 30:   return "01-29"
+        if x < 60:   return "30-59"
+        if x < 90:   return "60-89"
+        return "90+"
+    tmp = cur.copy()
+    tmp["DPD_BUCKET"] = cur["DAYS_PAST_DUE"].apply(dpd_bucket)
+    dpd = tmp.groupby("DPD_BUCKET", dropna=False)["GL_BALANCE"].sum().to_frame("GL_BALANCE")
+    dpd["Share_%"] = dpd["GL_BALANCE"]/dpd["GL_BALANCE"].sum()
+    print("\nDPD Distribution (Current Month)")
+    display(dpd.sort_index())
+
+# PD grade / risk rating
+for col in ["PD_GRADE","BORROWER_RISK_RATING"]:
+    if col in cur.columns:
+        dist = cur.groupby(col, dropna=False)["GL_BALANCE"].sum().sort_values(ascending=False)
+        print(f"\nDistribution by {col} (Current Month)")
+        display(dist.to_frame("GL_BALANCE").assign(Share_%=dist/cur["GL_BALANCE"].sum()).head(20))
+
+# ========== 7) Concentration ==========
+# Top borrowers (ACCOUNT_IDENTIFIER), niches, GL L4
+top_acct = (cur.groupby("ACCOUNT_IDENTIFIER", dropna=False)["GL_BALANCE"].sum()
+              .sort_values(ascending=False).head(20).to_frame("GL_BALANCE"))
+top_acct["Share_%"] = top_acct["GL_BALANCE"]/cur["GL_BALANCE"].sum()
+
+top_niche = (cur.groupby(["NICHE_CD","NICHE_CD_DESC"], dropna=False)["GL_BALANCE"].sum()
+               .sort_values(ascending=False).head(15).to_frame("GL_BALANCE"))
+top_niche["Share_%"] = top_niche["GL_BALANCE"]/cur["GL_BALANCE"].sum()
+
+top_gl4 = (cur.groupby("GL_ACCOUNT_HIER_LEVEL_4", dropna=False)["GL_BALANCE"].sum()
+             .sort_values(ascending=False).head(15).to_frame("GL_BALANCE"))
+top_gl4["Share_%"] = top_gl4["GL_BALANCE"]/cur["GL_BALANCE"].sum()
+
+print("\nTop 20 Borrowers (Current Month)")
+display(top_acct)
+print("\nTop 15 Niches (Current Month)")
+display(top_niche)
+print("\nTop 15 GL L4 (Current Month)")
+display(top_gl4)
+
+# ========== 8) Run-off / New ==========
+key_cols = ["ACCOUNT_IDENTIFIER","FACILITY_ID","BANK_CODE"]  # tweak if your grain differs
+prior_keys   = prev[key_cols].drop_duplicates()
+current_keys = cur[key_cols].drop_duplicates()
+
+runoff = (prior_keys.merge(current_keys, on=key_cols, how="left", indicator=True)
+                   .query("_merge=='left_only'")[key_cols])
+newacc = (current_keys.merge(prior_keys, on=key_cols, how="left", indicator=True)
+                   .query("_merge=='left_only'")[key_cols])
+
+runoff_amt = prev.merge(runoff, on=key_cols, how="inner")["GL_BALANCE"].sum()
+new_amt    = cur.merge(newacc,   on=key_cols, how="inner")["GL_BALANCE"].sum()
+
+print("\n=== Run-off / New (by account/facility/bank) ===")
+display(pd.DataFrame([{
+    "Run-off count": len(runoff),
+    "Run-off GL $": runoff_amt,
+    "New count":     len(newacc),
+    "New GL $":      new_amt
+}]))
+
+# ========== 9) Risk migration matrix (BORROWER_RISK_RATING prior→current) ==========
+if "BORROWER_RISK_RATING" in df.columns:
+    prior_rr = prev.groupby(["ACCOUNT_IDENTIFIER"])["BORROWER_RISK_RATING"].agg(lambda x: x.iloc[0])
+    curr_rr  = cur.groupby(["ACCOUNT_IDENTIFIER"])["BORROWER_RISK_RATING"].agg(lambda x: x.iloc[0])
+    rr = pd.DataFrame({"prior": prior_rr}).join(pd.DataFrame({"current": curr_rr}), how="inner")
+    # weight cells by current GL balance
+    weights = cur.groupby(["ACCOUNT_IDENTIFIER"])["GL_BALANCE"].sum()
+    rr = rr.join(weights.rename("weight"), how="left").fillna({"weight":0})
+    mig = rr.pivot_table(index="prior", columns="current", values="weight", aggfunc="sum", fill_value=0)
+    print("\nRisk Rating Migration (weighted by current GL)")
+    display(mig)
+
+# ========== 10) Save extracts ==========
+os.makedirs("outputs", exist_ok=True)
+bank_all.to_csv("outputs/mom_by_bank.csv")
+comp_bank.to_csv("outputs/current_composition_by_bank.csv")
+comp_ind.to_csv("outputs/current_composition_by_industry.csv", index=False)
+top_acct.to_csv("outputs/top_borrowers_current.csv")
+top_niche.to_csv("outputs/top_niches_current.csv")
+top_gl4.to_csv("outputs/top_gl4_current.csv")
