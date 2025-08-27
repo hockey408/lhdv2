@@ -1,0 +1,50 @@
+-- Replace SCHEMA.SOURCE_TABLE with your real table/view name
+WITH Months AS (
+  SELECT DATE '2025-07-31' AS EOM
+  UNION ALL
+  SELECT DATE '2025-06-30'
+)
+SELECT
+  DATE(t.END_OF_MONTH_DATE)                               AS END_OF_MONTH_DATE,
+  t.BANK_CODE,
+  t.CONTRACT_SOURCE_SYSTEM,
+  t.RISK_UNIT,
+  t.INDUSTRY_DESCRIPTION,
+  t.PD_GRADE,
+  t.NON_ACCRUAL_FLAG,
+  t.RATE_TYPE,
+  t.PAST_DUE_FLAG,
+  /* maturity year bucket as text so "Unknown" can coexist with years */
+  CASE
+    WHEN t.MATURITY_DATE IS NULL THEN 'Unknown'
+    ELSE TO_CHAR(t.MATURITY_DATE, 'YYYY')
+  END                                                     AS MATURITY_YEAR_BUCKET,
+  /* SUM at this analysis grain */
+  SUM(t.GL_BALANCE)                                       AS GL_BALANCE
+FROM SCHEMA.SOURCE_TABLE t
+WHERE DATE(t.END_OF_MONTH_DATE) IN (SELECT EOM FROM Months)
+GROUP BY
+  DATE(t.END_OF_MONTH_DATE),
+  t.BANK_CODE,
+  t.CONTRACT_SOURCE_SYSTEM,
+  t.RISK_UNIT,
+  t.INDUSTRY_DESCRIPTION,
+  t.PD_GRADE,
+  t.NON_ACCRUAL_FLAG,
+  t.RATE_TYPE,
+  t.PAST_DUE_FLAG,
+  CASE
+    WHEN t.MATURITY_DATE IS NULL THEN 'Unknown'
+    ELSE TO_CHAR(t.MATURITY_DATE, 'YYYY')
+  END
+ORDER BY
+  END_OF_MONTH_DATE,
+  BANK_CODE,
+  CONTRACT_SOURCE_SYSTEM,
+  RISK_UNIT,
+  INDUSTRY_DESCRIPTION,
+  PD_GRADE,
+  NON_ACCRUAL_FLAG,
+  RATE_TYPE,
+  PAST_DUE_FLAG,
+  MATURITY_YEAR_BUCKET;
