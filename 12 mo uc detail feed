@@ -1,36 +1,34 @@
 /* ===== Last 12 months detail with derived System & Commitment ===== */
 WITH bounds AS (
-    SELECT
-        AsOfMonthEnd  = (SELECT MAX(n.LoadDt) FROM crdadmprd.dbo.NAC_Net_Available_Commitments_Monthly_History AS n)
+    SELECT AsOfMonthEnd = (SELECT MAX(m.LoadDate) FROM CRDLMTUFCALC.dbo.Credit_Line_Monthly AS m)
 ),
 win AS (
-    SELECT
-        AsOfMonthEnd,
-        StartMonthEnd = DATEADD(MONTH, -11, AsOfMonthEnd)
+    SELECT AsOfMonthEnd, StartMonthEnd = DATEADD(MONTH, -11, AsOfMonthEnd)
     FROM bounds
 )
 SELECT
-    LoadDate         = CONVERT(date, n.LoadDt),              -- month end
-    ApplID           = n.ApplID,                             -- remove if not in source
-    CreditLineNumber = n.CrLineID,
-    SecUnfunded      = n.SEC_Unfunded,
-    NetUtilized      = n.NetUtilized,
-    Commitment       = n.NetUtilized + n.SEC_Unfunded,
+    LoadDate         = CONVERT(date, m.LoadDate),             -- month end (from Credit_Line_Monthly)
+    ApplID           = m.ApplID,                              -- keep if present; drop if not
+    CreditLineNumber = m.CreditLineNumber,
+    SecUnfunded      = u.SecUnfunded,                         -- from Calculated_Unfunded
+    NetUtilized      = m.NetUtilized,
+    Commitment       = m.NetUtilized + u.SecUnfunded,
     System = CASE
-                WHEN EXISTS (
-                    SELECT 1
-                    FROM crdadmprd.dbo.CDM_Cards_Loan AS cc
-                    WHERE cc.Cust_Line_Number = n.CrLineID
-                ) THEN 'Cards'
-                WHEN n.Source = 'CF'                 THEN 'CFD'
-                WHEN n.CrLineID LIKE '%iMX%'         THEN 'iMX'
-                WHEN n.Source = 'LN'                 THEN 'CBS'
-                WHEN n.Source = 'LO'                 THEN 'UBS'
-                WHEN n.Source = 'LJ'                 THEN 'LJ'
-                ELSE ISNULL(NULLIF(n.Source,''), 'Unknown')
-            END
-FROM crdadmprd.dbo.NAC_Net_Available_Commitments_Monthly_History AS n
+                WHEN c.Cust_Line_Number IS NOT NULL           THEN 'Cards'          -- Cards first
+                WHEN m.Source = 'CF'                          THEN 'CFD'
+                WHEN m.CreditLineNumber LIKE '%iMX%'          THEN 'iMX'
+                WHEN m.Source = 'LN'                          THEN 'CBS'
+                WHEN m.Source = 'LO'                          THEN 'UBS'
+                WHEN m.Source = 'LJ'                          THEN 'LJ'
+                ELSE ISNULL(NULLIF(m.Source,''), 'Unknown')
+             END
+FROM CRDLMTUFCALC.dbo.Credit_Line_Monthly            AS m
+JOIN CRDLMTUFCALC.dbo.Calculated_Unfunded            AS u
+  ON u.CreditLineNumber = m.CreditLineNumber
+ AND u.LoadDate         = m.LoadDate
+LEFT JOIN crdadmprd.dbo.CDM_Cards_Loan               AS c
+  ON c.Cust_Line_Number = m.CreditLineNumber
 CROSS JOIN win w
-WHERE n.LoadDt >= w.StartMonthEnd
-  AND n.LoadDt <= w.AsOfMonthEnd
-ORDER BY n.LoadDt, n.CrLineID;
+WHERE m.LoadDate >= w.StartMonthEnd
+  AND m.LoadDate <= w.AsOfMonthEnd
+ORDER BY m.LoadDate, m.CreditLineNumber;
