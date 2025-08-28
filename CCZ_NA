@@ -1,0 +1,21 @@
+Select
+End_of_Month_Date,
+Bank_Code,
+Account_Name,
+Contract_Source_system,
+Customer_Number,
+Facility_ID,
+Account_Identifier,
+Account_Key,
+Status_Code_Description,
+Instrument_Type,
+Source_system_Balance,
+GL_Balance,
+Available_Balance,
+Borrower_Risk_Rating,
+PD_Grade,
+Days_Past_Due,
+Non_Accrual_Flag
+From V_DPRT_CREDIT_INSTRUMENTS_ME
+where END_OF_MONTH_DATE = '2025-07-31' and GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+and non_Accrual_Flag in ('Y')
