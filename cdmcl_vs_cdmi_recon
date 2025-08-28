@@ -1,0 +1,28 @@
+SELECT
+    FORMAT((SELECT SUM(Balance)
+            FROM Table1
+            WHERE End_of_Month_Date = '2025-07-31'), 'N2') AS Total_Balance_Table1, -- 1,234,567.89
+
+    FORMAT((SELECT SUM(Balance)
+            FROM Table2
+            WHERE End_of_Month_Date = '2025-07-31'), 'N2') AS Total_Balance_Table2,
+
+    FORMAT(( (SELECT SUM(Balance)
+              FROM Table1
+              WHERE End_of_Month_Date = '2025-07-31')
+           -
+             (SELECT SUM(Balance)
+              FROM Table2
+              WHERE End_of_Month_Date = '2025-07-31')), 'N2') AS Balance_Difference,
+
+    FORMAT(( ( (SELECT SUM(Balance)
+                FROM Table1
+                WHERE End_of_Month_Date = '2025-07-31')
+              -
+                (SELECT SUM(Balance)
+                 FROM Table2
+                 WHERE End_of_Month_Date = '2025-07-31') )
+            / NULLIF((SELECT SUM(Balance)
+                      FROM Table2
+                      WHERE End_of_Month_Date = '2025-07-31'), 0)
+          ), 'P2') AS Percent_Difference;  -- e.g. 5.25%
