@@ -1,0 +1,323 @@
+'================== Module: modNetezzaPull ==================
+Option Explicit
+
+' Core runner: executes a SQL text against a connection and pastes to a sheet
+Public Sub RunSqlToSheet( _
+        ByVal ConnectionString As String, _
+        ByVal SqlText As String, _
+        ByVal TargetSheetName As String, _
+        Optional ByVal WriteHeaders As Boolean = True, _
+        Optional ByVal ClearSheetFirst As Boolean = True, _
+        Optional ByVal CommandTimeoutSeconds As Long = 0)
+
+    Dim cn As Object    ' ADODB.Connection
+    Dim rs As Object    ' ADODB.Recordset
+    Dim ws As Worksheet
+    Dim i As Long, rowTop As Long, colLeft As Long
+    Dim t0 As Double, hasRows As Boolean
+
+    On Error GoTo CleanFail
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Set ws = EnsureWorksheet(TargetSheetName)
+    If ClearSheetFirst Then ws.Cells.Clear
+
+    rowTop = 1
+    colLeft = 1
+
+    Set cn = CreateObject("ADODB.Connection")
+    cn.ConnectionString = ConnectionString
+    If CommandTimeoutSeconds > 0 Then cn.CommandTimeout = CommandTimeoutSeconds Else cn.CommandTimeout = 0
+    cn.Open
+
+    Set rs = CreateObject("ADODB.Recordset")
+    rs.CursorLocation = 3 ' adUseClient
+    rs.Open SqlText, cn, 0, 1 ' adOpenForwardOnly, adLockReadOnly
+
+    Do While Not rs Is Nothing
+        hasRows = Not (rs.BOF And rs.EOF)
+
+        If hasRows Then
+            ' headers
+            If WriteHeaders Then
+                For i = 0 To rs.Fields.Count - 1
+                    ws.Cells(rowTop, colLeft + i).Value = rs.Fields(i).Name
+                Next i
+                ws.Range(ws.Cells(rowTop, colLeft), ws.Cells(rowTop, colLeft + rs.Fields.Count - 1)).Font.Bold = True
+                rowTop = rowTop + 1
+            End If
+
+            ' data
+            ws.Cells(rowTop, colLeft).CopyFromRecordset rs
+            rowTop = ws.Cells(ws.Rows.Count, colLeft).End(xlUp).Row + 2
+
+        Else
+            ws.Cells(rowTop, colLeft).Value = "(No rows returned)"
+            rowTop = rowTop + 2
+        End If
+
+        Set rs = rs.NextRecordset
+    Loop
+
+CleanExit:
+    On Error Resume Next
+    If Not rs Is Nothing Then If rs.State <> 0 Then rs.Close
+    If Not cn Is Nothing Then If cn.State <> 0 Then cn.Close
+    Set rs = Nothing
+    Set cn = Nothing
+
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Exit Sub
+
+CleanFail:
+    MsgBox "RunSqlToSheet error " & Err.Number & ": " & Err.Description, vbCritical
+    Resume CleanExit
+End Sub
+
+' Helper: create or get worksheet by name
+Private Function EnsureWorksheet(ByVal SheetName As String) As Worksheet
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(SheetName)
+    On Error GoTo 0
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        ws.Name = SheetName
+    End If
+    Set EnsureWorksheet = ws
+End Function
+
+' ------------ YOUR JOB RUNNER ------------
+Public Sub Run_Netezza_NonAccrual_Report()
+    Dim conn As String
+    Dim ReportEOM As Date
+    Dim eomLiteral As String
+    Dim q As String
+
+    ' ---- Set your connection (pick ONE style) ----
+    ' If you already have an ODBC DSN for Netezza:
+    'conn = "DSN=YourNetezzaDSN;UID=your_user;PWD=your_password;"
+
+    ' Or use full driver string:
+    conn = "Driver={NetezzaSQL};Server=YOUR_NETEZZA_HOST;" & _
+           "Database=YOUR_DB;Port=5480;UID=YOUR_USERNAME;PWD=YOUR_PASSWORD;"
+
+    ' ---- Parameterize the EOM date (auto-replaces DATE '2025-07-31' in all queries) ----
+    ReportEOM = DateSerial(2025, 7, 31)   ' change once here when you roll forward
+    eomLiteral = "DATE '" & Format$(ReportEOM, "yyyy-mm-dd") & "'"  ' Netezza DATE 'YYYY-MM-DD'
+
+    ' ================== Query 1: Bucketed detail ==================
+    q = Replace$(Join(Array( _
+        "WITH base AS (", _
+        "  SELECT", _
+        "      End_of_Month_Date,", _
+        "      Bank_Code,", _
+        "      Account_Name,", _
+        "      Contract_Source_System,", _
+        "      Customer_Number,", _
+        "      Facility_ID,", _
+        "      Account_Identifier,", _
+        "      Account_Key,", _
+        "      Status_Code_Description,", _
+        "      Instrument_Type,", _
+        "      Source_System_Balance,", _
+        "      GL_Balance,", _
+        "      Available_Balance,", _
+        "      Borrower_Risk_Rating,", _
+        "      PD_Grade,", _
+        "      Days_Past_Due,", _
+        "      Non_Accrual_Flag", _
+        "  FROM V_DPRT_CREDIT_INSTRUMENTS_ME", _
+        "  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'", _
+        "    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'", _
+        "    AND Non_Accrual_Flag = 'Y'", _
+        "),", _
+        "bucketed AS (", _
+        "  SELECT", _
+        "      b.*,", _
+        "      CASE", _
+        "        WHEN Source_System_Balance < 250000 THEN '< $250k'", _
+        "        WHEN Source_System_Balance < 500000 THEN '$250k–< $500k'", _
+        "        ELSE '≥ $500k'", _
+        "      END AS balance_bucket", _
+        "  FROM base b", _
+        ")", _
+        "SELECT * FROM bucketed;" _
+    ), vbLf), "DATE '2025-07-31'", eomLiteral)
+    RunSqlToSheet conn, q, "NA_Detail", True, True, 0
+
+    ' ================== Query 2: Buckets overall ==================
+    q = Replace$(Join(Array( _
+        "WITH base AS (", _
+        "  SELECT *", _
+        "  FROM V_DPRT_CREDIT_INSTRUMENTS_ME", _
+        "  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'", _
+        "    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'", _
+        "    AND Non_Accrual_Flag = 'Y'", _
+        "),", _
+        "bucketed AS (", _
+        "  SELECT", _
+        "      *,", _
+        "      CASE", _
+        "        WHEN Source_System_Balance < 250000 THEN '< $250k'", _
+        "        WHEN Source_System_Balance < 500000 THEN '$250k–< $500k'", _
+        "        ELSE '≥ $500k'", _
+        "      END AS balance_bucket", _
+        "  FROM base", _
+        ")", _
+        "SELECT", _
+        "    balance_bucket,", _
+        "    COUNT(*)                           AS loan_count,", _
+        "    COUNT(DISTINCT Customer_Number)    AS borrower_count,", _
+        "    SUM(Source_System_Balance)         AS total_source_system_balance", _
+        "FROM bucketed", _
+        "GROUP BY balance_bucket", _
+        "ORDER BY MIN(CASE balance_bucket", _
+        "               WHEN '< $250k' THEN 1", _
+        "               WHEN '$250k–< $500k' THEN 2", _
+        "               ELSE 3 END);" _
+    ), vbLf), "DATE '2025-07-31'", eomLiteral)
+    RunSqlToSheet conn, q, "NA_Buckets_All", True, True, 0
+
+    ' ================== Query 3: Buckets by BANK_CODE ==================
+    q = Replace$(Join(Array( _
+        "WITH base AS (", _
+        "  SELECT *", _
+        "  FROM V_DPRT_CREDIT_INSTRUMENTS_ME", _
+        "  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'", _
+        "    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'", _
+        "    AND Non_Accrual_Flag = 'Y'", _
+        "),", _
+        "bucketed AS (", _
+        "  SELECT", _
+        "      *,", _
+        "      CASE", _
+        "        WHEN Source_System_Balance < 250000 THEN '< $250k'", _
+        "        WHEN Source_System_Balance < 500000 THEN '$250k–< $500k'", _
+        "        ELSE '≥ $500k'", _
+        "      END AS balance_bucket", _
+        "  FROM base", _
+        ")", _
+        "SELECT", _
+        "    Bank_Code,", _
+        "    balance_bucket,", _
+        "    COUNT(*)                           AS loan_count,", _
+        "    COUNT(DISTINCT Customer_Number)    AS borrower_count,", _
+        "    SUM(Source_System_Balance)         AS total_source_system_balance", _
+        "FROM bucketed", _
+        "GROUP BY Bank_Code, balance_bucket", _
+        "ORDER BY Bank_Code,", _
+        "         MIN(CASE balance_bucket", _
+        "               WHEN '< $250k' THEN 1", _
+        "               WHEN '$250k–< $500k' THEN 2", _
+        "               ELSE 3 END);" _
+    ), vbLf), "DATE '2025-07-31'", eomLiteral)
+    RunSqlToSheet conn, q, "NA_Buckets_by_Bank", True, True, 0
+
+    ' ================== Query 4: Buckets by Contract_Source_System ==================
+    q = Replace$(Join(Array( _
+        "WITH base AS (", _
+        "  SELECT *", _
+        "  FROM V_DPRT_CREDIT_INSTRUMENTS_ME", _
+        "  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'", _
+        "    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'", _
+        "    AND Non_Accrual_Flag = 'Y'", _
+        "),", _
+        "bucketed AS (", _
+        "  SELECT", _
+        "      *,", _
+        "      CASE", _
+        "        WHEN Source_System_Balance < 250000 THEN '< $250k'", _
+        "        WHEN Source_System_Balance < 500000 THEN '$250k–< $500k'", _
+        "        ELSE '≥ $500k'", _
+        "      END AS balance_bucket", _
+        "  FROM base", _
+        ")", _
+        "SELECT", _
+        "    Contract_Source_System,", _
+        "    balance_bucket,", _
+        "    COUNT(*)                           AS loan_count,", _
+        "    COUNT(DISTINCT Customer_Number)    AS borrower_count,", _
+        "    SUM(Source_System_Balance)         AS total_source_system_balance", _
+        "FROM bucketed", _
+        "GROUP BY Contract_Source_System, balance_bucket", _
+        "ORDER BY Contract_Source_System,", _
+        "         MIN(CASE balance_bucket", _
+        "               WHEN '< $250k' THEN 1", _
+        "               WHEN '$250k–< $500k' THEN 2", _
+        "               ELSE 3 END);" _
+    ), vbLf), "DATE '2025-07-31'", eomLiteral)
+    RunSqlToSheet conn, q, "NA_Buckets_by_System", True, True, 0
+
+    ' ================== Query 5: Borrower rollup ==================
+    q = Replace$(Join(Array( _
+        "WITH base AS (", _
+        "  SELECT *", _
+        "  FROM V_DPRT_CREDIT_INSTRUMENTS_ME", _
+        "  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'", _
+        "    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'", _
+        "    AND Non_Accrual_Flag = 'Y'", _
+        ")", _
+        "SELECT", _
+        "    End_of_Month_Date,", _
+        "    Customer_Number                          AS borrower_id,", _
+        "    MIN(Account_Name)                        AS borrower_name,", _
+        "    COUNT(*)                                 AS loan_count,", _
+        "    COUNT(DISTINCT Facility_ID)              AS facility_count,", _
+        "    SUM(Source_System_Balance)               AS total_source_system_balance", _
+        "FROM base", _
+        "GROUP BY End_of_Month_Date, Customer_Number", _
+        "ORDER BY total_source_system_balance DESC;" _
+    ), vbLf), "DATE '2025-07-31'", eomLiteral)
+    RunSqlToSheet conn, q, "NA_By_Borrower", True, True, 0
+
+    ' ================== Query 6: Bank rollup ==================
+    q = Replace$(Join(Array( _
+        "WITH base AS (", _
+        "  SELECT *", _
+        "  FROM V_DPRT_CREDIT_INSTRUMENTS_ME", _
+        "  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'", _
+        "    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'", _
+        "    AND Non_Accrual_Flag = 'Y'", _
+        ")", _
+        "SELECT", _
+        "    End_of_Month_Date,", _
+        "    Bank_Code,", _
+        "    COUNT(DISTINCT Customer_Number)  AS borrower_count,", _
+        "    COUNT(*)                         AS loan_count,", _
+        "    SUM(Source_System_Balance)       AS total_source_system_balance", _
+        "FROM base", _
+        "GROUP BY End_of_Month_Date, Bank_Code", _
+        "ORDER BY total_source_system_balance DESC;" _
+    ), vbLf), "DATE '2025-07-31'", eomLiteral)
+    RunSqlToSheet conn, q, "NA_By_Bank", True, True, 0
+
+    ' ================== Query 7: Contract_Source_System rollup ==================
+    q = Replace$(Join(Array( _
+        "WITH base AS (", _
+        "  SELECT *", _
+        "  FROM V_DPRT_CREDIT_INSTRUMENTS_ME", _
+        "  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'", _
+        "    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'", _
+        "    AND Non_Accrual_Flag = 'Y'", _
+        ")", _
+        "SELECT", _
+        "    End_of_Month_Date,", _
+        "    Contract_Source_System,", _
+        "    COUNT(DISTINCT Customer_Number)  AS borrower_count,", _
+        "    COUNT(*)                         AS loan_count,", _
+        "    SUM(Source_System_Balance)       AS total_source_system_balance", _
+        "FROM base", _
+        "GROUP BY End_of_Month_Date, Contract_Source_System", _
+        "ORDER BY total_source_system_balance DESC;" _
+    ), vbLf), "DATE '2025-07-31'", eomLiteral)
+    RunSqlToSheet conn, q, "NA_By_System", True, True, 0
+
+    MsgBox "Netezza Non-Accrual report complete for " & Format$(ReportEOM, "yyyy-mm-dd"), vbInformation
+End Sub
+'================== End Module ==================
