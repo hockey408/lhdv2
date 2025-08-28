@@ -1,0 +1,104 @@
+'================== Module: modNetezzaSmokeTest ==================
+Option Explicit
+
+'--- SET THIS ONCE (pick DSN or full driver string) ---
+Private Function NetezzaConnString() As String
+    ' If you have a working ODBC DSN on the Remote Desktop, use the DSN line:
+    'NetezzaConnString = "DSN=YourNetezzaDSN;UID=your_user;PWD=your_password;"
+
+    ' Or use a full connection string (edit the placeholders):
+    NetezzaConnString = "Driver={NetezzaSQL};" & _
+                        "Server=YOUR_NETEZZA_HOST;" & _
+                        "Database=YOUR_DB;" & _
+                        "Port=5480;" & _
+                        "UID=YOUR_USERNAME;" & _
+                        "PWD=YOUR_PASSWORD;"
+End Function
+
+'--- minimal runner that pastes a single resultset to a sheet ---
+Private Sub RunSqlToSheet(ByVal SqlText As String, ByVal TargetSheetName As String)
+    Dim cn As Object, rs As Object, ws As Worksheet
+    Dim i As Long, rowTop As Long
+
+    On Error GoTo Fail
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Set ws = EnsureWorksheet(TargetSheetName)
+    ws.Cells.Clear
+    rowTop = 1
+
+    Set cn = CreateObject("ADODB.Connection")
+    cn.ConnectionString = NetezzaConnString()
+    cn.CommandTimeout = 0
+    cn.Open
+
+    Set rs = CreateObject("ADODB.Recordset")
+    rs.CursorLocation = 3 ' adUseClient
+    rs.Open SqlText, cn, 0, 1 ' adOpenForwardOnly, adLockReadOnly
+
+    If Not (rs.BOF And rs.EOF) Then
+        ' headers
+        For i = 0 To rs.Fields.Count - 1
+            ws.Cells(rowTop, 1 + i).Value = rs.Fields(i).Name
+        Next i
+        ws.Range(ws.Cells(rowTop, 1), ws.Cells(rowTop, rs.Fields.Count)).Font.Bold = True
+        rowTop = rowTop + 1
+        ' data
+        ws.Cells(rowTop, 1).CopyFromRecordset rs
+    Else
+        ws.Cells(rowTop, 1).Value = "(No rows returned)"
+    End If
+
+Cleanup:
+    On Error Resume Next
+    If Not rs Is Nothing Then If rs.State <> 0 Then rs.Close
+    If Not cn Is Nothing Then If cn.State <> 0 Then cn.Close
+    Set rs = Nothing: Set cn = Nothing
+
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Exit Sub
+
+Fail:
+    MsgBox "Error " & Err.Number & ": " & Err.Description, vbCritical
+    Resume Cleanup
+End Sub
+
+Private Function EnsureWorksheet(ByVal SheetName As String) As Worksheet
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(SheetName)
+    On Error GoTo 0
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add(After:=Worksheets(Worksheets.Count))
+        ws.Name = SheetName
+    End If
+    Set EnsureWorksheet = ws
+End Function
+
+'======== 1) Connectivity smoke test ========
+Public Sub Test_Netezza_Connection()
+    ' Proves the driver, network path, and credentials all work
+    Dim sql As String
+    sql = "SELECT CURRENT_DATE AS server_date, CURRENT_TIMESTAMP AS server_timestamp"
+    RunSqlToSheet sql, "NZ_Test"
+    MsgBox "Netezza connectivity looks good (see NZ_Test).", vbInformation
+End Sub
+
+'======== 2) Real-table smoke test (small, safe) ========
+Public Sub Test_Netezza_Query()
+    ' Adjust the date if you want; this tests access to your target view
+    Dim sql As String
+    sql = "SELECT COUNT(*) AS row_count" & vbCrLf & _
+          "FROM V_DPRT_CREDIT_INSTRUMENTS_ME" & vbCrLf & _
+          "WHERE END_OF_MONTH_DATE = DATE '2025-07-31'" & vbCrLf & _
+          "  AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'" & vbCrLf & _
+          "  AND Non_Accrual_Flag = 'Y';"
+    RunSqlToSheet sql, "NZ_Test"
+    MsgBox "Query ran. Check NZ_Test for row_count.", vbInformation
+End Sub
+'================== End Module ==================
