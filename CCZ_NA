@@ -1,21 +1,193 @@
-Select
-End_of_Month_Date,
-Bank_Code,
-Account_Name,
-Contract_Source_system,
-Customer_Number,
-Facility_ID,
-Account_Identifier,
-Account_Key,
-Status_Code_Description,
-Instrument_Type,
-Source_system_Balance,
-GL_Balance,
-Available_Balance,
-Borrower_Risk_Rating,
-PD_Grade,
-Days_Past_Due,
-Non_Accrual_Flag
-From V_DPRT_CREDIT_INSTRUMENTS_ME
-where END_OF_MONTH_DATE = '2025-07-31' and GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
-and non_Accrual_Flag in ('Y')
+WITH base AS (
+  SELECT
+      End_of_Month_Date,
+      Bank_Code,
+      Account_Name,
+      Contract_Source_System,
+      Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      Instrument_Type,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+),
+bucketed AS (
+  SELECT
+      b.*,
+      CASE
+        WHEN Source_System_Balance < 250000 THEN '< $250k'
+        WHEN Source_System_Balance < 500000 THEN '$250k–< $500k'
+        ELSE '≥ $500k'
+      END AS balance_bucket
+  FROM base b
+)
+SELECT * FROM bucketed;
+
+
+
+WITH base AS (
+  SELECT *
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+),
+bucketed AS (
+  SELECT
+      *,
+      CASE
+        WHEN Source_System_Balance < 250000 THEN '< $250k'
+        WHEN Source_System_Balance < 500000 THEN '$250k–< $500k'
+        ELSE '≥ $500k'
+      END AS balance_bucket
+  FROM base
+)
+SELECT
+    balance_bucket,
+    COUNT(*)                           AS loan_count,
+    COUNT(DISTINCT Customer_Number)    AS borrower_count,
+    SUM(Source_System_Balance)         AS total_source_system_balance
+FROM bucketed
+GROUP BY balance_bucket
+ORDER BY MIN(CASE balance_bucket
+               WHEN '< $250k' THEN 1
+               WHEN '$250k–< $500k' THEN 2
+               ELSE 3 END);
+
+
+
+WITH base AS (
+  SELECT *
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+),
+bucketed AS (
+  SELECT
+      *,
+      CASE
+        WHEN Source_System_Balance < 250000 THEN '< $250k'
+        WHEN Source_System_Balance < 500000 THEN '$250k–< $500k'
+        ELSE '≥ $500k'
+      END AS balance_bucket
+  FROM base
+)
+SELECT
+    Bank_Code,
+    balance_bucket,
+    COUNT(*)                           AS loan_count,
+    COUNT(DISTINCT Customer_Number)    AS borrower_count,
+    SUM(Source_System_Balance)         AS total_source_system_balance
+FROM bucketed
+GROUP BY Bank_Code, balance_bucket
+ORDER BY Bank_Code,
+         MIN(CASE balance_bucket
+               WHEN '< $250k' THEN 1
+               WHEN '$250k–< $500k' THEN 2
+               ELSE 3 END);
+
+
+
+
+WITH base AS (
+  SELECT *
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+),
+bucketed AS (
+  SELECT
+      *,
+      CASE
+        WHEN Source_System_Balance < 250000 THEN '< $250k'
+        WHEN Source_System_Balance < 500000 THEN '$250k–< $500k'
+        ELSE '≥ $500k'
+      END AS balance_bucket
+  FROM base
+)
+SELECT
+    Contract_Source_System,
+    balance_bucket,
+    COUNT(*)                           AS loan_count,
+    COUNT(DISTINCT Customer_Number)    AS borrower_count,
+    SUM(Source_System_Balance)         AS total_source_system_balance
+FROM bucketed
+GROUP BY Contract_Source_System, balance_bucket
+ORDER BY Contract_Source_System,
+         MIN(CASE balance_bucket
+               WHEN '< $250k' THEN 1
+               WHEN '$250k–< $500k' THEN 2
+               ELSE 3 END);
+
+
+
+WITH base AS (
+  SELECT *
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+)
+SELECT
+    End_of_Month_Date,
+    Customer_Number                          AS borrower_id,
+    MIN(Account_Name)                        AS borrower_name,     -- handy label
+    COUNT(*)                                 AS loan_count,
+    COUNT(DISTINCT Facility_ID)              AS facility_count,
+    SUM(Source_System_Balance)               AS total_source_system_balance
+FROM base
+GROUP BY End_of_Month_Date, Customer_Number
+ORDER BY total_source_system_balance DESC;
+
+
+
+
+WITH base AS (
+  SELECT *
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+)
+SELECT
+    End_of_Month_Date,
+    Bank_Code,
+    COUNT(DISTINCT Customer_Number)  AS borrower_count,
+    COUNT(*)                         AS loan_count,
+    SUM(Source_System_Balance)       AS total_source_system_balance
+FROM base
+GROUP BY End_of_Month_Date, Bank_Code
+ORDER BY total_source_system_balance DESC;
+
+
+
+
+WITH base AS (
+  SELECT *
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+)
+SELECT
+    End_of_Month_Date,
+    Contract_Source_System,
+    COUNT(DISTINCT Customer_Number)  AS borrower_count,
+    COUNT(*)                         AS loan_count,
+    SUM(Source_System_Balance)       AS total_source_system_balance
+FROM base
+GROUP BY End_of_Month_Date, Contract_Source_System
+ORDER BY total_source_system_balance DESC;
