@@ -1,0 +1,68 @@
+-- SQL Server — compare risk codes for a subset of accounts on 2025-08-27
+
+-- 1) Paste your ACCTNBRs here (keep as NVARCHAR if ACCTNBR can have leading zeros)
+WITH acct_subset AS (
+    SELECT ACCTNBR FROM (VALUES
+        (N'000123456789'),  -- ← replace with your list
+        (N'000987654321')
+    ) v(ACCTNBR)
+),
+t1 AS (  -- Credit line level (Table 1)
+    SELECT
+        LOADDT,
+        CUST_LINE_NBR,
+        CIF,
+        CLIENT_NM,
+        RISK_CD,
+        SEC_UNFUNDED
+    FROM CRDADMPRD.dbo.CREDITLINE_ALL_TOPSIDED
+    WHERE LOADDT = '2025-08-27'
+),
+t2 AS (  -- Account level (Table 2), filtered to subset
+    SELECT
+        i.LOADDT,
+        i.ACCTNBR,
+        i.CUST_LINE_NBR,      -- assumes Table 2 has this mapping
+        i.APPLID,
+        i.RISKCD,
+        i.AMORTIZED_COST_BASIS
+    FROM CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED i
+    INNER JOIN acct_subset s
+        ON s.ACCTNBR = i.ACCTNBR
+    WHERE i.LOADDT = '2025-08-27'
+)
+SELECT
+    t2.LOADDT,
+    t1.CIF,
+    t1.CLIENT_NM,
+    t2.CUST_LINE_NBR,
+    t2.ACCTNBR,
+    t2.APPLID,
+    t1.RISK_CD         AS RISK_CD_Table1,
+    t2.RISKCD          AS RISKCD_Table2,
+    CASE 
+        WHEN t1.RISK_CD IS NULL THEN 'No matching line'
+        WHEN t2.RISKCD IS NULL THEN 'No account risk'
+        WHEN LTRIM(RTRIM(t1.RISK_CD)) = LTRIM(RTRIM(t2.RISKCD)) THEN 'MATCH'
+        ELSE 'MISMATCH'
+    END                 AS RiskMatchFlag,
+    t1.SEC_UNFUNDED,
+    t2.AMORTIZED_COST_BASIS,
+    CASE 
+        WHEN t1.RISK_CD IS NOT NULL AND t2.RISKCD IS NOT NULL 
+             AND LTRIM(RTRIM(t1.RISK_CD)) <> LTRIM(RTRIM(t2.RISKCD))
+        THEN 1 ELSE 0
+    END                 AS IsRiskMismatch,
+    UPPER(LTRIM(RTRIM(t1.RISK_CD))) AS RISK_CD_Table1_Norm,
+    UPPER(LTRIM(RTRIM(t2.RISKCD)))  AS RISKCD_Table2_Norm
+FROM t2
+LEFT JOIN t1
+    ON t1.CUST_LINE_NBR = t2.CUST_LINE_NBR
+ORDER BY
+    CASE 
+        WHEN t1.RISK_CD IS NULL THEN 1
+        WHEN LTRIM(RTRIM(t1.RISK_CD)) <> LTRIM(RTRIM(t2.RISKCD)) THEN 2
+        ELSE 3
+    END,
+    t2.CUST_LINE_NBR,
+    t2.ACCTNBR;
