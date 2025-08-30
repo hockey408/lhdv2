@@ -94,3 +94,191 @@ WHERE END_OF_MONTH_DATE BETWEEN ADD_MONTHS((SELECT MAX(END_OF_MONTH_DATE) FROM V
 GROUP BY END_OF_MONTH_DATE, CONTRACT_SOURCE_SYSTEM
 ORDER BY CONTRACT_SOURCE_SYSTEM, END_OF_MONTH_DATE;
 
+
+
+"""\
+# Enterprise Loan Portfolio — Month-over-Month Analysis (Notebook Skeleton)
+
+This notebook ingests monthly exports (CSV files) from Netezza, aggregates them, computes MoM metrics,
+and produces baseline visuals for:
+- `GL_BALANCE`, `SOURCE_SYSTEM_BALANCE`, `AVAILABLE_BALANCE`, `COMMITMENT`
+- by `BANK_CODE`, `CONTRACT_SOURCE_SYSTEM`, `GL_ACCOUNT_CODE`
+
+### How to use
+1. Export 12 month-end CSVs from Netezza (or one consolidated CSV) into a folder.
+2. Point `DATA_FOLDER` to that folder. Ensure required columns exist (see `REQUIRED_COLS`).
+3. Run cells top-to-bottom. Outputs and charts are saved to `/mnt/data/exports`.
+
+"""
+
+import os, glob
+from pathlib import Path
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+pd.set_option('display.max_columns', 100)
+pd.set_option('display.width', 140)
+DATA_FOLDER = "/mnt/data/monthly_exports"  # change to your folder
+EXPORT_DIR = "/mnt/data/exports"
+Path(EXPORT_DIR).mkdir(parents=True, exist_ok=True)
+REQUIRED_COLS = [
+    "END_OF_MONTH_DATE","BANK_CODE","CONTRACT_SOURCE_SYSTEM","GL_ACCOUNT_CODE",
+    "GL_BALANCE","SOURCE_SYSTEM_BALANCE","AVAILABLE_BALANCE"
+]
+OPTIONAL_COLS = ["RECORD_COUNT","RISK_UNIT","PD_GRADE","INDUSTRY_CODE","INDUSTRY_DESCRIPTION","NON_ACCRUAL_FLAG","DAYS_PAST_DUE","MATURITY_DATE","ORIGINATION_DATE"]
+print('Config loaded. Update DATA_FOLDER if needed.')
+
+
+def _detect_commitment_column(df: pd.DataFrame) -> str:
+    if "COMMITMENT" in df.columns: return "COMMITMENT"
+    if "COMMITMENT_BALANCE" in df.columns: return "COMMITMENT_BALANCE"
+    raise KeyError("Neither 'COMMITMENT' nor 'COMMITMENT_BALANCE' found in data.")
+
+def load_data_from_folder(folder: str) -> pd.DataFrame:
+    paths = sorted(glob.glob(os.path.join(folder, "*.csv")))
+    if not paths:
+        print(f"No CSV files found in {folder}.")
+        return pd.DataFrame()
+    dfs = []
+    for p in paths:
+        print('Reading', p)
+        df = pd.read_csv(p, parse_dates=["END_OF_MONTH_DATE"], infer_datetime_format=True,
+                         dtype={"BANK_CODE":"category","CONTRACT_SOURCE_SYSTEM":"category","GL_ACCOUNT_CODE":"category"})
+        dfs.append(df)
+    return pd.concat(dfs, ignore_index=True)
+
+def validate_schema(df: pd.DataFrame):
+    missing = [c for c in REQUIRED_COLS if c not in df.columns]
+    if ("COMMITMENT" not in df.columns) and ("COMMITMENT_BALANCE" not in df.columns):
+        missing.append("COMMITMENT or COMMITMENT_BALANCE")
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+    print('Schema looks good.')
+
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    commit_col = _detect_commitment_column(df)
+    if commit_col != 'COMMITMENT': df.rename(columns={commit_col:'COMMITMENT'}, inplace=True)
+    df['END_OF_MONTH_DATE'] = pd.to_datetime(df['END_OF_MONTH_DATE']).dt.to_period('M').dt.to_timestamp('M')
+    for c in ['GL_BALANCE','SOURCE_SYSTEM_BALANCE','AVAILABLE_BALANCE','COMMITMENT']:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+    return df
+
+def aggregate_monthly(df: pd.DataFrame) -> pd.DataFrame:
+    grp = ['END_OF_MONTH_DATE','BANK_CODE','CONTRACT_SOURCE_SYSTEM','GL_ACCOUNT_CODE']
+    return (df.groupby(grp, dropna=False)
+              .agg(GL_BALANCE=('GL_BALANCE','sum'),
+                   SOURCE_SYSTEM_BALANCE=('SOURCE_SYSTEM_BALANCE','sum'),
+                   AVAILABLE_BALANCE=('AVAILABLE_BALANCE','sum'),
+                   COMMITMENT=('COMMITMENT','sum'),
+                   RECORD_COUNT=('GL_ACCOUNT_CODE','count'))
+              .reset_index())
+
+def add_mom_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.sort_values(['BANK_CODE','CONTRACT_SOURCE_SYSTEM','GL_ACCOUNT_CODE','END_OF_MONTH_DATE']).copy()
+    key = ['BANK_CODE','CONTRACT_SOURCE_SYSTEM','GL_ACCOUNT_CODE']
+    for col in ['GL_BALANCE','SOURCE_SYSTEM_BALANCE','AVAILABLE_BALANCE','COMMITMENT','RECORD_COUNT']:
+        prev = df.groupby(key)[col].shift(1)
+        df[f'{col}_MoM_$'] = df[col] - prev
+        df[f'{col}_MoM_%'] = np.where((prev==0)|prev.isna(), np.nan, (df[col]-prev)/prev.abs())
+    return df
+
+def add_yoy_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.sort_values(['BANK_CODE','CONTRACT_SOURCE_SYSTEM','GL_ACCOUNT_CODE','END_OF_MONTH_DATE']).copy()
+    key = ['BANK_CODE','CONTRACT_SOURCE_SYSTEM','GL_ACCOUNT_CODE']
+    for col in ['GL_BALANCE','SOURCE_SYSTEM_BALANCE','AVAILABLE_BALANCE','COMMITMENT','RECORD_COUNT']:
+        prev12 = df.groupby(key)[col].shift(12)
+        df[f'{col}_YoY_$'] = df[col] - prev12
+        df[f'{col}_YoY_%'] = np.where((prev12==0)|prev12.isna(), np.nan, (df[col]-prev12)/prev12.abs())
+    return df
+
+
+def kpi_totals_plot(df_agg: pd.DataFrame, export_path: str = None):
+    latest = df_agg['END_OF_MONTH_DATE'].max()
+    snap = df_agg[df_agg['END_OF_MONTH_DATE']==latest]
+    totals = snap[['GL_BALANCE','SOURCE_SYSTEM_BALANCE','AVAILABLE_BALANCE','COMMITMENT']].sum()
+    plt.figure()
+    totals.plot(kind='bar')
+    plt.title(f'Portfolio Totals — {latest.date()}')
+    plt.ylabel('Amount')
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    if export_path: plt.savefig(export_path, dpi=150)
+    plt.show()
+
+def heatmap_mom_percent(df_mom: pd.DataFrame, metric: str='GL_BALANCE', export_path: str=None):
+    latest = df_mom['END_OF_MONTH_DATE'].max()
+    recent = df_mom[df_mom['END_OF_MONTH_DATE']==latest]
+    pv = recent.pivot_table(index='CONTRACT_SOURCE_SYSTEM', columns='GL_ACCOUNT_CODE', values=f'{metric}_MoM_%', aggfunc='sum')
+    plt.figure()
+    plt.imshow(pv.fillna(0).values, aspect='auto')
+    plt.title(f'MoM % Heatmap — {metric} — {latest.date()}')
+    plt.xlabel('GL_ACCOUNT_CODE'); plt.ylabel('CONTRACT_SOURCE_SYSTEM')
+    plt.colorbar(); plt.tight_layout()
+    if export_path: plt.savefig(export_path, dpi=150)
+    plt.show()
+
+def waterfall_mom_system(df_mom: pd.DataFrame, system: str, metric: str='GL_BALANCE', export_path: str=None):
+    latest = df_mom['END_OF_MONTH_DATE'].max()
+    scope = df_mom[(df_mom['END_OF_MONTH_DATE']==latest)&(df_mom['CONTRACT_SOURCE_SYSTEM']==system)]
+    scope = scope[['GL_ACCOUNT_CODE', f'{metric}_MoM_$']].sort_values(f'{metric}_MoM_$', ascending=False).head(20)
+    plt.figure()
+    plt.bar(scope['GL_ACCOUNT_CODE'].astype(str), scope[f'{metric}_MoM_$'])
+    plt.title(f'Top 20 MoM $ — {metric} — {system} — {latest.date()}')
+    plt.xticks(rotation=45, ha='right'); plt.ylabel('MoM $'); plt.tight_layout()
+    if export_path: plt.savefig(export_path, dpi=150)
+    plt.show()
+
+def line_trend_system_metric(df_agg: pd.DataFrame, system: str, metric: str='GL_BALANCE', export_path: str=None):
+    scope = df_agg[df_agg['CONTRACT_SOURCE_SYSTEM']==system]
+    ts = scope.groupby('END_OF_MONTH_DATE')[metric].sum().reset_index()
+    plt.figure()
+    plt.plot(ts['END_OF_MONTH_DATE'], ts[metric])
+    plt.title(f'Trend — {metric} — {system}')
+    plt.xlabel('Month'); plt.ylabel(metric); plt.tight_layout()
+    if export_path: plt.savefig(export_path, dpi=150)
+    plt.show()
+
+
+raw = load_data_from_folder(DATA_FOLDER)
+if raw.empty:
+    print('Load some CSVs into DATA_FOLDER and re-run this cell.')
+else:
+    validate_schema(raw)
+    df = normalize_columns(raw)
+    agg = aggregate_monthly(df)
+    mom = add_mom_columns(agg)
+    # mom = add_yoy_columns(mom)  # enable when you have >= 13 months
+    agg_path = os.path.join(EXPORT_DIR, 'monthly_aggregates.csv')
+    mom_path = os.path.join(EXPORT_DIR, 'monthly_with_mom.csv')
+    agg.to_csv(agg_path, index=False); mom.to_csv(mom_path, index=False)
+    print('Saved:', agg_path, '\nSaved:', mom_path)
+    display(mom.head(10))
+
+
+if 'agg' in globals() and not agg.empty:
+    kpi_totals_plot(agg, export_path=os.path.join(EXPORT_DIR, 'kpi_totals_latest.png'))
+
+
+if 'mom' in globals() and not mom.empty:
+    heatmap_mom_percent(mom, metric='GL_BALANCE', export_path=os.path.join(EXPORT_DIR, 'heatmap_mom_pct_gl.png'))
+
+
+if 'mom' in globals() and not mom.empty:
+    example_system = str(mom['CONTRACT_SOURCE_SYSTEM'].dropna().astype(str).mode().iloc[0]) if not mom['CONTRACT_SOURCE_SYSTEM'].dropna().empty else 'SYSTEM_A'
+    waterfall_mom_system(mom, system=example_system, metric='GL_BALANCE', export_path=os.path.join(EXPORT_DIR, f'waterfall_{example_system}_gl.png'))
+
+
+if 'agg' in globals() and not agg.empty:
+    example_system = str(agg['CONTRACT_SOURCE_SYSTEM'].dropna().astype(str).mode().iloc[0]) if not agg['CONTRACT_SOURCE_SYSTEM'].dropna().empty else 'SYSTEM_A'
+    line_trend_system_metric(agg, system=example_system, metric='GL_BALANCE', export_path=os.path.join(EXPORT_DIR, f'trend_{example_system}_gl.png'))
+
+
+"""\
+## Next Steps
+- Enable YoY metrics (`add_yoy_columns`) when 13+ months available.
+- Merge risk/concentration fields for richer slices.
+- Account-level deltas and anomaly flags for exceptions review.
+
+"""
