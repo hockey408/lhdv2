@@ -1,0 +1,151 @@
+//@version=5
+strategy("Bull Flag Morning Gap Trader (Brent)",
+     overlay=true,
+     initial_capital=10000,
+     commission_type=strategy.commission.percent,
+     commission_value=0.005,    // 0.5% round trip default; change to your broker cost
+     calc_on_every_tick=true, process_orders_on_close=true, pyramiding=0)
+
+//=====================
+// Inputs
+//=====================
+enforce5m      = input.bool(true, "Enforce 5-min timeframe")
+minGapPct      = input.float(5.0, "Min pre-market gap %", step=0.1)
+priceMin       = input.float(1.0, "Min price")
+priceMax       = input.float(20.0, "Max price")
+sessionStr     = input.session("0930-1130:12345", "Trading window (exchange time)") // first 2 hours, Mon-Fri
+
+// Volume + RVOL
+volLen         = input.int(20, "Volume SMA length", minval=5)
+minBarRVOL     = input.float(2.0, "Min bar RVOL (volume / SMA(volume))", step=0.1)
+
+// Momentum + Flag
+emaLen         = input.int(20, "EMA length (trend filter)")
+impulseLen     = input.int(6, "Impulse lookback bars", minval=3)
+atrLen         = input.int(14, "ATR length")
+impulseATRmult = input.float(1.0, "Impulse ATR multiple", step=0.1)
+flagBarsMin    = input.int(3, "Min flag bars", minval=2)
+flagBarsMax    = input.int(15, "Max flag bars", minval=5)
+maxPullbackPct = input.float(50.0, "Max pullback depth from impulse high (%)", step=1.0)
+flagVolRatio   = input.float(0.9, "Flag avg vol ≤ this × base volSMA", step=0.05)
+breakVolMult   = input.float(1.5, "Breakout vol ≥ this × volSMA", step=0.1)
+adxLen         = input.int(14, "ADX length")
+adxMin         = input.float(20, "Min ADX", step=1)
+
+// Risk + Exits
+acctSize       = input.float(2150, "Day-trading allocation ($)") // set to your actual DT bucket
+riskPct        = input.float(1.0, "Risk per trade (%)", step=0.1)
+riskR          = input.float(2.0, "Take-profit in R (e.g., 2R)", step=0.25)
+atrPad         = input.float(0.1, "Extra stop cushion in ATRs", step=0.05)
+useATRtrail    = input.bool(true, "Enable ATR trail after 1R?")
+trailATRmult   = input.float(1.5, "ATR trail multiplier", step=0.1)
+
+//=====================
+// Helpers / Filters
+//=====================
+inWindow   = not na(time(timeframe.period, sessionStr))
+ema20      = ta.ema(close, emaLen)
+atr        = ta.atr(atrLen)
+volSMA     = ta.sma(volume, volLen)
+barRVOL    = nz(volume) / nz(volSMA, 1)
+rvolOK     = barRVOL >= minBarRVOL
+priceOK    = close >= priceMin and close <= priceMax
+
+// Gap % versus prior close
+yClose     = request.security(syminfo.tickerid, "D", close[1])
+todayOpen  = request.security(syminfo.tickerid, "D", open)
+gapPct     = na(yClose) ? na : (todayOpen - yClose) / yClose * 100
+gapOK      = gapPct >= minGapPct
+
+// ADX trend filter (optional but helpful)
+adx        = ta.adx(adxLen)
+adxOK      = adx >= adxMin
+
+// Enforce timeframe (optional guard)
+tfOK       = timeframe.period == "5"
+
+//=====================
+// Impulse leg detection (strong up thrust)
+//=====================
+impulseUp  = (close > ema20) and
+             (close - ta.lowest(low, impulseLen) >= impulseATRmult * atr) and
+             (volume > volSMA * 1.5)
+
+// Track bars since impulse to define the flag window
+barsSinceImpulse = ta.barssince(impulseUp)
+
+// Define a rolling flag window AFTER the impulse
+flagWindow = barsSinceImpulse >= 1 and barsSinceImpulse <= flagBarsMax
+
+// Compute flag stats over a sliding lookback = clamp between min/max
+flagLen = math.min(math.max(barsSinceImpulse, flagBarsMin), flagBarsMax)
+flagHi  = ta.highest(high[1], flagLen)   // highest of prior 'flagLen' bars
+flagLo  = ta.lowest(low[1],  flagLen)    // lowest  of prior 'flagLen' bars
+pullPct = flagHi == 0.0 ? 999.0 : (flagHi - flagLo) / flagHi * 100
+flagVol = ta.sma(volume[1], flagLen)
+flagVolOK = flagVol <= volSMA * flagVolRatio
+
+// Breakout condition: price takes out flag highs with rising volume
+breakout   = close > flagHi and volume >= volSMA * breakVolMult and volume > volume[1]
+
+// One trade per day guard
+isNewDay   = ta.change(time("D"))
+var tradesToday = 0
+if isNewDay
+    tradesToday := 0
+
+canTrade   = (not enforce5m or tfOK) and inWindow and gapOK and priceOK and adxOK and rvolOK and (tradesToday == 0)
+
+//=====================
+// Entry, Stops, Targets
+//=====================
+entryLong  = canTrade and flagWindow and (pullPct <= maxPullbackPct) and flagVolOK and breakout and strategy.position_size == 0
+
+// Risk math
+stopPrice  = math.min(flagLo, low) - atrPad * atr
+entryPrice = close
+riskPerShr = entryPrice - stopPrice
+riskOK     = riskPerShr > 0 and stopPrice > 0
+
+qty        = riskOK ? (acctSize * (riskPct/100.0)) / riskPerShr : 0.0
+takeProfit = riskOK ? entryPrice + riskR * riskPerShr : na
+
+if entryLong and riskOK
+    strategy.entry("Long", strategy.long, qty=qty)
+    // Main exit: 2R target + hard stop under flag low
+    strategy.exit("Long-Exit", from_entry="Long", stop=stopPrice, limit=takeProfit)
+    tradesToday += 1
+
+    // Optional ATR trail after 1R: when price reaches 1R, trail by ATR*mult
+    if useATRtrail
+        // emulate trail using a separate exit that trails from the moment we are in the trade
+        trailPts = trailATRmult * atr
+        strategy.exit("Long-Trail", from_entry="Long", trail_points=trailPts/ syminfo.mintick * syminfo.mintick)
+
+//=====================
+// Visuals & Alerts
+//=====================
+plot(ema20, "EMA 20", color=color.new(color.blue, 0))
+plot(flagHi, "Flag High", color=color.new(color.green, 0))
+plot(flagLo, "Flag Low",  color=color.new(color.red, 0))
+
+plotchar(impulseUp, "Impulse", "⬆", location.top, size=size.tiny, color=color.new(color.green, 0))
+plotchar(entryLong, "Entry", "▲", location.belowbar, size=size.small, color=color.new(color.teal, 0))
+
+rvolPlot = plot(barRVOL, "Bar RVOL", color=color.new(color.purple, 0))
+hline( minBarRVOL, "Min RVOL", color=color.new(color.purple, 60))
+hline( 2.0, "2x Vol guide", color=color.new(color.gray, 80))
+
+// Alert when a valid long triggers
+alertcondition(entryLong, title="Bull Flag Breakout (Valid)", message="Long {{ticker}} @ {{close}} — gap ok, RVOL ok, flag breakout")
+
+// Debug labels (toggle in settings if desired)
+showDebug = input.bool(false, "Show debug labels")
+if showDebug and barstate.islast
+    label.new(bar_index, high, 
+         "Gap%: " + str.tostring(gapPct, format.mintick) + 
+         "\nRVOL: " + str.tostring(barRVOL, format.mintick) + 
+         "\nADX: " + str.tostring(adx, format.mintick) +
+         "\nPull%: " + str.tostring(pullPct, format.mintick) +
+         "\nQty: " + str.tostring(qty, format.mintick),
+         style=label.style_label_down, color=color.new(color.silver, 0), textcolor=color.black)
