@@ -389,3 +389,18 @@ IF (
         )
     )
 )
+
+
+
+
+
+Source Delta % Flag :=
+VAR x = [Source Delta %]
+RETURN
+SWITCH (
+    TRUE(),
+    ISBLANK(x), BLANK(),
+    x >= 0.05,  1,     -- green
+    x <= -0.05, -1,    -- red
+    0                  -- neutral
+)
