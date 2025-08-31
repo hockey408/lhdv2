@@ -355,3 +355,19 @@ RETURN [Total GL] - Prior12
 GL YoY % :=
 VAR Prior12 = CALCULATE([Total GL], DATEADD(Date[Date], -12, MONTH))
 RETURN DIVIDE([Total GL] - Prior12, ABS(Prior12))
+
+
+
+
+
+let
+    Source             = FactMonthly,
+    KeepDate           = Table.SelectColumns(Source, {"END_OF_MONTH_DATE"}),
+    RemoveDuplicates   = Table.Distinct(KeepDate),
+    Sorted             = Table.Sort(RemoveDuplicates, {{"END_OF_MONTH_DATE", Order.Ascending}}),
+    AddYear            = Table.AddColumn(Sorted, "Year", each Date.Year([END_OF_MONTH_DATE]), Int64.Type),
+    AddMonthNum        = Table.AddColumn(AddYear, "MonthNum", each Date.Month([END_OF_MONTH_DATE]), Int64.Type),
+    AddMonthName       = Table.AddColumn(AddMonthNum, "Month", each Date.ToText([END_OF_MONTH_DATE], "MMM"), type text),
+    AddYearMonth       = Table.AddColumn(AddMonthName, "YearMonth", each Date.ToText([END_OF_MONTH_DATE], "yyyy-MM"), type text)
+in
+    AddYearMonth
