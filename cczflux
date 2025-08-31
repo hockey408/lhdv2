@@ -371,3 +371,21 @@ let
     AddYearMonth       = Table.AddColumn(AddMonthName, "YearMonth", each Date.ToText([END_OF_MONTH_DATE], "yyyy-MM"), type text)
 in
     AddYearMonth
+
+
+
+
+
+Source Δ % Color :=
+VAR x = [Source Δ %]
+-- Avoid coloring subtotal/total rows and blank cells
+RETURN
+IF (
+    NOT ISINSCOPE ( FactMonthly[CONTRACT_SOURCE_SYSTEM] ) || ISBLANK ( x ),
+    BLANK(),
+    IF ( x >= 0.05, "#137333",           -- green
+        IF ( x <= -0.05, "#C5221F",      -- red
+             "#FFFFFF"                   -- neutral white for between -5% and +5%
+        )
+    )
+)
