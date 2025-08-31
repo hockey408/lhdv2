@@ -282,3 +282,76 @@ if 'agg' in globals() and not agg.empty:
 - Account-level deltas and anomaly flags for exceptions review.
 
 """
+
+
+
+
+
+
+
+
+Date =
+VAR MinDate = DATE(YEAR(MIN(FactMonthly[END_OF_MONTH_DATE]))-1, 1, 1)
+VAR MaxDate = DATE(YEAR(MAX(FactMonthly[END_OF_MONTH_DATE]))+1, 12, 31)
+RETURN
+ADDCOLUMNS(
+    CALENDAR(MinDate, MaxDate),
+    "Year", YEAR([Date]),
+    "Month", FORMAT([Date], "MMM"),
+    "MonthNum", MONTH([Date]),
+    "YearMonth", FORMAT([Date], "YYYY-MM"),
+    "EOM", EOMONTH([Date], 0)
+)
+
+
+
+
+
+
+-- Base totals
+Total GL := SUM(FactMonthly[GL_BALANCE])
+Total Source := SUM(FactMonthly[SOURCE_SYSTEM_BALANCE])
+Total Available := SUM(FactMonthly[AVAILABLE_BALANCE])
+Total Commitment := SUM(FactMonthly[COMMITMENT])
+Total Records := SUM(FactMonthly[RECORD_COUNT])  -- if present
+
+-- Prior-month helpers
+Prior Month GL :=
+CALCULATE([Total GL], DATEADD(Date[Date], -1, MONTH))
+
+Prior Month Source :=
+CALCULATE([Total Source], DATEADD(Date[Date], -1, MONTH))
+
+Prior Month Available :=
+CALCULATE([Total Available], DATEADD(Date[Date], -1, MONTH))
+
+Prior Month Commitment :=
+CALCULATE([Total Commitment], DATEADD(Date[Date], -1, MONTH))
+
+Prior Month Records :=
+CALCULATE([Total Records], DATEADD(Date[Date], -1, MONTH))
+
+-- MoM $ and %
+GL MoM $ := [Total GL] - [Prior Month GL]
+GL MoM % := DIVIDE([GL MoM $], ABS([Prior Month GL]))
+
+Source MoM $ := [Total Source] - [Prior Month Source]
+Source MoM % := DIVIDE([Source MoM $], ABS([Prior Month Source]))
+
+Available MoM $ := [Total Available] - [Prior Month Available]
+Available MoM % := DIVIDE([Available MoM $], ABS([Prior Month Available]))
+
+Commitment MoM $ := [Total Commitment] - [Prior Month Commitment]
+Commitment MoM % := DIVIDE([Commitment MoM $], ABS([Prior Month Commitment]))
+
+Record MoM := [Total Records] - [Prior Month Records]
+Record MoM % := DIVIDE([Record MoM], [Prior Month Records])
+
+-- YoY (enable once 13+ months loaded)
+GL YoY $ :=
+VAR Prior12 = CALCULATE([Total GL], DATEADD(Date[Date], -12, MONTH))
+RETURN [Total GL] - Prior12
+
+GL YoY % :=
+VAR Prior12 = CALCULATE([Total GL], DATEADD(Date[Date], -12, MONTH))
+RETURN DIVIDE([Total GL] - Prior12, ABS(Prior12))
