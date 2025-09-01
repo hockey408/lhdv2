@@ -1,3 +1,218 @@
+-- Make sure the table doesn't exist (ignore error if it does)
+DROP TABLE IF EXISTS FINAL_NONACCRUAL_REPORT;
+
+-- Create the final temp table with explicit schema (32 columns)
+CREATE TEMP TABLE FINAL_NONACCRUAL_REPORT
+DISTRIBUTE ON RANDOM
+AS
+SELECT
+  CAST(NULL AS VARCHAR(24))   AS Report_Section,
+  CAST(NULL AS VARCHAR(64))   AS Subsection,
+  CAST(NULL AS DATE)          AS End_of_Month_Date,
+  CAST(NULL AS VARCHAR(10))   AS Bank_Code,
+  CAST(NULL AS VARCHAR(200))  AS Account_Name,
+  CAST(NULL AS VARCHAR(40))   AS Contract_Source_System,
+  CAST(NULL AS VARCHAR(40))   AS Customer_Number,
+  CAST(NULL AS VARCHAR(40))   AS Facility_ID,
+  CAST(NULL AS VARCHAR(60))   AS Account_Identifier,
+  CAST(NULL AS VARCHAR(60))   AS Account_Key,
+  CAST(NULL AS VARCHAR(200))  AS Status_Code_Description,
+  CAST(NULL AS VARCHAR(80))   AS Instrument_Type,
+  CAST(NULL AS NUMERIC(18,2)) AS Source_System_Balance,
+  CAST(NULL AS NUMERIC(18,2)) AS GL_Balance,
+  CAST(NULL AS NUMERIC(18,2)) AS Available_Balance,
+  CAST(NULL AS VARCHAR(40))   AS Borrower_Risk_Rating,
+  CAST(NULL AS VARCHAR(50))   AS PD_Grade,
+  CAST(NULL AS INTEGER)       AS Days_Past_Due,
+  CAST(NULL AS VARCHAR(1))    AS Non_Accrual_Flag,
+  CAST(NULL AS VARCHAR(32))   AS Days_Past_Due_Bucket,
+  CAST(NULL AS VARCHAR(32))   AS Balance_Bucket,
+  CAST(NULL AS INTEGER)       AS Loans,
+  CAST(NULL AS NUMERIC(18,2)) AS Balance_Sum,
+  CAST(NULL AS NUMERIC(18,2)) AS GL_Source_Diff_Sum,
+  CAST(NULL AS INTEGER)       AS Dup_Count,
+  CAST(NULL AS INTEGER)       AS Null_DPD,
+  CAST(NULL AS INTEGER)       AS Missing_PD_Grade,
+  CAST(NULL AS INTEGER)       AS GL_SRC_Diff_GT_1k,
+  CAST(NULL AS INTEGER)       AS DPD_Zero,
+  CAST(NULL AS NUMERIC(18,2)) AS Prev_Bal,
+  CAST(NULL AS NUMERIC(18,2)) AS Curr_Bal,
+  CAST(NULL AS VARCHAR(40))   AS NA_Status_Change
+WITH NO DATA;
+
+-- 1) DETAIL rows
+INSERT INTO FINAL_NONACCRUAL_REPORT
+SELECT
+  'DETAIL',
+  NULL,
+  e.End_of_Month_Date,
+  e.Bank_Code,
+  e.Account_Name,
+  e.Contract_Source_System,
+  e.Customer_Number,
+  e.Facility_ID,
+  e.Account_Identifier,
+  e.Account_Key,
+  e.Status_Code_Description,
+  e.Instrument_Type,
+  CAST(e.Source_System_Balance AS NUMERIC(18,2)),
+  CAST(e.GL_Balance AS NUMERIC(18,2)),
+  CAST(e.Available_Balance AS NUMERIC(18,2)),
+  e.Borrower_Risk_Rating,
+  CAST(e.PD_Grade AS VARCHAR(50)),
+  e.Days_Past_Due,
+  e.Non_Accrual_Flag,
+  e.Days_Past_Due_Bucket,
+  e.Balance_Bucket,
+  NULL,
+  NULL,
+  NULL,
+  NULL,
+  NULL,
+  NULL,
+  NULL,
+  NULL,
+  NULL,
+  NULL
+FROM enriched e;
+
+-- 2a) SUMMARY: By DPD bucket
+INSERT INTO FINAL_NONACCRUAL_REPORT
+SELECT
+  'SUMMARY',
+  'By DPD Bucket',
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  s.Days_Past_Due_Bucket,
+  NULL,
+  s.loans,
+  CAST(s.balance AS NUMERIC(18,2)),
+  NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL,
+  NULL
+FROM sum_by_dpd s;
+
+-- 2b) SUMMARY: By Balance bucket
+INSERT INTO FINAL_NONACCRUAL_REPORT
+SELECT
+  'SUMMARY',
+  'By Balance Bucket',
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL,
+  s.Balance_Bucket,
+  s.loans,
+  CAST(s.balance AS NUMERIC(18,2)),
+  NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL,
+  NULL
+FROM sum_by_bal_bucket s;
+
+-- 2c) SUMMARY: By Bank × System
+INSERT INTO FINAL_NONACCRUAL_REPORT
+SELECT
+  'SUMMARY',
+  'By Bank × System',
+  NULL,
+  s.Bank_Code,
+  NULL,
+  s.Contract_Source_System,
+  NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL,
+  s.loans,
+  CAST(s.balance AS NUMERIC(18,2)),
+  NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL,
+  NULL
+FROM sum_by_bank_system s;
+
+-- 3a) SANITY: Dupes
+INSERT INTO FINAL_NONACCRUAL_REPORT
+SELECT
+  'SANITY',
+  'Dupes: EOM + Account_Identifier',
+  d.End_of_Month_Date,
+  NULL, NULL, NULL, NULL, NULL,
+  d.Account_Identifier,
+  NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL,
+  NULL, NULL,
+  d.dup_count,
+  NULL, NULL, NULL, NULL,
+  NULL, NULL,
+  NULL
+FROM dupes d;
+
+-- 3b) SANITY: Group Quality
+INSERT INTO FINAL_NONACCRUAL_REPORT
+SELECT
+  'SANITY',
+  'Group Quality: Bank × System',
+  NULL,
+  s.Bank_Code,
+  NULL,
+  s.Contract_Source_System,
+  NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL,
+  s.loans,
+  NULL,
+  CAST(s.sum_gl_bal - s.sum_source_bal AS NUMERIC(18,2)) AS GL_Source_Diff_Sum,
+  NULL,
+  s.null_dpd,
+  s.missing_pd_grade,
+  s.gl_src_diff_gt_1k,
+  s.dpd_zero,
+  NULL, NULL,
+  NULL
+FROM sanity_by_group s;
+
+-- 4) MOM: Adds / Drops / Persisting
+INSERT INTO FINAL_NONACCRUAL_REPORT
+SELECT
+  'MOM',
+  'Adds/Drops/Persisting',
+  NULL,
+  m.Bank_Code,
+  m.Account_Name,
+  m.Contract_Source_System,
+  NULL, NULL,
+  m.Account_Identifier,
+  NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  CAST(m.Prev_Bal AS NUMERIC(18,2)),
+  CAST(m.Curr_Bal AS NUMERIC(18,2)),
+  m.NA_Status_Change
+FROM mom_diff m;
+
+-- Final single result
+SELECT *
+FROM FINAL_NONACCRUAL_REPORT
+ORDER BY
+  CASE Report_Section
+    WHEN 'DETAIL'  THEN 0
+    WHEN 'SUMMARY' THEN 1
+    WHEN 'SANITY'  THEN 2
+    WHEN 'MOM'     THEN 3
+    ELSE 9
+  END,
+  Subsection NULLS LAST,
+  Bank_Code NULLS LAST,
+  Contract_Source_System NULLS LAST,
+  Days_Past_Due_Bucket NULLS LAST,
+  Balance_Bucket NULLS LAST,
+  Account_Identifier NULLS LAST;
+
+
+
+
+
+
+
 /* ============================================================
    3-Way Non-Accrual Reconciliation — Single Tall Result (32 cols)
    Approach: CREATE TEMP TABLE + INSERT for each section
