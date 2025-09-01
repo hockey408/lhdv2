@@ -1,3 +1,243 @@
+WITH params AS (
+  SELECT DATE '2025-07-31' AS as_of_date
+),
+base AS (
+  SELECT
+      End_of_Month_Date,
+      Bank_Code,
+      Account_Name,
+      Contract_Source_System,
+      Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      Instrument_Type,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = (SELECT as_of_date FROM params)
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+enriched AS (
+  SELECT
+    b.*,
+    CASE
+      WHEN Days_Past_Due = 0 THEN 'Zero Days'
+      WHEN Days_Past_Due BETWEEN 1  AND 30  THEN '1-30 Days'
+      WHEN Days_Past_Due BETWEEN 31 AND 90  THEN '31-90 Days'
+      WHEN Days_Past_Due BETWEEN 91 AND 180 THEN '91-180 Days'
+      WHEN Days_Past_Due > 180 THEN '180+ Days'
+      ELSE 'Unknown'
+    END AS Days_Past_Due_Bucket,
+    CASE
+      WHEN Source_System_Balance < 250000 THEN '< $250k'
+      WHEN Source_System_Balance < 500000 THEN '$250k - < $500k'
+      ELSE '>= $500k'
+    END AS Balance_Bucket
+  FROM base b
+)
+SELECT *
+FROM enriched
+ORDER BY Bank_Code, Account_Name, Account_Identifier;
+
+
+
+
+
+WITH params AS (
+  SELECT DATE '2025-07-31' AS as_of_date
+),
+base AS (
+  SELECT *
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = (SELECT as_of_date FROM params)
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+enriched AS (
+  SELECT
+    b.Source_System_Balance,
+    CASE
+      WHEN b.Days_Past_Due = 0 THEN 'Zero Days'
+      WHEN b.Days_Past_Due BETWEEN 1  AND 30  THEN '1-30 Days'
+      WHEN b.Days_Past_Due BETWEEN 31 AND 90  THEN '31-90 Days'
+      WHEN b.Days_Past_Due BETWEEN 91 AND 180 THEN '91-180 Days'
+      WHEN b.Days_Past_Due > 180 THEN '180+ Days'
+      ELSE 'Unknown'
+    END AS Days_Past_Due_Bucket
+  FROM base b
+)
+SELECT
+  Days_Past_Due_Bucket,
+  COUNT(*)                         AS Loans,
+  SUM(Source_System_Balance)       AS Balance
+FROM enriched
+GROUP BY Days_Past_Due_Bucket
+ORDER BY
+  CASE Days_Past_Due_Bucket
+    WHEN 'Zero Days' THEN 0
+    WHEN '1-30 Days' THEN 1
+    WHEN '31-90 Days' THEN 2
+    WHEN '91-180 Days' THEN 3
+    WHEN '180+ Days'  THEN 4
+    ELSE 5
+  END;
+
+
+
+
+
+
+WITH params AS (
+  SELECT DATE '2025-07-31' AS as_of_date
+),
+base AS (
+  SELECT *
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = (SELECT as_of_date FROM params)
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+)
+SELECT
+  CASE
+    WHEN Source_System_Balance < 250000 THEN '< $250k'
+    WHEN Source_System_Balance < 500000 THEN '$250k - < $500k'
+    ELSE '>= $500k'
+  END AS Balance_Bucket,
+  COUNT(*)                   AS Loans,
+  SUM(Source_System_Balance) AS Balance
+FROM base
+GROUP BY
+  CASE
+    WHEN Source_System_Balance < 250000 THEN '< $250k'
+    WHEN Source_System_Balance < 500000 THEN '$250k - < $500k'
+    ELSE '>= $500k'
+  END
+ORDER BY
+  CASE
+    WHEN Balance_Bucket = '< $250k'         THEN 0
+    WHEN Balance_Bucket = '$250k - < $500k' THEN 1
+    WHEN Balance_Bucket = '>= $500k'        THEN 2
+    ELSE 3
+  END;
+
+
+
+WITH params AS (
+  SELECT DATE '2025-07-31' AS as_of_date
+),
+base AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    Source_System_Balance
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = (SELECT as_of_date FROM params)
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+)
+SELECT
+  Bank_Code,
+  Contract_Source_System,
+  COUNT(*)                   AS Loans,
+  SUM(Source_System_Balance) AS Balance
+FROM base
+GROUP BY Bank_Code, Contract_Source_System
+ORDER BY Bank_Code, Contract_Source_System;
+
+
+
+
+
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'                 AS curr_eom,
+    ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom
+),
+pop AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Identifier,
+      Account_Name,
+      Bank_Code,
+      Contract_Source_System,
+      Source_System_Balance,
+      Non_Accrual_Flag
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+),
+curr AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+),
+prev AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+)
+SELECT
+  COALESCE(c.Account_Identifier, p.Account_Identifier)       AS Account_Identifier,
+  COALESCE(c.Account_Name,       p.Account_Name)             AS Account_Name,
+  COALESCE(c.Bank_Code,          p.Bank_Code)                AS Bank_Code,
+  COALESCE(c.Contract_Source_System, p.Contract_Source_System) AS Contract_Source_System,
+  CASE
+    WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'Added (New NA)'
+    WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'Removed (Resolved/Out)'
+    ELSE 'Persisting'
+  END AS NA_Status_Change,
+  p.Source_System_Balance AS Prev_Bal,
+  c.Source_System_Balance AS Curr_Bal
+FROM curr c
+FULL OUTER JOIN prev p
+  ON c.Account_Identifier = p.Account_Identifier
+ORDER BY
+  CASE NA_Status_Change
+    WHEN 'Added (New NA)'         THEN 0
+    WHEN 'Removed (Resolved/Out)' THEN 1
+    WHEN 'Persisting'             THEN 2
+    ELSE 3
+  END,
+  Bank_Code, Account_Identifier;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* ================================================
    3-Way Non-Accrual Reconciliation (Single Result)
    Netezza-safe: CAST(), 32 cols aligned across UNION ALL
