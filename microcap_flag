@@ -461,3 +461,134 @@ hitSL = validEntry and validStop and ((isLong  and low  <= stopPrice)   or (isSh
 
 alertcondition(hitTP, title="Target Hit", message="Target price reached")
 alertcondition(hitSL, title="Stop Hit",   message="Stop price breached")
+
+
+
+
+//@version=4
+study("Trade Planner: Position Size, Stop, Target (v4)", overlay=true)
+
+//==============================
+// Inputs (v4-safe)
+//==============================
+// Account & Risk
+acctEquity   = input(25000.0, title="Account Equity ($)", type=input.float, minval=0)
+riskPct      = input(1.0,     title="Risk per Trade (%)", type=input.float, minval=0.01, step=0.05)
+slipPerUnit  = input(0.0,     title="Slippage per Unit ($)", type=input.float, minval=0.0)
+
+// Direction & Entry
+dir          = input(title="Trade Direction", defval="Long", options=["Long","Short"])
+useClose     = input(true,  title="Use current close as Entry?")
+manualEntry  = input(na,    title="Manual Entry Price", type=input.float, step=syminfo.mintick)
+entry        = useClose ? close : manualEntry
+
+// Stop method
+stopMethod   = input(title="Stop Method", defval="ATR x", options=["ATR x","% from Entry","Fixed Ticks","Manual Price"])
+atrLen       = input(14,    title="ATR Length", type=input.integer, minval=1)
+atrMult      = input(1.5,   title="ATR Multiple", type=input.float, step=0.1)
+stopPct      = input(2.0,   title="Stop % (from Entry)", type=input.float, step=0.1)
+stopTicks    = input(20,    title="Stop Ticks", type=input.integer, minval=1)
+manualStop   = input(na,    title="Manual Stop Price", type=input.float, step=syminfo.mintick)
+
+// Target
+rrTarget     = input(2.0,   title="Target R Multiple", type=input.float, minval=0.1, step=0.1)
+
+// Instrument value-per-point
+assetType    = input(title="Instrument Value/Point", defval="Auto (symbol)", options=["Auto (symbol)","Stocks/Crypto (=1)","Custom"])
+customPtVal  = input(5.0,   title="Custom Point Value ($/point)", type=input.float, minval=0.000001)
+qtyStep      = input(1.0,   title="Quantity Step (lot size)", type=input.float, minval=0.000001)
+minQty       = input(1.0,   title="Min Quantity", type=input.float, minval=0.000001)
+
+// Visuals
+showLabels   = input(true,  title="Show Price Labels")
+extendRight  = input(true,  title="Extend Lines Right")
+entryCol     = color.blue
+stopCol      = color.red
+targetCol    = color.green
+
+//==============================
+// Helpers (v4-safe)
+//==============================
+isLong  = dir == "Long"
+isShort = not isLong
+
+pointValue = assetType == "Stocks/Crypto (=1)" ? 1.0 :
+             assetType == "Custom"             ? customPtVal :
+             na(syminfo.pointvalue) ? 1.0 : syminfo.pointvalue
+
+atr = atr(atrLen)
+
+// Stop price (use if/else instead of switch)
+stopPrice_raw =
+     stopMethod == "ATR x"        ? (isLong ? entry - atrMult*atr : entry + atrMult*atr) :
+     stopMethod == "% from Entry" ? (isLong ? entry - entry*(stopPct/100.0) : entry + entry*(stopPct/100.0)) :
+     stopMethod == "Fixed Ticks"  ? (isLong ? entry - stopTicks*syminfo.mintick : entry + stopTicks*syminfo.mintick) :
+                                    manualStop
+
+validEntry = not na(entry)
+validStop  = not na(stopPrice_raw) and (stopPrice_raw != entry)
+stopPrice  = validStop ? stopPrice_raw : na
+
+priceRisk  = validEntry and validStop ? abs(entry - stopPrice) : na
+riskPerUnit= na(priceRisk) ? na : priceRisk*pointValue + slipPerUnit
+riskDoll   = acctEquity * (riskPct/100.0)
+
+// Position size (round down to step, enforce min)
+rawQty     = na(riskPerUnit) or riskPerUnit <= 0 ? na : (riskDoll / riskPerUnit)
+qtyRounded = na(rawQty) ? na : max(minQty, floor(rawQty/qtyStep)*qtyStep)
+
+// Target (R multiple)
+targetPrice = validEntry and validStop ? (isLong ? entry + (entry - stopPrice)*rrTarget
+                                                 : entry - (stopPrice - entry)*rrTarget) : na
+
+//==============================
+// Lines (v4-safe)
+//==============================
+extMode = extendRight ? extend.right : extend.none
+
+var line lnEntry  = na
+var line lnStop   = na
+var line lnTarget = na
+
+if barstate.islast
+    if not na(lnEntry)
+        line.delete(lnEntry)
+    if not na(lnStop)
+        line.delete(lnStop)
+    if not na(lnTarget)
+        line.delete(lnTarget)
+
+    if validEntry
+        lnEntry  := line.new(x1=bar_index, y1=entry, x2=bar_index+1, y2=entry, extend=extMode, color=entryCol, width=2)
+    if validStop
+        lnStop   := line.new(x1=bar_index, y1=stopPrice, x2=bar_index+1, y2=stopPrice, extend=extMode, color=stopCol, width=2)
+    if validEntry and validStop
+        lnTarget := line.new(x1=bar_index, y1=targetPrice, x2=bar_index+1, y2=targetPrice, extend=extMode, color=targetCol, width=2)
+
+//==============================
+// Labels (simple v4-safe)
+//==============================
+makeLabel(txt, price, col) =>
+    label.new(bar_index, price, txt, textcolor=color.white, color=col, style=label.style_label_left)
+
+if barstate.islast and showLabels and validEntry and validStop
+    makeLabel("ENTRY: "  + tostring(entry),      entry,      entryCol)
+    makeLabel("STOP: "   + tostring(stopPrice),  stopPrice,  stopCol)
+    makeLabel("TARGET: " + tostring(targetPrice) + " (" + tostring(rrTarget) + "R)", targetPrice, targetCol)
+
+    // Basic stats as labels (since v4 tables are limited)
+    lossAtSL = na(qtyRounded) or na(riskPerUnit) ? na : qtyRounded*riskPerUnit
+    winAtTP  = na(qtyRounded) or na(priceRisk)   ? na : qtyRounded*(priceRisk*pointValue)*rrTarget
+    makeLabel("Qty: " + (na(qtyRounded) ? "n/a" : tostring(qtyRounded)),           na(lnEntry) ? close : entry, entryCol)
+    makeLabel("Risk $: " + tostring(riskDoll),                                   na(lnStop)  ? close : stopPrice, stopCol)
+    makeLabel("~Loss@SL: " + (na(lossAtSL) ? "n/a" : "-" + tostring(lossAtSL)),  na(lnStop)  ? close : stopPrice, stopCol)
+    makeLabel("~Win@TP: "  + (na(winAtTP)  ? "n/a" : tostring(winAtTP)),         na(lnTarget)? close : targetPrice, targetCol)
+
+//==============================
+// Alerts (v4-safe)
+//==============================
+hitTP = validEntry and validStop and ((isLong  and high >= targetPrice) or (isShort and low <= targetPrice))
+hitSL = validEntry and validStop and ((isLong  and low  <= stopPrice)   or (isShort and high >= stopPrice))
+
+alertcondition(hitTP, title="Target Hit", message="Target price reached")
+alertcondition(hitSL, title="Stop Hit",   message="Stop price breached")
