@@ -248,3 +248,57 @@ WHERE END_OF_MONTH_DATE = DATE '2025-07-31'
 GROUP BY END_OF_MONTH_DATE, BANK_CODE, GL_ACCOUNT
 
 ORDER BY 1, 2, 9, 10;  -- Grain, END_OF_MONTH_DATE, Common_Key, Common_Key2
+
+
+
+
+
+// Controls (keep as-is or swap to What-If params)
+Anom Window Months := 12
+Anom Z Threshold   := 3.0
+Anom Min $         := 250000
+Anom Min Points    := 3   // require at least 3 months to compute z-score
+
+// Helper: last selected EOM (or overall max if none selected)
+Last EOM :=
+VAR e = MAX ( 'MonthEnd'[EOM] )
+RETURN IF ( ISBLANK(e), CALCULATE( MAX('MonthEnd'[EOM]), ALL('MonthEnd') ), e )
+
+// Table of the last W month-ends up to Last EOM
+Anom Window Table :=
+VAR W = [Anom Window Months]
+RETURN
+DATESINPERIOD ( 'MonthEnd'[EOM], [Last EOM], -1 * W, MONTH )
+
+// Build a vector of MoM % for that grain over the window (nonblank only)
+Source MoM % Vector :=
+VAR Win = [Anom Window Table]
+RETURN
+FILTER (
+    ADDCOLUMNS (
+        Win,
+        "__x", CALCULATE ( [Source Delta %] )   // evaluated per EOM row at current grain
+    ),
+    NOT ISBLANK ( [__x] )
+)
+
+// Rolling mean & stdev over nonblank points only; require minimum points
+Source MoM % Rolling Mean :=
+VAR V = [Source MoM % Vector]
+VAR N = COUNTROWS ( V )
+RETURN IF ( N < [Anom Min Points], BLANK(), AVERAGEX ( V, [__x] ) )
+
+Source MoM % Rolling StDev :=
+VAR V = [Source MoM % Vector]
+VAR N = COUNTROWS ( V )
+RETURN IF ( N < [Anom Min Points], BLANK(), STDEVX.P ( V, [__x] ) )
+
+// Z-score (absolute too)
+Source MoM % Z :=
+VAR mu = [Source MoM % Rolling Mean]
+VAR sd = [Source MoM % Rolling StDev]
+VAR x  = [Source Delta %]
+RETURN IF ( ISBLANK(mu) || ISBLANK(sd) || sd = 0 || ISBLANK(x), BLANK(), ( x - mu ) / sd )
+
+Source MoM % Z Abs :=
+IF ( ISBLANK([Source MoM % Z]), BLANK(), ABS([Source MoM % Z]) )
