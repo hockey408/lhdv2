@@ -500,3 +500,87 @@ SWITCH (
     [Record Delta % Abs] < [Threshold % Small] && [Source Delta % Abs] >= [Threshold % Large],  1,   // $ moved
     0
 )
+
+
+
+
+
+// -----------------------------
+// Window controls (What-If optional)
+// -----------------------------
+// If you don't want to create parameters yet, these constants will be used.
+Anom Window Months := 12
+Anom Z Threshold (Default) := 3.0
+Anom Min $ (Default) := 250000
+
+// If you DO add What-If parameters later, replace the defaults:
+// Anom Z Threshold := SELECTEDVALUE(AnomZParam[Z], 3.0)
+// Anom Min $       := SELECTEDVALUE(AnomMinDollar[Amount], 250000)
+// Window Months    := SELECTEDVALUE(AnomWindowParam[Months], 12)
+
+// -----------------------------
+// Rolling context for the current filter grain
+// (respects BANK_CODE / CONTRACT_SOURCE_SYSTEM / GL_ACCOUNT_CODE in the matrix)
+// -----------------------------
+Source MoM % Rolling Mean :=
+VAR W  = [Anom Window Months]
+VAR P  = DATESINPERIOD ( 'Date'[Date], MAX('Date'[Date]), -W, MONTH )
+RETURN AVERAGEX ( P, [Source Delta %] )
+
+Source MoM % Rolling StDev :=
+VAR W  = [Anom Window Months]
+VAR P  = DATESINPERIOD ( 'Date'[Date], MAX('Date'[Date]), -W, MONTH )
+RETURN STDEVX.P ( P, [Source Delta %] )
+
+// Z-score of current MoM % vs rolling history
+Source MoM % Z :=
+VAR mu = [Source MoM % Rolling Mean]
+VAR sd = [Source MoM % Rolling StDev]
+VAR x  = [Source Delta %]
+RETURN IF ( sd = 0 || ISBLANK(sd) || ISBLANK(x), BLANK(), ( x - mu ) / sd )
+
+// Absolute versions for web CF and thresholding
+Source MoM % Abs := IF( ISBLANK([Source Delta %]), BLANK(), ABS([Source Delta %]) )
+Source MoM % Z Abs := IF( ISBLANK([Source MoM % Z]), BLANK(), ABS([Source MoM % Z]) )
+
+// Thresholds (swap to param measures later if you add them)
+Anom Z Threshold := [Anom Z Threshold (Default)]
+Anom Min $       := [Anom Min $ (Default)]
+
+// Primary anomaly flag: requires high Z AND meaningful $ impact
+Source Anomaly Flag :=
+VAR hitZ  = [Source MoM % Z Abs] >= [Anom Z Threshold]
+VAR hit$  = ABS ( [Source Delta $] ) >= [Anom Min $]
+RETURN 
+SWITCH ( TRUE(),
+    ISBLANK([Source MoM % Z Abs]) || ISBLANK([Source Delta $]), BLANK(),
+    hitZ && hit$, 1,
+    0
+)
+
+// Severity bucket (nice for legend or conditional formatting)
+Source Anomaly Severity :=
+VAR z = [Source MoM % Z Abs]
+VAR d = ABS([Source Delta $])
+RETURN
+SWITCH ( TRUE(),
+    ISBLANK(z) || ISBLANK(d), BLANK(),
+    z >= [Anom Z Threshold] + 1 && d >= [Anom Min $] * 2, "High",
+    z >= [Anom Z Threshold]     && d >= [Anom Min $],     "Medium",
+    "None"
+)
+
+// Convenience counts / KPIs
+Anomaly Count :=
+CALCULATE ( COUNTROWS ( VALUES ( FactMonthly[GL_ACCOUNT_CODE] ) ), [Source Anomaly Flag] = 1 )
+
+Anomaly Total $ Impact :=
+CALCULATE ( SUMX ( VALUES(FactMonthly[GL_ACCOUNT_CODE]), ABS([Source Delta $]) ), [Source Anomaly Flag] = 1 )
+
+// Web-safe color for highlighting (field value or rules)
+Source Anomaly Color :=
+SWITCH ( [Source Anomaly Severity],
+    "High",   "#8B0000",   // dark red
+    "Medium", "#C5221F",   // red
+    "#FFFFFF"              // white
+)
