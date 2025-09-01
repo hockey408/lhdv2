@@ -1,3 +1,165 @@
+/* ============================================================
+   3-Way Non-Accrual Reconciliation — Single Tall Result (32 cols)
+   Approach: CREATE TEMP TABLE + INSERT for each section
+   Target: Netezza
+   ============================================================ */
+
+-- Parameters
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'                  AS curr_eom,
+    ADD_MONTHS(DATE '2025-07-31', -1)  AS prev_eom
+),
+
+-- Raw population (current & prior)
+pop_all AS (
+  SELECT
+      End_of_Month_Date,
+      Bank_Code,
+      Account_Name,
+      Contract_Source_System,
+      Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      Instrument_Type,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN (
+          (SELECT curr_eom FROM params),
+          (SELECT prev_eom FROM params)
+        )
+),
+
+curr_na AS (
+  SELECT *
+  FROM pop_all
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+),
+
+prev_na AS (
+  SELECT *
+  FROM pop_all
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+),
+
+-- Enrich with buckets (current)
+enriched AS (
+  SELECT
+    c.*,
+    CASE
+      WHEN Days_Past_Due = 0 THEN 'Zero Days'
+      WHEN Days_Past_Due BETWEEN 1  AND 30  THEN '1-30 Days'
+      WHEN Days_Past_Due BETWEEN 31 AND 90  THEN '31-90 Days'
+      WHEN Days_Past_Due BETWEEN 91 AND 180 THEN '91-180 Days'
+      WHEN Days_Past_Due > 180 THEN '180+ Days'
+      ELSE 'Unknown'
+    END AS Days_Past_Due_Bucket,
+    CASE
+      WHEN Source_System_Balance < 250000 THEN '< $250k'
+      WHEN Source_System_Balance < 500000 THEN '$250k - < $500k'
+      ELSE '>= $500k'
+    END AS Balance_Bucket
+  FROM curr_na c
+),
+
+-- Sanity helpers
+dupes AS (
+  SELECT
+    End_of_Month_Date,
+    Account_Identifier,
+    COUNT(*) AS dup_count
+  FROM enriched
+  GROUP BY 1,2
+  HAVING COUNT(*) > 1
+),
+
+sanity_by_group AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    COUNT(*) AS loans,
+    SUM(Source_System_Balance) AS sum_source_bal,
+    SUM(GL_Balance)            AS sum_gl_bal,
+    SUM(CASE WHEN Days_Past_Due IS NULL THEN 1 ELSE 0 END) AS null_dpd,
+    SUM(CASE WHEN COALESCE(TRIM(CAST(PD_Grade AS VARCHAR(50))), '') IN ('','NA') THEN 1 ELSE 0 END) AS missing_pd_grade,
+    SUM(CASE WHEN ABS(GL_Balance - Source_System_Balance) > 1000 THEN 1 ELSE 0 END) AS gl_src_diff_gt_1k,
+    SUM(CASE WHEN Days_Past_Due = 0 THEN 1 ELSE 0 END) AS dpd_zero
+  FROM enriched
+  GROUP BY 1,2
+),
+
+-- Summaries
+sum_by_dpd AS (
+  SELECT
+    Days_Past_Due_Bucket,
+    COUNT(*) AS loans,
+    SUM(Source_System_Balance) AS balance
+  FROM enriched
+  GROUP BY 1
+),
+
+sum_by_bal_bucket AS (
+  SELECT
+    Balance_Bucket,
+    COUNT(*) AS loans,
+    SUM(Source_System_Balance) AS balance
+  FROM enriched
+  GROUP BY 1
+),
+
+sum_by_bank_system AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    COUNT(*) AS loans,
+    SUM(Source_System_Balance) AS balance
+  FROM enriched
+  GROUP BY 1,2
+),
+
+-- MoM adds/drops/persisting
+mom_diff AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+    COALESCE(c.Account_Name,       p.Account_Name)       AS Account_Name,
+    COALESCE(c.Bank_Code,          p.Bank_Code)          AS Bank_Code,
+    COALESCE(c.Contract_Source_System, p.Contract_Source_System) AS Contract_Source_System,
+    CASE
+      WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'Added (New NA)'
+      WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'Removed (Resolved/Out)'
+      ELSE 'Persisting'
+    END AS NA_Status_Change,
+    p.Source_System_Balance AS Prev_Bal,
+    c.Source_System_Balance AS Curr_Bal
+  FROM curr_na c
+  FULL OUTER JOIN prev_na p
+    ON c.Account_Identifier = p.Account_Identifier
+)
+
+-- ====== materialize temp table with fixed shape ======
+SELECT 1;
+
+
+
+
+
+
+
+
+
+
 WITH base AS (
   SELECT
       End_of_Month_Date,
