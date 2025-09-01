@@ -2,6 +2,41 @@ WITH params AS (
   SELECT DATE '2025-07-31' AS as_of_date
 ),
 base AS (
+  SELECT *
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = (SELECT as_of_date FROM params)
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+)
+SELECT
+  CASE
+    WHEN Source_System_Balance < 250000 THEN '< $250k'
+    WHEN Source_System_Balance < 500000 THEN '$250k - < $500k'
+    ELSE '>= $500k'
+  END AS Balance_Bucket,
+  COUNT(*)                   AS Loans,
+  SUM(Source_System_Balance) AS Balance
+FROM base
+GROUP BY
+  CASE
+    WHEN Source_System_Balance < 250000 THEN '< $250k'
+    WHEN Source_System_Balance < 500000 THEN '$250k - < $500k'
+    ELSE '>= $500k'
+  END
+ORDER BY
+  CASE
+    WHEN MIN(Source_System_Balance) < 250000 THEN 0
+    WHEN MIN(Source_System_Balance) < 500000 THEN 1
+    ELSE 2
+  END;
+
+
+
+WITH params AS (
+  SELECT DATE '2025-07-31' AS as_of_date
+),
+base AS (
   SELECT
       End_of_Month_Date,
       Bank_Code,
