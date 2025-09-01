@@ -404,3 +404,99 @@ SWITCH (
     x <= -0.05, -1,    -- red
     0                  -- neutral
 )
+
+
+
+
+// =======================
+// Phase 4 — Records vs $
+// =======================
+
+// Base totals
+Total Records :=
+SUM ( FactMonthly[RECORD_COUNT] )
+
+Total Source :=
+SUM ( FactMonthly[SOURCE_SYSTEM_BALANCE] )
+
+// Current / Prior month (context-aware via Date[EOM])
+Records (Current Month) :=
+VAR cm = MAX ( 'Date'[EOM] )
+RETURN
+CALCULATE ( [Total Records], KEEPFILTERS ( 'Date'[EOM] = cm ) )
+
+Records (Prior Month) :=
+VAR cm = MAX ( 'Date'[EOM] )
+VAR pm = EOMONTH ( cm, -1 )
+RETURN
+CALCULATE ( [Total Records], KEEPFILTERS ( 'Date'[EOM] = pm ) )
+
+// MoM deltas for record counts
+Record Delta :=
+[Records (Current Month)] - [Records (Prior Month)]
+
+Record Delta % :=
+DIVIDE ( [Record Delta], [Records (Prior Month)] )
+
+// Absolute % (web-friendly CF / scatter X-axis)
+Record Delta % Abs :=
+VAR x = [Record Delta %]
+RETURN IF ( ISBLANK ( x ), BLANK (), ABS ( x ) )
+
+// -----------------------
+// $ side to compare with
+// -----------------------
+
+// If you already have Source (Current/Prior) + Source Delta % from earlier, keep them.
+// Included here for completeness:
+
+Source (Current Month) :=
+VAR cm = MAX ( 'Date'[EOM] )
+RETURN
+CALCULATE ( [Total Source], KEEPFILTERS ( 'Date'[EOM] = cm ) )
+
+Source (Prior Month) :=
+VAR cm = MAX ( 'Date'[EOM] )
+VAR pm = EOMONTH ( cm, -1 )
+RETURN
+CALCULATE ( [Total Source], KEEPFILTERS ( 'Date'[EOM] = pm ) )
+
+Source Delta $ :=
+[Source (Current Month)] - [Source (Prior Month)]
+
+Source Delta % :=
+DIVIDE ( [Source Delta $], [Source (Prior Month)] )
+
+// Absolute % (scatter Y-axis, CF)
+Source Delta % Abs :=
+VAR x = [Source Delta %]
+RETURN IF ( ISBLANK ( x ), BLANK (), ABS ( x ) )
+
+// ---------------------------------------
+// Quality flags / quick anomaly classifiers
+// ---------------------------------------
+
+// Choose tolerance thresholds (you can swap these for a What-If parameter later)
+Threshold % Small := 0.02   // 2%  "small"
+Threshold % Large := 0.05   // 5%  "large"
+
+// Text label describing the quadrant (great for a legend or table)
+Records vs $ Quadrant :=
+SWITCH (
+    TRUE(),
+    ISBLANK ( [Record Delta %] ) || ISBLANK ( [Source Delta %] ), BLANK(),
+    [Record Delta % Abs] >= [Threshold % Large] && [Source Delta % Abs] < [Threshold % Small], "Row spike, $ flat",
+    [Record Delta % Abs] < [Threshold % Small] && [Source Delta % Abs] >= [Threshold % Large], "$ moved, rows flat",
+    [Record Delta % Abs] >= [Threshold % Large] && [Source Delta % Abs] >= [Threshold % Large], "Both moved",
+    "Stable"
+)
+
+// 3-state flag for easy conditional formatting via Rules in the web editor
+Records vs $ Flag :=
+SWITCH (
+    TRUE(),
+    ISBLANK ( [Record Delta %] ) || ISBLANK ( [Source Delta %] ), BLANK(),
+    [Record Delta % Abs] >= [Threshold % Large] && [Source Delta % Abs] < [Threshold % Small], -1,   // row spike
+    [Record Delta % Abs] < [Threshold % Small] && [Source Delta % Abs] >= [Threshold % Large],  1,   // $ moved
+    0
+)
