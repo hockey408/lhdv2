@@ -393,3 +393,417 @@ bucketed AS (
 )
 SELECT *
 FROM bucketed;
+
+
+
+
+
+/* ============================================
+   3-Way Non-Accrual Reconciliation (Single Set)
+   Output: one tall table with Report_Section
+   Target: Netezza
+   ============================================ */
+
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'                AS curr_eom,
+    ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom
+),
+
+pop_all AS (
+  SELECT
+      End_of_Month_Date,
+      Bank_Code,
+      Account_Name,
+      Contract_Source_System,
+      Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      Instrument_Type,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN (
+          (SELECT curr_eom FROM params),
+          (SELECT prev_eom FROM params)
+        )
+),
+
+curr_na AS (
+  SELECT *
+  FROM pop_all
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+),
+
+prev_na AS (
+  SELECT *
+  FROM pop_all
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+),
+
+enriched AS (
+  SELECT
+    c.*,
+    CASE
+      WHEN Days_Past_Due = 0 THEN 'Zero Days'
+      WHEN Days_Past_Due BETWEEN 1  AND 30  THEN '1-30 Days'
+      WHEN Days_Past_Due BETWEEN 31 AND 90  THEN '31-90 Days'
+      WHEN Days_Past_Due BETWEEN 91 AND 180 THEN '91-180 Days'
+      WHEN Days_Past_Due > 180 THEN '180+ Days'
+      ELSE 'Unknown'
+    END AS Days_Past_Due_Bucket,
+    CASE
+      WHEN Source_System_Balance < 250000 THEN '< $250k'
+      WHEN Source_System_Balance < 500000 THEN '$250k - < $500k'
+      ELSE '>= $500k'
+    END AS Balance_Bucket
+  FROM curr_na c
+),
+
+dupes AS (
+  SELECT
+    End_of_Month_Date,
+    Account_Identifier,
+    COUNT(*) AS dup_count
+  FROM enriched
+  GROUP BY 1,2
+  HAVING COUNT(*) > 1
+),
+
+sanity_by_group AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    COUNT(*) AS loans,
+    SUM(Source_System_Balance) AS sum_source_bal,
+    SUM(GL_Balance)            AS sum_gl_bal,
+    SUM(CASE WHEN Days_Past_Due IS NULL THEN 1 ELSE 0 END) AS null_dpd,
+    SUM(CASE WHEN COALESCE(TRIM(CAST(PD_Grade AS VARCHAR(50))), '') IN ('','NA') THEN 1 ELSE 0 END) AS missing_pd_grade,
+    SUM(CASE WHEN ABS(GL_Balance - Source_System_Balance) > 1000 THEN 1 ELSE 0 END) AS gl_src_diff_gt_1k,
+    SUM(CASE WHEN Days_Past_Due = 0 THEN 1 ELSE 0 END) AS dpd_zero
+  FROM enriched
+  GROUP BY 1,2
+),
+
+sum_by_dpd AS (
+  SELECT
+    Days_Past_Due_Bucket,
+    COUNT(*) AS loans,
+    SUM(Source_System_Balance) AS balance
+  FROM enriched
+  GROUP BY 1
+),
+
+sum_by_bal_bucket AS (
+  SELECT
+    Balance_Bucket,
+    COUNT(*) AS loans,
+    SUM(Source_System_Balance) AS balance
+  FROM enriched
+  GROUP BY 1
+),
+
+sum_by_bank_system AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    COUNT(*) AS loans,
+    SUM(Source_System_Balance) AS balance
+  FROM enriched
+  GROUP BY 1,2
+),
+
+mom_diff AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+    COALESCE(c.Account_Name,       p.Account_Name)       AS Account_Name,
+    COALESCE(c.Bank_Code,          p.Bank_Code)          AS Bank_Code,
+    COALESCE(c.Contract_Source_System, p.Contract_Source_System) AS Contract_Source_System,
+    CASE
+      WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'Added (New NA)'
+      WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'Removed (Resolved/Out)'
+      ELSE 'Persisting'
+    END AS NA_Status_Change,
+    p.Source_System_Balance AS Prev_Bal,
+    c.Source_System_Balance AS Curr_Bal
+  FROM curr_na c
+  FULL OUTER JOIN prev_na p
+    ON c.Account_Identifier = p.Account_Identifier
+)
+
+/* ============================================================
+   SINGLE RESULT: UNION ALL of sections with common columns
+   ============================================================ */
+SELECT
+  'DETAIL'::VARCHAR(24)          AS Report_Section,
+  NULL::VARCHAR(64)              AS Subsection,
+  e.End_of_Month_Date,
+  e.Bank_Code,
+  e.Account_Name,
+  e.Contract_Source_System,
+  e.Customer_Number,
+  e.Facility_ID,
+  e.Account_Identifier,
+  e.Account_Key,
+  e.Status_Code_Description,
+  e.Instrument_Type,
+  e.Source_System_Balance,
+  e.GL_Balance,
+  e.Available_Balance,
+  e.Borrower_Risk_Rating,
+  e.PD_Grade,
+  e.Days_Past_Due,
+  e.Non_Accrual_Flag,
+  e.Days_Past_Due_Bucket,
+  e.Balance_Bucket,
+  /* summary/sanity/mom fields (NULL for detail) */
+  NULL::INTEGER                  AS Loans,
+  NULL::NUMERIC(18,2)            AS Balance_Sum,
+  NULL::NUMERIC(18,2)            AS GL_Source_Diff_Sum,
+  NULL::INTEGER                  AS Dup_Count,
+  NULL::INTEGER                  AS Null_DPD,
+  NULL::INTEGER                  AS Missing_PD_Grade,
+  NULL::INTEGER                  AS GL_SRC_Diff_GT_1k,
+  NULL::INTEGER                  AS DPD_Zero,
+  NULL::NUMERIC(18,2)            AS Prev_Bal,
+  NULL::NUMERIC(18,2)            AS Curr_Bal,
+  NULL::VARCHAR(40)              AS NA_Status_Change
+FROM enriched e
+
+UNION ALL
+SELECT
+  'SUMMARY'::VARCHAR(24)         AS Report_Section,
+  'By DPD Bucket'::VARCHAR(64)   AS Subsection,
+  NULL::DATE,
+  NULL::VARCHAR(10),
+  NULL::VARCHAR(200),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(60),
+  NULL::VARCHAR(60),
+  NULL::VARCHAR(200),
+  NULL::VARCHAR(80),
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  NULL::INTEGER,
+  NULL::VARCHAR(1),
+  s.Days_Past_Due_Bucket,
+  NULL::VARCHAR(32),
+  s.loans,
+  s.balance AS Balance_Sum,
+  NULL::NUMERIC(18,2),
+  NULL::INTEGER,
+  NULL::INTEGER,
+  NULL::INTEGER,
+  NULL::INTEGER,
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::VARCHAR(40)
+FROM sum_by_dpd s
+
+UNION ALL
+SELECT
+  'SUMMARY',
+  'By Balance Bucket',
+  NULL::DATE,
+  NULL::VARCHAR(10),
+  NULL::VARCHAR(200),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(60),
+  NULL::VARCHAR(60),
+  NULL::VARCHAR(200),
+  NULL::VARCHAR(80),
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  NULL::INTEGER,
+  NULL::VARCHAR(1),
+  NULL::VARCHAR(32),
+  s.Balance_Bucket,
+  s.loans,
+  s.balance AS Balance_Sum,
+  NULL::NUMERIC(18,2),
+  NULL::INTEGER,
+  NULL::INTEGER,
+  NULL::INTEGER,
+  NULL::INTEGER,
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::VARCHAR(40)
+FROM sum_by_bal_bucket s
+
+UNION ALL
+SELECT
+  'SUMMARY',
+  'By Bank × System',
+  NULL::DATE,
+  s.Bank_Code,
+  NULL::VARCHAR(200),
+  s.Contract_Source_System,
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(60),
+  NULL::VARCHAR(60),
+  NULL::VARCHAR(200),
+  NULL::VARCHAR(80),
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  NULL::INTEGER,
+  NULL::VARCHAR(1),
+  NULL::VARCHAR(32),
+  NULL::VARCHAR(32),
+  s.loans,
+  s.balance AS Balance_Sum,
+  NULL::NUMERIC(18,2),
+  NULL::INTEGER,
+  NULL::INTEGER,
+  NULL::INTEGER,
+  NULL::INTEGER,
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::VARCHAR(40)
+FROM sum_by_bank_system s
+
+UNION ALL
+SELECT
+  'SANITY',
+  'Dupes: EOM + Account_Identifier',
+  d.End_of_Month_Date,
+  NULL::VARCHAR(10),
+  NULL::VARCHAR(200),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  d.Account_Identifier,
+  NULL::VARCHAR(60),
+  NULL::VARCHAR(200),
+  NULL::VARCHAR(80),
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  NULL::INTEGER,
+  NULL::VARCHAR(1),
+  NULL::VARCHAR(32),
+  NULL::VARCHAR(32),
+  NULL::INTEGER,
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  d.dup_count AS Dup_Count,
+  NULL::INTEGER,
+  NULL::INTEGER,
+  NULL::INTEGER,
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::VARCHAR(40)
+FROM dupes d
+
+UNION ALL
+SELECT
+  'SANITY',
+  'Group Quality: Bank × System',
+  NULL::DATE,
+  s.Bank_Code,
+  NULL::VARCHAR(200),
+  s.Contract_Source_System,
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(60),
+  NULL::VARCHAR(60),
+  NULL::VARCHAR(200),
+  NULL::VARCHAR(80),
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  NULL::INTEGER,
+  NULL::VARCHAR(1),
+  NULL::VARCHAR(32),
+  NULL::VARCHAR(32),
+  s.loans,
+  NULL::NUMERIC(18,2),
+  (s.sum_gl_bal - s.sum_source_bal) AS GL_Source_Diff_Sum,
+  NULL::INTEGER,
+  s.null_dpd      AS Null_DPD,
+  s.missing_pd_grade AS Missing_PD_Grade,
+  s.gl_src_diff_gt_1k AS GL_SRC_Diff_GT_1k,
+  s.dpd_zero      AS DPD_Zero,
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::VARCHAR(40)
+FROM sanity_by_group s
+
+UNION ALL
+SELECT
+  'MOM',
+  'Adds/Drops/Persisting',
+  NULL::DATE,
+  m.Bank_Code,
+  m.Account_Name,
+  m.Contract_Source_System,
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  m.Account_Identifier,
+  NULL::VARCHAR(60),
+  NULL::VARCHAR(200),
+  NULL::VARCHAR(80),
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::VARCHAR(40),
+  NULL::VARCHAR(40),
+  NULL::INTEGER,
+  NULL::VARCHAR(1),
+  NULL::VARCHAR(32),
+  NULL::VARCHAR(32),
+  NULL::INTEGER,
+  NULL::NUMERIC(18,2),
+  NULL::NUMERIC(18,2),
+  NULL::INTEGER,
+  NULL::INTEGER,
+  NULL::INTEGER,
+  NULL::INTEGER,
+  m.Prev_Bal,
+  m.Curr_Bal,
+  m.NA_Status_Change
+FROM mom_diff m
+
+ORDER BY
+  /* tidy default sort: section order, then useful keys */
+  CASE Report_Section
+    WHEN 'DETAIL' THEN 0
+    WHEN 'SUMMARY' THEN 1
+    WHEN 'SANITY' THEN 2
+    WHEN 'MOM' THEN 3
+    ELSE 9
+  END,
+  Subsection NULLS LAST,
+  Bank_Code NULLS LAST,
+  Contract_Source_System NULLS LAST,
+  Days_Past_Due_Bucket NULLS LAST,
+  Balance_Bucket NULLS LAST,
+  Account_Identifier NULLS LAST;
