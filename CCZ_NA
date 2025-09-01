@@ -302,3 +302,45 @@ RETURN IF ( ISBLANK(mu) || ISBLANK(sd) || sd = 0 || ISBLANK(x), BLANK(), ( x - m
 
 Source MoM % Z Abs :=
 IF ( ISBLANK([Source MoM % Z]), BLANK(), ABS([Source MoM % Z]) )
+
+
+
+
+
+
+WITH base AS (
+  SELECT
+      End_of_Month_Date,
+      Bank_Code,
+      Account_Name,
+      Contract_Source_System,
+      Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      Instrument_Type,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+    AND SOURCE_SYSTEM_BALANCE > '0'
+),
+bucketed AS (
+  SELECT
+      b.*,
+      CASE
+        WHEN Source_System_Balance < 250000 THEN '< $250k'
+        WHEN Source_System_Balance < 500000 THEN '$250k–< $500k'
+        ELSE '≥ $500k'
+      END AS balance_bucket
+  FROM base b
+)
+SELECT * FROM bucketed;
