@@ -149,3 +149,170 @@ if showDebug and barstate.islast
          "\nPull%: " + str.tostring(pullPct, format.mintick) +
          "\nQty: " + str.tostring(qty, format.mintick),
          style=label.style_label_down, color=color.new(color.silver, 0), textcolor=color.black)
+
+
+
+
+//@version=5
+indicator("Trade Planner: Position Size, Stop, Target (v1)", overlay=true, max_labels_count=500, max_lines_count=500)
+
+//==============================
+// Inputs
+//==============================
+// --- Account & Risk
+acctEquity      = input.float(25000.0, "Account Equity ($)", minval=0)
+riskPct         = input.float(1.0, "Risk per Trade (%)", minval=0.01, step=0.05)
+slipPerUnit     = input.float(0.00, "Slippage per Unit ($)", minval=0.0, tooltip="Optional: per-share/contract slippage to include in risk per unit")
+
+// --- Direction & Prices
+dir             = input.string("Long", "Trade Direction", options=["Long","Short"])
+useCloseEntry   = input.bool(true, "Use current close as Entry?")
+manualEntry     = input.float(na, "Manual Entry Price", step=syminfo.mintick)
+entryPrice      = useCloseEntry ? close : manualEntry
+
+// --- Stop Method
+stopMethod      = input.string("ATR x", "Stop Method", options=["ATR x","% from Entry","Fixed Ticks","Manual Price"])
+atrLen          = input.int(14, "ATR Length", minval=1)
+atrMult         = input.float(1.5, "ATR Multiple", step=0.1)
+stopPct         = input.float(2.0, "Stop % (from Entry)", step=0.1, tooltip="% distance from entry")
+stopTicks       = input.int(20, "Stop Ticks", minval=1)
+manualStop      = input.float(na, "Manual Stop Price", step=syminfo.mintick)
+
+// --- Target
+rrTarget        = input.float(2.0, "Target R Multiple", minval=0.1, step=0.1)
+
+// --- Instrument value-per-point
+assetType       = input.string("Auto (symbol)", "Instrument Value/Point", options=["Auto (symbol)","Stocks/Crypto (=1)","Custom"])
+customPointVal  = input.float(5.0, "Custom Point Value ($/point)", minval=0.000001, tooltip="For futures like MES=5, ES=50, NQ=20, CL=1000, GC=100, etc.")
+qtyStep         = input.float(1.0, "Quantity Step (lot size)", minval=0.000001, tooltip="Min increment for units/contracts. Stocks=1, many crypto=0.001, etc.")
+minQty          = input.float(1.0, "Min Quantity", minval=0.000001)
+
+// --- Visuals
+showTable       = input.bool(true, "Show Info Table")
+showLabels      = input.bool(true, "Show Price Labels")
+extendLines     = input.bool(true, "Extend Lines Right")
+lineColorEntry  = color.new(color.blue, 0)
+lineColorStop   = color.new(color.red, 0)
+lineColorTarget = color.new(color.green, 0)
+
+//==============================
+// Helpers
+//==============================
+isLong  = dir == "Long"
+isShort = not isLong
+
+float getPointValue() =>
+    assetType == "Stocks/Crypto (=1)" ? 1.0 :
+     assetType == "Custom" ? customPointVal :
+      // Auto: try symbol pointvalue; fallback to 1.0 if missing
+      na(syminfo.pointvalue) ? 1.0 : syminfo.pointvalue
+
+// Determine stop price
+atr = ta.atr(atrLen)
+float calcStopPrice(float entry) =>
+    switch stopMethod
+        "ATR x"         => isLong ? entry - atrMult * atr : entry + atrMult * atr
+        "% from Entry"  => 
+            dist = entry * (stopPct / 100.0)
+            isLong ? entry - dist : entry + dist
+        "Fixed Ticks"   =>
+            dist = stopTicks * syminfo.mintick
+            isLong ? entry - dist : entry + dist
+        =>  // "Manual Price"
+            manualStop
+
+// Safety: ensure we have entry/stop
+validEntry = na(entryPrice) ? false : true
+stopPrice  = calcStopPrice(entryPrice)
+validStop  = na(stopPrice)  ? false : stopPrice != entryPrice
+
+// Risk per unit (share/contract/coin)
+pointVal   = getPointValue()
+priceRisk  = validEntry and validStop ? math.abs(entryPrice - stopPrice) : na
+riskPerUnit= na(priceRisk) ? na : priceRisk * pointVal + slipPerUnit
+
+// Risk budget
+riskDollars = acctEquity * (riskPct / 100.0)
+
+// Position size (rounded to lot step, min qty enforced)
+rawQty      = na(riskPerUnit) or riskPerUnit <= 0 ? na : riskDollars / riskPerUnit
+qtyRounded  = na(rawQty) ? na : math.max(minQty, math.floor(rawQty / qtyStep) * qtyStep)
+
+// Target price by R multiple
+float calcTarget(float entry, float stop, float r) =>
+    rrDist = (entry - stop) * r
+    isLong ? entry + rrDist : entry - rrDist
+
+targetPrice = validEntry and validStop ? calcTarget(entryPrice, stopPrice, rrTarget) : na
+
+//==============================
+// Plot Lines & Labels
+//==============================
+line_style = extendLines ? extend.right : extend.none
+
+var line lineEntry  = na
+var line lineStop   = na
+var line lineTarget = na
+
+if barstate.islast
+    line.delete(lineEntry)
+    line.delete(lineStop)
+    line.delete(lineTarget)
+    if validEntry
+        lineEntry := line.new(bar_index, entryPrice, bar_index+1, entryPrice, extend=line_style, color=lineColorEntry, width=2)
+    if validStop
+        lineStop  := line.new(bar_index, stopPrice,  bar_index+1, stopPrice,  extend=line_style, color=lineColorStop, width=2)
+    if validEntry and validStop
+        lineTarget:= line.new(bar_index, targetPrice, bar_index+1, targetPrice, extend=line_style, color=lineColorTarget, width=2)
+
+// Labels
+f_label(_txt, _price, _col) =>
+    label.new(bar_index, _price, _txt, textcolor=color.white, color=_col, style=label.style_label_left)
+
+if barstate.islast and showLabels and validEntry and validStop
+    f_label("ENTRY: "  + str.tostring(entryPrice, format.mintick), entryPrice, lineColorEntry)
+    f_label("STOP: "   + str.tostring(stopPrice,  format.mintick), stopPrice,  lineColorStop)
+    f_label("TARGET: " + str.tostring(targetPrice,format.mintick) + " (" + str.tostring(rrTarget, "#.##") + "R)", targetPrice, lineColorTarget)
+
+//==============================
+// Stats Table
+//==============================
+var table t = table.new(position.top_right, 1, 8, border_width=1)
+if barstate.islast and showTable
+    table.clear(t)
+    row = 0
+    addRow(title, value) =>
+        table.cell(t, 0, row, title + ": " + value, text_color=color.white)
+        row += 1
+
+    addRow("Direction",        dir)
+    addRow("Entry",            validEntry ? str.tostring(entryPrice, format.mintick) : "n/a")
+    addRow("Stop",             validStop  ? str.tostring(stopPrice,  format.mintick) : "n/a")
+    addRow("Risk/Unit ($)",    na(riskPerUnit) ? "n/a" : str.tostring(riskPerUnit, "#.####"))
+    addRow("Risk Budget ($)",  str.tostring(riskDollars, "#.##"))
+    addRow("Qty",              na(qtyRounded) ? "n/a" : str.tostring(qtyRounded, "#.########"))
+    addRow("Target (R="+str.tostring(rrTarget,"#.##")+")", validEntry and validStop ? str.tostring(targetPrice, format.mintick) : "n/a")
+    // Projected P/L at TP or SL
+    projLoss = na(qtyRounded) or na(riskPerUnit) ? na : qtyRounded * riskPerUnit
+    projWin  = na(qtyRounded) or na(priceRisk)   ? na : qtyRounded * (priceRisk * pointVal) * rrTarget
+    addRow("~Loss @ SL ($)",   na(projLoss) ? "n/a" : "-" + str.tostring(projLoss, "#.##"))
+    addRow("~Win @ TP ($)",    na(projWin)  ? "n/a" : str.tostring(projWin, "#.##"))
+
+//==============================
+// Alerts
+//==============================
+// A bar can hit the level intrabar. Use high/low checks.
+hitTP = validEntry and validStop and ((isLong  and high >= targetPrice) or (isShort and low <= targetPrice))
+hitSL = validEntry and validStop and ((isLong  and low  <= stopPrice)   or (isShort and high >= stopPrice))
+
+alertcondition(hitTP, title="Target Hit", message="Target price reached")
+alertcondition(hitSL, title="Stop Hit",   message="Stop price breached")
+
+//==============================
+// Notes
+//==============================
+// • For futures, set 'Instrument Value/Point' to Auto (symbol) if your symbol exposes point value.
+//   Otherwise choose 'Custom' and set the per-point value ($/point). Examples: MES=5, ES=50, NQ=20, CL=1000, GC=100.
+// • Quantity is rounded down to your 'Quantity Step' and not less than 'Min Quantity'.
+// • Slippage per unit is added to risk per unit so your size accounts for it.
+// • For manual entry/stop, uncheck 'Use current close as Entry?' and/or choose 'Manual Price' for the stop.
