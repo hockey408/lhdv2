@@ -344,3 +344,52 @@ bucketed AS (
   FROM base b
 )
 SELECT * FROM bucketed;
+
+
+
+
+WITH base AS (
+  SELECT
+      End_of_Month_Date,
+      Bank_Code,
+      Account_Name,
+      Contract_Source_System,
+      Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      Instrument_Type,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = DATE '2025-07-31'
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0       -- numeric compare
+),
+bucketed AS (
+  SELECT
+      b.*,
+      CASE
+        WHEN Source_System_Balance < 250000 THEN '< $250k'
+        WHEN Source_System_Balance < 500000 THEN '$250k–< $500k'
+        ELSE '≥ $500k'
+      END AS balance_bucket,
+      CASE
+        WHEN Days_Past_Due = 0 THEN 'Zero Days'
+        WHEN Days_Past_Due BETWEEN 1 AND 30 THEN '1-30 Days'
+        WHEN Days_Past_Due BETWEEN 31 AND 90 THEN '31-90 Days'
+        WHEN Days_Past_Due BETWEEN 91 AND 180 THEN '91-180 Days'
+        WHEN Days_Past_Due > 180 THEN '180+ Days'
+        ELSE 'Unknown'  -- handles NULLs or unexpected values
+      END AS days_past_due_bucket
+  FROM base b
+)
+SELECT *
+FROM bucketed;
