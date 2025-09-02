@@ -1,3 +1,99 @@
+WITH base AS (
+  SELECT
+      CAST(END_OF_MONTH_DATE AS DATE)                     AS EOM,
+      BANK_CODE,
+      CONTRACT_SOURCE_SYSTEM,
+      GL_ACCOUNT_CODE,
+      CAST(SOURCE_SYSTEM_BALANCE AS DECIMAL(18,2))        AS SOURCE_SYSTEM_BALANCE
+  FROM V_DPRT_CREDIT_INSTRUMENTS
+  WHERE END_OF_MONTH_DATE BETWEEN DATE '2024-08-31' AND DATE '2025-07-31'
+),
+
+deltas AS (
+  SELECT
+      EOM,
+      BANK_CODE,
+      CONTRACT_SOURCE_SYSTEM,
+      GL_ACCOUNT_CODE,
+      SOURCE_SYSTEM_BALANCE,
+      LAG(SOURCE_SYSTEM_BALANCE) OVER (
+        PARTITION BY BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE
+        ORDER BY EOM
+      )                                                   AS PREV_BAL
+  FROM base
+),
+
+calc AS (
+  SELECT
+      EOM,
+      BANK_CODE,
+      CONTRACT_SOURCE_SYSTEM,
+      GL_ACCOUNT_CODE,
+      SOURCE_SYSTEM_BALANCE,
+      PREV_BAL,
+      /* $ delta stays in DECIMAL(18,2) */
+      (SOURCE_SYSTEM_BALANCE - PREV_BAL)                  AS DELTA_DOLLARS,
+      /* % delta computed in DOUBLE PRECISION to avoid DECIMAL precision blowup */
+      CASE
+        WHEN PREV_BAL IS NULL OR PREV_BAL = 0 THEN NULL
+        ELSE
+          (
+            CAST(SOURCE_SYSTEM_BALANCE AS DOUBLE PRECISION)
+            - CAST(PREV_BAL AS DOUBLE PRECISION)
+          )
+          / NULLIF(ABS(CAST(PREV_BAL AS DOUBLE PRECISION)), 0.0)
+      END                                                 AS DELTA_PCT
+  FROM deltas
+),
+
+roll AS (
+  SELECT
+      c.*,
+      /* rolling 12 values (current + 11 prior), all in DOUBLE PRECISION */
+      AVG(DELTA_PCT) OVER (
+        PARTITION BY BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE
+        ORDER BY EOM
+        ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+      )::DOUBLE PRECISION                                 AS MEAN_12,
+      STDDEV(DELTA_PCT) OVER (
+        PARTITION BY BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE
+        ORDER BY EOM
+        ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+      )::DOUBLE PRECISION                                 AS STDEV_12
+  FROM calc c
+)
+
+SELECT
+  EOM,
+  BANK_CODE,
+  CONTRACT_SOURCE_SYSTEM,
+  GL_ACCOUNT_CODE,
+  SOURCE_SYSTEM_BALANCE,      -- DECIMAL(18,2)
+  PREV_BAL,                   -- DECIMAL(18,2)
+  DELTA_DOLLARS,              -- DECIMAL(18,2)
+  DELTA_PCT,                  -- DOUBLE PRECISION
+  MEAN_12,                    -- DOUBLE PRECISION
+  STDEV_12,                   -- DOUBLE PRECISION
+  CASE
+    WHEN STDEV_12 IS NULL OR STDEV_12 = 0 OR DELTA_PCT IS NULL THEN NULL
+    ELSE (DELTA_PCT - MEAN_12) / STDEV_12
+  END                         AS Z_SCORE,         -- DOUBLE PRECISION
+  CASE
+    WHEN ABS(DELTA_DOLLARS) >= 250000
+         AND CASE
+               WHEN STDEV_12 IS NULL OR STDEV_12 = 0 OR DELTA_PCT IS NULL THEN NULL
+               ELSE ABS((DELTA_PCT - MEAN_12) / STDEV_12)
+             END >= 3
+    THEN 1 ELSE 0
+  END                         AS ANOMALY_FLAG
+FROM roll
+ORDER BY EOM, BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE;
+
+
+
+
+
+
 -- Option C (revised) — safe types to avoid "numeric value requires more than 38 digits"
 
 WITH base AS (
