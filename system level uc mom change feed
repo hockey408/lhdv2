@@ -1,3 +1,33 @@
+set Nocount on				
+set Nocount on				
+				
+declare @businessDate as datetime				
+Set @businessDate = '08/31/2025'				
+				
+select 				
+a.LoadDate, 				
+a.ApplID, 				
+a.cif, 				
+a.CreditLineNumber ,				
+left(a.LineDescription,20) as LineDescription ,				
+a.GrossBorrowingBase,				
+a.NetBorrowingBase,				
+a.CommitmentParticipationSold,				
+a.FormulaLine 				
+from [CRDLMTUFCALC].[dbo].[CREDIT_LINE_MONTHLY] a				
+left join				
+[CRDLMTUFCALC].[dbo].[CALCULATED_UNFUNDED] b				
+on a.LoadDate = b.LoadDate and a.CreditLineNumber = b.CreditLineNumber				
+where a.LoadDate = @businessDate		and 		
+          a.ApplID = 'LN' and --cbs lines				
+		  a.FormulaLine = 1		
+order by Cif				
+				
+
+
+
+
+
 /* ===== Last 12 months MoM by System with $/% changes & ≥5% abs flag ===== */
 WITH bounds AS (
     SELECT AsOfMonthEnd = (SELECT MAX(m.LoadDate) FROM CRDLMTUFCALC.dbo.Credit_Line_Monthly AS m)
