@@ -3,6 +3,38 @@ WITH params AS (
 ),
 base AS (
   SELECT
+      Customer_Number,
+      SUM(Source_System_Balance) AS Borrower_Total_Balance,
+      COUNT(DISTINCT Account_Identifier) AS Loan_Count
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = (SELECT as_of_date FROM params)
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+  GROUP BY Customer_Number
+)
+SELECT
+  Customer_Number,
+  Loan_Count,
+  Borrower_Total_Balance,
+  CASE
+    WHEN Borrower_Total_Balance < 250000 THEN 'Borrower < $250k'
+    WHEN Borrower_Total_Balance < 500000 THEN 'Borrower $250k - < $500k'
+    ELSE 'Borrower >= $500k'
+  END AS Borrower_Balance_Bucket
+FROM base
+ORDER BY Borrower_Total_Balance DESC;
+
+
+
+
+
+
+WITH params AS (
+  SELECT DATE '2025-07-31' AS as_of_date
+),
+base AS (
+  SELECT
       End_of_Month_Date,
       Bank_Code,
       Account_Name,
