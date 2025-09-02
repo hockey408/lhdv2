@@ -1,4 +1,62 @@
 WITH params AS (
+  SELECT DATE '2025-07-31' AS as_of_date
+),
+base AS (
+  SELECT
+      End_of_Month_Date,
+      Bank_Code,
+      Account_Name,
+      Contract_Source_System,
+      Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      Instrument_Type,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE END_OF_MONTH_DATE = (SELECT as_of_date FROM params)
+    AND GL_ACCOUNT_HIER_LEVEL_4 in ('Total Loans','Lns Held for Sale')
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+enriched AS (
+  SELECT
+    b.*,
+    CASE
+      WHEN Days_Past_Due = 0 THEN 'Zero Days'
+      WHEN Days_Past_Due BETWEEN 1  AND 30  THEN '1-30 Days'
+      WHEN Days_Past_Due BETWEEN 31 AND 90  THEN '31-90 Days'
+      WHEN Days_Past_Due BETWEEN 91 AND 180 THEN '91-180 Days'
+      WHEN Days_Past_Due > 180 THEN '180+ Days'
+      ELSE 'Unknown'
+    END AS Days_Past_Due_Bucket,
+    CASE
+      WHEN Source_System_Balance < 250000 THEN '< $250k'
+      WHEN Source_System_Balance < 500000 THEN '$250k - < $500k'
+      ELSE '>= $500k'
+    END AS Balance_Bucket
+  FROM base b
+)
+SELECT *
+FROM enriched
+ORDER BY Bank_Code, Account_Name, Account_Identifier;
+
+
+
+
+
+
+
+
+
+WITH params AS (
   SELECT
     DATE '2025-07-31'                 AS curr_eom,
     ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom
