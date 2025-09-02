@@ -1,3 +1,33 @@
+SET NOCOUNT ON;				
+
+DECLARE @MaxRunID INT;				
+
+SELECT @MaxRunID = MAX(RunID)
+FROM [CRDLMTUFCALC].[dbo].[CREDIT_LINE_MONTHLY];
+
+SELECT 				
+    a.LoadDate, 				
+    a.ApplID, 				
+    a.cif, 				
+    a.CreditLineNumber,				
+    LEFT(a.LineDescription,20) AS LineDescription,				
+    a.GrossBorrowingBase,				
+    a.NetBorrowingBase,				
+    a.CommitmentParticipationSold,				
+    a.FormulaLine 				
+FROM [CRDLMTUFCALC].[dbo].[CREDIT_LINE_MONTHLY] a				
+LEFT JOIN [CRDLMTUFCALC].[dbo].[CALCULATED_UNFUNDED] b				
+    ON a.LoadDate = b.LoadDate 
+   AND a.CreditLineNumber = b.CreditLineNumber				
+WHERE a.RunID = @MaxRunID
+  AND a.ApplID = 'LN'  -- CBS lines				
+  AND a.FormulaLine = 1		
+ORDER BY a.Cif;
+
+
+
+
+
 set Nocount on				
 set Nocount on				
 				
