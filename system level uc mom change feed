@@ -1,3 +1,43 @@
+If(OBJECT_ID('tempdb..#FLUX') Is Not Null)	
+Begin Drop Table #FLUX End	
+	
+If(OBJECT_ID('tempdb..#CARDS') Is Not Null)	
+Begin Drop Table #CARDS End	
+	
+	
+DECLARE @system NVARCHAR (150)	
+DECLARE @current_period AS DATETIME SET @current_period  = '8/31/2025' --loan date	
+DECLARE @prior_period AS DATETIME SET @prior_period  = '7/31/2025' --loan date	
+	
+select distinct LOADDT,CUST_LINE_NBR 	
+INTO #CARDS 	
+from CRDADMPRD.CRDADMPRD.dbo.CDM_CARDS_LOAN	
+where cast(loaddt as date) in ( @current_period	,@prior_period)
+	
+	
+SELECT a.LoadDate, a.CreditLineNumber,(a.NetUtilized + b.SECUnfunded) as commitment,a.NetUtilized, b.SecUnfunded, a.ApplID,@system as system	
+ INTO #FLUX 	
+  FROM [CRDLMTUFCALC].[dbo].[CREDIT_LINE_MONTHLY] a	
+  left join 	
+     [CRDLMTUFCALC].[dbo].[CALCULATED_UNFUNDED] b	
+	on a.LoadDate = b.LoadDate and a.CreditLineNumber = b.CreditLineNumber
+	where cast(a.LoadDate as date) in (@current_period,@prior_period)
+	
+update #FLUX set system  = 'Cards' from #CARDS a inner join #FLUX b on a.CUST_LINE_NBR = CreditLineNumber and cast(a. LOADDT as date)=cast(b.LoadDate as date) where system is null	
+update #FLUX set system  = 'CFD' where ApplID in ('CF')  and  system is null	
+update #FLUX set system  = 'Miser Lines' where ApplID in ('ML')  and  system is null	
+update #FLUX set system  = 'Miser Mortgage' where ApplID in ('MO')  and  system is null	
+update #FLUX set system  = 'iMX' where CreditLineNumber like ('%iMX%')  and  system is null	
+	
+update #FLUX set system  = 'CBS' where ApplID in ('LN')  and  system is null	
+update #FLUX set system  = 'UBS' where ApplID in ('LO')  and  system is null	
+update #FLUX set system  = 'LJ' where ApplID in ('LJ')  and  system is null	
+	
+select * from #FLUX 	
+
+
+
+
 SET NOCOUNT ON;				
 
 DECLARE @MaxRunID INT;				
