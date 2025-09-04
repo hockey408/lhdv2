@@ -1,3 +1,181 @@
+/* ==========================================================
+   Drill-Down Variance Analysis for ONE CreditLine
+   - Pulls last 12 EOM snapshots (plus one extra to get MoM)
+   - Computes MoM_Diff / MoM_Pct
+   - Rolling (prev-12) mean & stdev
+   - Z-score per month vs trailing 12 (excludes the month itself)
+   - Flags: |Z|≥2 (moderate), |Z|≥3 (severe), zero↔nonzero switches
+
+   Assumed tables (SQL Server):
+     CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED   (LoadDate, CreditLineNumber, SecUnfunded)
+     CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY   (LoadDate, CreditLineNumber, CIF, ClientName, ApplID, FormulaLine, BankCode)
+
+   >>> Set @CreditLineNumber below
+========================================================== */
+
+SET NOCOUNT ON;
+
+DECLARE @CreditLineNumber  varchar(64) = '1234567890';  -- << plug your line here
+DECLARE @CurrEOM          date        = EOMONTH(GETDATE(), -1);  -- latest month-end as of "today"
+DECLARE @LookbackMonths    int        = 12;             -- trailing window
+
+/* 0) Resolve current/prior month-ends that actually exist for this line */
+IF OBJECT_ID('tempdb..#LineEOM') IS NOT NULL DROP TABLE #LineEOM;
+
+;WITH d AS (
+    SELECT DISTINCT LoadDate
+    FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED
+    WHERE CreditLineNumber = @CreditLineNumber
+      AND LoadDate <= @CurrEOM
+),
+ranked AS (
+    SELECT LoadDate,
+           ROW_NUMBER() OVER (ORDER BY LoadDate DESC) AS rn
+    FROM d
+)
+SELECT
+    MAX(CASE WHEN rn = 1 THEN LoadDate END) AS CurrEOM_Available,
+    MAX(CASE WHEN rn = @LookbackMonths + 1 THEN LoadDate END) AS OldestNeededEOM
+INTO #LineEOM
+FROM ranked;
+
+/* 1) Build a month-end spine (dates) for the last @LookbackMonths + 1 months up to the available current EOM */
+IF OBJECT_ID('tempdb..#Spine') IS NOT NULL DROP TABLE #Spine;
+
+DECLARE @Anchor date = (SELECT CurrEOM_Available FROM #LineEOM);
+IF @Anchor IS NULL
+BEGIN
+    RAISERROR('No data found on or before %s for CreditLine %s.', 16, 1, CONVERT(varchar(10), @CurrEOM, 120), @CreditLineNumber);
+    RETURN;
+END
+
+;WITH spine AS (
+    SELECT @Anchor AS LoadDate, 0 AS step
+    UNION ALL
+    SELECT EOMONTH(DATEADD(MONTH, -1, LoadDate)), step + 1
+    FROM spine
+    WHERE step < @LookbackMonths
+)
+SELECT LoadDate
+INTO #Spine
+FROM spine
+OPTION (MAXRECURSION 200);
+
+/* 2) Pull SecUnfunded history for that line, aligned to the spine (left join → preserves missing months) */
+IF OBJECT_ID('tempdb..#Hist') IS NOT NULL DROP TABLE #Hist;
+
+SELECT
+    s.LoadDate,
+    cu.CreditLineNumber,
+    CAST(cu.SecUnfunded AS decimal(38,2)) AS SecUnfunded
+INTO #Hist
+FROM #Spine s
+LEFT JOIN CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+    ON cu.LoadDate = s.LoadDate
+   AND cu.CreditLineNumber = @CreditLineNumber;
+
+/* 3) Attach some metadata (from CREDIT_LINE_MONTHLY at the same LoadDate, if available) */
+IF OBJECT_ID('tempdb..#HistMeta') IS NOT NULL DROP TABLE #HistMeta;
+
+SELECT
+    h.LoadDate,
+    COALESCE(h.CreditLineNumber, @CreditLineNumber) AS CreditLineNumber,
+    h.SecUnfunded,
+    cl.CIF,
+    cl.ClientName,
+    cl.ApplID,
+    cl.FormulaLine,
+    cl.BankCode
+INTO #HistMeta
+FROM #Hist h
+LEFT JOIN CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY cl
+  ON cl.LoadDate = h.LoadDate
+ AND cl.CreditLineNumber = @CreditLineNumber;
+
+/* 4) Compute MoM diffs and rolling stats; Z-score vs trailing 12 (excluding current) */
+IF OBJECT_ID('tempdb..#Stats') IS NOT NULL DROP TABLE #Stats;
+
+;WITH base AS (
+    SELECT
+        LoadDate,
+        CreditLineNumber,
+        SecUnfunded,
+        CIF, ClientName, ApplID, FormulaLine, BankCode,
+        LAG(SecUnfunded, 1) OVER (ORDER BY LoadDate) AS Prev_SecUnfunded,
+
+        -- Rolling (prev-12) mean & stdev; excludes the current month by framing to 1 PRECEDING
+        AVG(SecUnfunded)  OVER (ORDER BY LoadDate ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS Mean_Prev12,
+        STDEV(SecUnfunded)OVER (ORDER BY LoadDate ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS StDev_Prev12
+    FROM #HistMeta
+)
+SELECT
+    b.LoadDate,
+    b.CreditLineNumber,
+    b.CIF, b.ClientName, b.ApplID, b.FormulaLine, b.BankCode,
+
+    b.SecUnfunded,
+    b.Prev_SecUnfunded,
+
+    CAST(b.SecUnfunded - ISNULL(b.Prev_SecUnfunded, 0.00) AS decimal(38,2)) AS MoM_Diff,
+    CAST(
+        CASE WHEN ISNULL(b.Prev_SecUnfunded, 0.00) = 0 THEN NULL
+             ELSE (b.SecUnfunded - b.Prev_SecUnfunded) / NULLIF(ABS(b.Prev_SecUnfunded), 0.00)
+        END AS decimal(38,6)
+    ) AS MoM_Pct,
+
+    CAST(b.Mean_Prev12 AS decimal(38,4))  AS Mean_Prev12,
+    CAST(b.StDev_Prev12 AS decimal(38,4)) AS StDev_Prev12,
+
+    CAST(
+        CASE WHEN b.StDev_Prev12 IS NULL OR b.StDev_Prev12 = 0 THEN NULL
+             ELSE (b.SecUnfunded - b.Mean_Prev12) / b.StDev_Prev12
+        END AS decimal(38,4)
+    ) AS Z_Prev12,
+
+    CASE WHEN ISNULL(b.Prev_SecUnfunded,0)=0 AND ISNULL(b.SecUnfunded,0)<>0 THEN 1 ELSE 0 END AS Flag_ZeroToNonZero,
+    CASE WHEN ISNULL(b.Prev_SecUnfunded,0)<>0 AND ISNULL(b.SecUnfunded,0)=0 THEN 1 ELSE 0 END AS Flag_NonZeroToZero,
+
+    CASE WHEN ABS(
+            CASE WHEN b.StDev_Prev12 IS NULL OR b.StDev_Prev12 = 0 THEN 0
+                 ELSE (b.SecUnfunded - b.Mean_Prev12) / b.StDev_Prev12 END
+        ) >= 2 THEN 1 ELSE 0 END AS Flag_Z_2plus,
+
+    CASE WHEN ABS(
+            CASE WHEN b.StDev_Prev12 IS NULL OR b.StDev_Prev12 = 0 THEN 0
+                 ELSE (b.SecUnfunded - b.Mean_Prev12) / b.StDev_Prev12 END
+        ) >= 3 THEN 1 ELSE 0 END AS Flag_Z_3plus
+INTO #Stats
+FROM base b;
+
+/* 5) Final outputs
+      A) Full 13-row panel (oldest … latest)
+      B) Latest-month spotlight (most recent EOM available)
+      C) Quick anomaly summary counts across the panel
+*/
+-- A) Panel
+SELECT *
+FROM #Stats
+ORDER BY LoadDate;
+
+-- B) Latest-month spotlight
+SELECT TOP (1) *
+FROM #Stats
+ORDER BY LoadDate DESC;
+
+-- C) Summary (counts across panel)
+SELECT
+    COUNT(*)                                           AS Rows_In_Panel,
+    SUM(CASE WHEN MoM_Diff IS NULL THEN 0 ELSE 1 END)  AS Rows_With_Prior,
+    SUM(Flag_ZeroToNonZero)                            AS Cnt_ZeroToNonZero,
+    SUM(Flag_NonZeroToZero)                            AS Cnt_NonZeroToZero,
+    SUM(Flag_Z_2plus)                                  AS Cnt_Z_Abs_2plus,
+    SUM(Flag_Z_3plus)                                  AS Cnt_Z_Abs_3plus
+FROM #Stats;
+
+
+
+
+
 /*==========================================================
   MoM SecUnfunded Variance @ CreditLine
   Current month = 08/31/2025
