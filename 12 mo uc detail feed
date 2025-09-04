@@ -1,4 +1,88 @@
 /*==========================================================
+  MoM SecUnfunded Variance @ CreditLine
+  Current month = 08/31/2025
+  Prior month   = 07/31/2025
+==========================================================*/
+
+SET NOCOUNT ON;
+
+DECLARE @CurrEOM date = '2025-08-31';
+DECLARE @PrevEOM date = '2025-07-31';
+
+/* Current snapshot */
+IF OBJECT_ID('tempdb..#Curr') IS NOT NULL DROP TABLE #Curr;
+
+SELECT
+    cu.CreditLineNumber,
+    cl.CIF,
+    cl.ClientName,
+    cl.ApplID,
+    cl.FormulaLine,
+    cl.BankCode,
+    CAST(cu.SecUnfunded AS decimal(38,2)) AS SecUnfunded_Curr
+INTO #Curr
+FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+LEFT JOIN CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY cl
+  ON cl.LoadDate = cu.LoadDate
+ AND cl.CreditLineNumber = cu.CreditLineNumber
+WHERE cu.LoadDate = @CurrEOM
+  AND cl.LoadDate = @CurrEOM;
+
+/* Prior snapshot */
+IF OBJECT_ID('tempdb..#Prev') IS NOT NULL DROP TABLE #Prev;
+
+SELECT
+    cu.CreditLineNumber,
+    cl.CIF,
+    cl.ClientName,
+    cl.ApplID,
+    cl.FormulaLine,
+    cl.BankCode,
+    CAST(cu.SecUnfunded AS decimal(38,2)) AS SecUnfunded_Prev
+INTO #Prev
+FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+LEFT JOIN CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY cl
+  ON cl.LoadDate = cu.LoadDate
+ AND cl.CreditLineNumber = cu.CreditLineNumber
+WHERE cu.LoadDate = @PrevEOM
+  AND cl.LoadDate = @PrevEOM;
+
+/* MoM Variance */
+SELECT
+    COALESCE(c.CreditLineNumber, p.CreditLineNumber) AS CreditLineNumber,
+    COALESCE(c.CIF, p.CIF)           AS CIF,
+    COALESCE(c.ClientName, p.ClientName) AS ClientName,
+    COALESCE(c.ApplID, p.ApplID)     AS ApplID,
+    COALESCE(c.FormulaLine, p.FormulaLine) AS FormulaLine,
+    COALESCE(c.BankCode, p.BankCode) AS BankCode,
+
+    @CurrEOM AS LoadDate_Curr,
+    @PrevEOM AS LoadDate_Prev,
+
+    ISNULL(c.SecUnfunded_Curr,0.00) AS SecUnfunded_Curr,
+    ISNULL(p.SecUnfunded_Prev,0.00) AS SecUnfunded_Prev,
+
+    CAST(ISNULL(c.SecUnfunded_Curr,0.00) - ISNULL(p.SecUnfunded_Prev,0.00) AS decimal(38,2)) AS MoM_Diff,
+    CAST(
+      CASE WHEN ISNULL(p.SecUnfunded_Prev,0.00) = 0 THEN NULL
+           ELSE (ISNULL(c.SecUnfunded_Curr,0.00) - ISNULL(p.SecUnfunded_Prev,0.00))
+                 / NULLIF(ABS(p.SecUnfunded_Prev),0.00)
+      END AS decimal(38,6)
+    ) AS MoM_Pct,
+
+    CASE WHEN ISNULL(p.SecUnfunded_Prev,0.00) = 0 AND ISNULL(c.SecUnfunded_Curr,0.00) <> 0 THEN 1 ELSE 0 END AS Flag_ZeroToNonZero,
+    CASE WHEN ISNULL(p.SecUnfunded_Prev,0.00) <> 0 AND ISNULL(c.SecUnfunded_Curr,0.00) = 0 THEN 1 ELSE 0 END AS Flag_NonZeroToZero
+FROM #Curr c
+FULL OUTER JOIN #Prev p
+  ON c.CreditLineNumber = p.CreditLineNumber
+ORDER BY ABS(ISNULL(c.SecUnfunded_Curr,0.00) - ISNULL(p.SecUnfunded_Prev,0.00)) DESC;
+
+
+
+
+
+
+/*==========================================================
   MoM SecUnfunded Variance @ CreditLine (no RunID)
   - Auto-detects the latest two LoadDates from CALCULATED_UNFUNDED
   - Joins optional line metadata from CREDIT_LINE_MONTHLY (current/prior)
