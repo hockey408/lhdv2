@@ -1,3 +1,219 @@
+/*==========================================================
+  Single-CreditLine Variance Analysis (12M history + Z-score)
+  - Anchors current EOM to latest month-end relative to today
+    (e.g., if today is 2025-09-04 -> current EOM = 2025-08-31)
+  - Pulls up to 12 prior EOMs (plus current), handles gaps
+  - Computes MoM diffs, trailing-12 mean/stdev (prev-12 only),
+    and Z-score vs trailing 12 (statistically sound)
+==========================================================*/
+
+SET NOCOUNT ON;
+
+DECLARE @CreditLineNumber  varchar(64) = '1234567890';  -- << plug your line
+DECLARE @LookbackMonths    int        = 12;
+DECLARE @NaturalCurrEOM    date       = EOMONTH(GETDATE(), -1);
+
+/* Latest available EOM for this line on/before @NaturalCurrEOM */
+DECLARE @Anchor date =
+(
+  SELECT MAX(cu.LoadDate)
+  FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+  WHERE cu.CreditLineNumber = @CreditLineNumber
+    AND cu.LoadDate <= @NaturalCurrEOM
+);
+
+IF @Anchor IS NULL
+BEGIN
+    DECLARE @msg nvarchar(200) =
+        CONCAT('No data found on or before ',
+               CONVERT(varchar(10), @NaturalCurrEOM, 120),
+               ' for CreditLine ', @CreditLineNumber, '.');
+    RAISERROR(@msg, 16, 1);
+    RETURN;
+END;
+
+/* =========================
+   A) Full 13-row Panel
+   ========================= */
+;WITH spine AS (
+    -- generate current anchor + 12 prior EOMs
+    SELECT 0 AS n, @Anchor AS LoadDate
+    UNION ALL
+    SELECT n+1,
+           EOMONTH(DATEADD(MONTH, -(n+1), @Anchor))
+    FROM spine
+    WHERE n < @LookbackMonths
+),
+hist AS (
+    SELECT
+        s.LoadDate,
+        cu.CreditLineNumber,
+        CAST(cu.SecUnfunded AS decimal(38,2)) AS SecUnfunded
+    FROM spine s
+    LEFT JOIN CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+      ON cu.LoadDate = s.LoadDate
+     AND cu.CreditLineNumber = @CreditLineNumber
+),
+histmeta AS (
+    SELECT
+        h.LoadDate,
+        COALESCE(h.CreditLineNumber, @CreditLineNumber) AS CreditLineNumber,
+        h.SecUnfunded,
+        cl.CIF,
+        cl.ClientName,
+        cl.ApplID,
+        cl.FormulaLine,
+        cl.BankCode
+    FROM hist h
+    LEFT JOIN CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY cl
+      ON cl.LoadDate = h.LoadDate
+     AND cl.CreditLineNumber = @CreditLineNumber
+),
+base AS (
+    SELECT
+        LoadDate,
+        CreditLineNumber,
+        SecUnfunded,
+        CIF, ClientName, ApplID, FormulaLine, BankCode,
+
+        LAG(SecUnfunded, 1) OVER (ORDER BY LoadDate) AS Prev_SecUnfunded,
+
+        -- trailing statistics over the *previous* 12 months (excludes current)
+        AVG(SecUnfunded)   OVER (ORDER BY LoadDate ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS Mean_Prev12,
+        STDEV(SecUnfunded) OVER (ORDER BY LoadDate ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS StDev_Prev12
+    FROM histmeta
+)
+SELECT
+    b.LoadDate,
+    b.CreditLineNumber,
+    b.CIF, b.ClientName, b.ApplID, b.FormulaLine, b.BankCode,
+
+    b.SecUnfunded,
+    b.Prev_SecUnfunded,
+
+    CAST(b.SecUnfunded - ISNULL(b.Prev_SecUnfunded,0.00) AS decimal(38,2)) AS MoM_Diff,
+    CAST(CASE WHEN ISNULL(b.Prev_SecUnfunded,0.00)=0 THEN NULL
+              ELSE (b.SecUnfunded - b.Prev_SecUnfunded) / NULLIF(ABS(b.Prev_SecUnfunded),0.00)
+         END AS decimal(38,6)) AS MoM_Pct,
+
+    CAST(b.Mean_Prev12 AS decimal(38,4))  AS Mean_Prev12,
+    CAST(b.StDev_Prev12 AS decimal(38,4)) AS StDev_Prev12,
+
+    CAST(CASE WHEN b.StDev_Prev12 IS NULL OR b.StDev_Prev12=0 THEN NULL
+              ELSE (b.SecUnfunded - b.Mean_Prev12) / b.StDev_Prev12
+         END AS decimal(38,4)) AS Z_Prev12,
+
+    CASE WHEN ISNULL(b.Prev_SecUnfunded,0)=0 AND ISNULL(b.SecUnfunded,0)<>0 THEN 1 ELSE 0 END AS Flag_ZeroToNonZero,
+    CASE WHEN ISNULL(b.Prev_SecUnfunded,0)<>0 AND ISNULL(b.SecUnfunded,0)=0 THEN 1 ELSE 0 END AS Flag_NonZeroToZero,
+    CASE WHEN ABS(
+             CASE WHEN b.StDev_Prev12 IS NULL OR b.StDev_Prev12=0 THEN 0
+                  ELSE (b.SecUnfunded - b.Mean_Prev12) / b.StDev_Prev12
+             END) >= 2 THEN 1 ELSE 0 END AS Flag_Z_2plus,
+    CASE WHEN ABS(
+             CASE WHEN b.StDev_Prev12 IS NULL OR b.StDev_Prev12=0 THEN 0
+                  ELSE (b.SecUnfunded - b.Mean_Prev12) / b.StDev_Prev12
+             END) >= 3 THEN 1 ELSE 0 END AS Flag_Z_3plus
+FROM base b
+ORDER BY b.LoadDate
+OPTION (MAXRECURSION 200);
+
+/* =========================
+   B) Latest-month Spotlight
+   ========================= */
+;WITH spine AS (
+    SELECT 0 AS n, @Anchor AS LoadDate
+    UNION ALL
+    SELECT n+1, EOMONTH(DATEADD(MONTH, -(n+1), @Anchor))
+    FROM spine
+    WHERE n < @LookbackMonths
+),
+hist AS (
+    SELECT s.LoadDate, cu.CreditLineNumber, CAST(cu.SecUnfunded AS decimal(38,2)) AS SecUnfunded
+    FROM spine s
+    LEFT JOIN CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+      ON cu.LoadDate = s.LoadDate
+     AND cu.CreditLineNumber = @CreditLineNumber
+),
+histmeta AS (
+    SELECT h.LoadDate, COALESCE(h.CreditLineNumber, @CreditLineNumber) AS CreditLineNumber,
+           h.SecUnfunded, cl.CIF, cl.ClientName, cl.ApplID, cl.FormulaLine, cl.BankCode
+    FROM hist h
+    LEFT JOIN CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY cl
+      ON cl.LoadDate = h.LoadDate
+     AND cl.CreditLineNumber = @CreditLineNumber
+),
+base AS (
+    SELECT LoadDate, CreditLineNumber, SecUnfunded,
+           CIF, ClientName, ApplID, FormulaLine, BankCode,
+           LAG(SecUnfunded, 1) OVER (ORDER BY LoadDate) AS Prev_SecUnfunded,
+           AVG(SecUnfunded)   OVER (ORDER BY LoadDate ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS Mean_Prev12,
+           STDEV(SecUnfunded) OVER (ORDER BY LoadDate ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS StDev_Prev12
+    FROM histmeta
+)
+SELECT TOP (1)
+    LoadDate, CreditLineNumber, CIF, ClientName, ApplID, FormulaLine, BankCode,
+    SecUnfunded, Prev_SecUnfunded,
+    CAST(SecUnfunded - ISNULL(Prev_SecUnfunded,0.00) AS decimal(38,2)) AS MoM_Diff,
+    CAST(CASE WHEN ISNULL(Prev_SecUnfunded,0.00)=0 THEN NULL
+              ELSE (SecUnfunded - Prev_SecUnfunded) / NULLIF(ABS(Prev_SecUnfunded),0.00)
+         END AS decimal(38,6)) AS MoM_Pct,
+    CAST(Mean_Prev12 AS decimal(38,4))  AS Mean_Prev12,
+    CAST(StDev_Prev12 AS decimal(38,4)) AS StDev_Prev12,
+    CAST(CASE WHEN StDev_Prev12 IS NULL OR StDev_Prev12=0 THEN NULL
+              ELSE (SecUnfunded - Mean_Prev12) / StDev_Prev12
+         END AS decimal(38,4)) AS Z_Prev12,
+    CASE WHEN ISNULL(Prev_SecUnfunded,0)=0 AND ISNULL(SecUnfunded,0)<>0 THEN 1 ELSE 0 END AS Flag_ZeroToNonZero,
+    CASE WHEN ISNULL(Prev_SecUnfunded,0)<>0 AND ISNULL(SecUnfunded,0)=0 THEN 1 ELSE 0 END AS Flag_NonZeroToZero,
+    CASE WHEN ABS(CASE WHEN StDev_Prev12 IS NULL OR StDev_Prev12=0 THEN 0 ELSE (SecUnfunded - Mean_Prev12)/StDev_Prev12 END) >= 2 THEN 1 ELSE 0 END AS Flag_Z_2plus,
+    CASE WHEN ABS(CASE WHEN StDev_Prev12 IS NULL OR StDev_Prev12=0 THEN 0 ELSE (SecUnfunded - Mean_Prev12)/StDev_Prev12 END) >= 3 THEN 1 ELSE 0 END AS Flag_Z_3plus
+FROM base
+ORDER BY LoadDate DESC
+OPTION (MAXRECURSION 200);
+
+/* =========================
+   C) Quick Summary (Panel)
+   ========================= */
+;WITH spine AS (
+    SELECT 0 AS n, @Anchor AS LoadDate
+    UNION ALL
+    SELECT n+1, EOMONTH(DATEADD(MONTH, -(n+1), @Anchor))
+    FROM spine
+    WHERE n < @LookbackMonths
+),
+hist AS (
+    SELECT s.LoadDate, cu.CreditLineNumber, CAST(cu.SecUnfunded AS decimal(38,2)) AS SecUnfunded
+    FROM spine s
+    LEFT JOIN CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+      ON cu.LoadDate = s.LoadDate
+     AND cu.CreditLineNumber = @CreditLineNumber
+),
+histmeta AS (
+    SELECT h.LoadDate, COALESCE(h.CreditLineNumber, @CreditLineNumber) AS CreditLineNumber,
+           h.SecUnfunded, cl.CIF, cl.ClientName, cl.ApplID, cl.FormulaLine, cl.BankCode
+    FROM hist h
+    LEFT JOIN CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY cl
+      ON cl.LoadDate = h.LoadDate
+     AND cl.CreditLineNumber = @CreditLineNumber
+),
+base AS (
+    SELECT LoadDate, CreditLineNumber, SecUnfunded,
+           LAG(SecUnfunded, 1) OVER (ORDER BY LoadDate) AS Prev_SecUnfunded,
+           AVG(SecUnfunded)   OVER (ORDER BY LoadDate ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS Mean_Prev12,
+           STDEV(SecUnfunded) OVER (ORDER BY LoadDate ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS StDev_Prev12
+    FROM histmeta
+)
+SELECT
+    COUNT(*)                                                       AS Rows_In_Panel,
+    SUM(CASE WHEN Prev_SecUnfunded IS NULL THEN 0 ELSE 1 END)      AS Rows_With_Prior,
+    SUM(CASE WHEN ISNULL(Prev_SecUnfunded,0)=0 AND ISNULL(SecUnfunded,0)<>0 THEN 1 ELSE 0 END) AS Cnt_ZeroToNonZero,
+    SUM(CASE WHEN ISNULL(Prev_SecUnfunded,0)<>0 AND ISNULL(SecUnfunded,0)=0 THEN 1 ELSE 0 END) AS Cnt_NonZeroToZero,
+    SUM(CASE WHEN ABS(CASE WHEN StDev_Prev12 IS NULL OR StDev_Prev12=0 THEN 0 ELSE (SecUnfunded - Mean_Prev12)/StDev_Prev12 END) >= 2 THEN 1 ELSE 0 END) AS Cnt_Z_Abs_2plus,
+    SUM(CASE WHEN ABS(CASE WHEN StDev_Prev12 IS NULL OR StDev_Prev12=0 THEN 0 ELSE (SecUnfunded - Mean_Prev12)/StDev_Prev12 END) >= 3 THEN 1 ELSE 0 END) AS Cnt_Z_Abs_3plus
+FROM base
+OPTION (MAXRECURSION 200);
+
+
+
 /* ==========================================================
    Drill-Down Variance Analysis for ONE CreditLine
    - Pulls last 12 EOM snapshots (plus one extra to get MoM)
