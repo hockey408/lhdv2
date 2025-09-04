@@ -1,3 +1,37 @@
+DECLARE @StdFloorAbs       decimal(38,6) = 250.0;   -- absolute stdev floor in $
+DECLARE @StdFloorPctOfMean decimal(9,6)  = 0.005;   -- 0.5% of trailing mean
+
+
+
+
+-- Effective floor = max(abs floor, % of mean)
+CAST(
+  CASE
+    WHEN s.Cnt_Prev12 < 6 THEN NULL
+    ELSE
+      CASE 
+        WHEN s.StDev_Prev12 IS NULL THEN NULL
+        WHEN s.StDev_Prev12 < 
+             CASE 
+               WHEN s.Mean_Prev12 IS NULL THEN @StdFloorAbs
+               ELSE 
+                 CASE 
+                   WHEN @StdFloorAbs > (ABS(s.Mean_Prev12) * @StdFloorPctOfMean)
+                        THEN @StdFloorAbs
+                        ELSE (ABS(s.Mean_Prev12) * @StdFloorPctOfMean)
+                 END
+             END
+          THEN NULL
+        ELSE (s.SecUnfunded - s.Mean_Prev12) / s.StDev_Prev12
+      END
+  END AS decimal(38,4)
+) AS Z_Prev12
+
+
+
+
+
+
 
 /*=============================================================================
   Portfolio-Wide Review with SeverityScore + SeverityRank
