@@ -1,3 +1,88 @@
+IF OBJECT_ID('tempdb..#PrevMonth')   IS NOT NULL DROP TABLE #PrevMonth;
+IF OBJECT_ID('tempdb..#CurrMonth')  IS NOT NULL DROP TABLE #CurrMonth;
+
+select 
+	cast(a.LoadDate as date) as LoadDate, 
+	a.Cif, 
+	a.CreditLineNumber, 
+	a.RevolvingFlag, 
+	a.FormulaLine, 
+	format(a.NetBorrowingBase,'N2') as PrevMonth_NetBorrowingBase_fmtd, 
+	format(a.GrossLineAmount,'N2') as PrevMonth_GrossLineAmount_fmtd, 
+	format(a.NetLineAmount,'N2') as PrevMonth_NetLineAmount_fmtd, 
+	format(a.NetUtilized,'N2') as PrevMonth_NetUtilized_fmtd, 
+	format(b.SecUnfunded,'N2') as PrevMonth_SecUnfunded_fmtd, 
+	case
+		when a.NetBorrowingBase < a.NetLineAmount then (a.NetBorrowingBase - a.NetUtilized)
+		else (a.NetLineAmount - a.NetUtilized)
+		end as PrevMonth_Recalculated_SecUnfunded
+into #PrevMonth
+from CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY a
+left join CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED b
+on a.LoadDate = b.LoadDate and a.CreditLineNumber = b.CreditLineNumber
+where a.LoadDate = '7/31/2025' and a.CreditLineNumber in (
+	'200147535IMXARLINE1',
+	'200082386IMXARLINE2',
+	'200287492IMXARLINE1',
+	'200093013IMXARLINE1',
+	'200056647IMXARLINE1')
+
+select 
+	cast(a.LoadDate as date) as LoadDate, 
+	a.Cif, 
+	a.CreditLineNumber, 
+	a.RevolvingFlag, 
+	a.FormulaLine, 
+	format(a.NetBorrowingBase,'N2') as CurrMonth_NetBorrowingBase_fmtd, 
+	format(a.GrossLineAmount,'N2') as CurrMonth_GrossLineAmount_fmtd, 
+	format(a.NetLineAmount,'N2') as CurrMonth_NetLineAmount_fmtd, 
+	format(a.NetUtilized,'N2') as CurrMonth_NetUtilized_fmtd,
+	format(b.SecUnfunded,'N2') as CurrMonth_SecUnfunded_fmtd, 
+	case
+		when a.NetBorrowingBase < a.NetLineAmount then (a.NetBorrowingBase - a.NetUtilized)
+		else (a.NetLineAmount - a.NetUtilized)
+		end as CurrMonth_Recalculated_SecUnfunded
+into #CurrMonth
+from CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY a
+left join CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED b
+on a.LoadDate = b.LoadDate and a.CreditLineNumber = b.CreditLineNumber
+where a.LoadDate = '8/31/2025' and a.CreditLineNumber in (
+	'200147535IMXARLINE1',
+	'200082386IMXARLINE2',
+	'200287492IMXARLINE1',
+	'200093013IMXARLINE1',
+	'200056647IMXARLINE1')
+
+select
+	cm.LoadDate,
+	cm.Cif,
+	cm.CreditLineNumber,
+	cm.RevolvingFlag,
+	cm.FormulaLine,
+	pm.PrevMonth_NetBorrowingBase_fmtd,
+	cm.CurrMonth_NetBorrowingBase_fmtd,
+	(cm.CurrMonth_NetBorrowingBase_fmtd - pm.PrevMonth_NetBorrowingBase_fmtd) as NetBorrowingBase_Change,
+	pm.PrevMonth_GrossLineAmount_fmtd,
+	cm.CurrMonth_GrossLineAmount_fmtd,
+	(cm.CurrMonth_GrossLineAmount_fmtd - pm.PrevMonth_GrossLineAmount_fmtd) as GrossLineAmount_Change,
+	pm.PrevMonth_NetLineAmount_fmtd,
+	cm.CurrMonth_NetLineAmount_fmtd,
+	(cm.CurrMonth_NetLineAmount_fmtd - pm.PrevMonth_NetLineAmount_fmtd) as NetLineAmount_Change,
+	pm.PrevMonth_NetUtilized_fmtd,
+	cm.CurrMonth_NetUtilized_fmtd,
+	(cm.CurrMonth_NetUtilized_fmtd - pm.PrevMonth_NetUtilized_fmtd) as NetUtilized_Change,
+	pm.PrevMonth_SecUnfunded_fmtd,
+	cm.CurrMonth_SecUnfunded_fmtd,
+	(cm.CurrMonth_SecUnfunded_fmtd - pm.PrevMonth_SecUnfunded_fmtd) as SecUnfunded_Change
+from #CurrMonth cm
+left join #PrevMonth pm
+on cm.LoadDate = pm.LoadDate and cm.CreditLineNumber = pm.CreditLineNumber
+
+
+
+
+
+
 /* ===== Last 12 months detail with derived System & Commitment ===== */
 WITH bounds AS (
     SELECT AsOfMonthEnd = (SELECT MAX(m.LoadDate) FROM CRDLMTUFCALC.dbo.Credit_Line_Monthly AS m)
