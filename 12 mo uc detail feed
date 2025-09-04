@@ -1,3 +1,170 @@
+/*==========================================================
+  MoM SecUnfunded Variance @ CreditLine (no RunID)
+  - Auto-detects the latest two LoadDates from CALCULATED_UNFUNDED
+  - Joins optional line metadata from CREDIT_LINE_MONTHLY (current/prior)
+  - Safe math, zero↔nonzero flags
+==========================================================*/
+
+SET NOCOUNT ON;
+
+/* 1) Identify the latest two LoadDates present in CALCULATED_UNFUNDED */
+IF OBJECT_ID('tempdb..#EOM') IS NOT NULL DROP TABLE #EOM;
+WITH DistinctDates AS (
+  SELECT DISTINCT LoadDate
+  FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED
+),
+Ranked AS (
+  SELECT LoadDate,
+         ROW_NUMBER() OVER (ORDER BY LoadDate DESC) AS rn
+  FROM DistinctDates
+)
+SELECT
+  MAX(CASE WHEN rn = 1 THEN LoadDate END) AS CurrEOM,
+  MAX(CASE WHEN rn = 2 THEN LoadDate END) AS PrevEOM
+INTO #EOM
+FROM Ranked
+WHERE rn IN (1,2);
+
+-- Optional: quick sanity check
+-- SELECT * FROM #EOM;
+
+/* 2) Build current & prior SecUnfunded snapshots */
+IF OBJECT_ID('tempdb..#Curr') IS NOT NULL DROP TABLE #Curr;
+IF OBJECT_ID('tempdb..#Prev') IS NOT NULL DROP TABLE #Prev;
+
+;WITH E AS (
+  SELECT CurrEOM, PrevEOM FROM #EOM
+), CU_Curr AS (
+  SELECT cu.LoadDate,
+         cu.CreditLineNumber,
+         CAST(cu.SecUnfunded AS decimal(38,2)) AS SecUnfunded
+  FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+  CROSS JOIN E
+  WHERE cu.LoadDate = E.CurrEOM
+), CL_Curr AS (
+  SELECT cl.LoadDate,
+         cl.CreditLineNumber,
+         cl.CIF,
+         cl.ClientName,
+         cl.ApplID,
+         cl.FormulaLine,
+         cl.BankCode
+  FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY cl
+  CROSS JOIN (SELECT CurrEOM FROM #EOM) d
+  WHERE cl.LoadDate = d.CurrEOM
+  -- Optional business scope (uncomment to narrow):
+  -- AND cl.ApplID = 'LN'
+  -- AND cl.FormulaLine = 1
+)
+SELECT
+    c.LoadDate,
+    c.CreditLineNumber,
+    m.CIF,
+    m.ClientName,
+    m.ApplID,
+    m.FormulaLine,
+    m.BankCode,
+    c.SecUnfunded AS SecUnfunded_Curr
+INTO #Curr
+FROM CU_Curr c
+LEFT JOIN CL_Curr m
+  ON m.LoadDate = c.LoadDate
+ AND m.CreditLineNumber = c.CreditLineNumber;
+
+;WITH E AS (
+  SELECT CurrEOM, PrevEOM FROM #EOM
+), CU_Prev AS (
+  SELECT cu.LoadDate,
+         cu.CreditLineNumber,
+         CAST(cu.SecUnfunded AS decimal(38,2)) AS SecUnfunded
+  FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+  CROSS JOIN E
+  WHERE cu.LoadDate = E.PrevEOM
+), CL_Prev AS (
+  SELECT cl.LoadDate,
+         cl.CreditLineNumber,
+         cl.CIF,
+         cl.ClientName,
+         cl.ApplID,
+         cl.FormulaLine,
+         cl.BankCode
+  FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY cl
+  CROSS JOIN (SELECT PrevEOM FROM #EOM) d
+  WHERE cl.LoadDate = d.PrevEOM
+  -- Optional business scope (uncomment to narrow):
+  -- AND cl.ApplID = 'LN'
+  -- AND cl.FormulaLine = 1
+)
+SELECT
+    p.LoadDate,
+    p.CreditLineNumber,
+    m.CIF,
+    m.ClientName,
+    m.ApplID,
+    m.FormulaLine,
+    m.BankCode,
+    p.SecUnfunded AS SecUnfunded_Prev
+INTO #Prev
+FROM CU_Prev p
+LEFT JOIN CL_Prev m
+  ON m.LoadDate = p.LoadDate
+ AND m.CreditLineNumber = p.CreditLineNumber;
+
+/* 3) Compute MoM */
+IF OBJECT_ID('tempdb..#MoM') IS NOT NULL DROP TABLE #MoM;
+
+DECLARE @CurrEOM date = (SELECT CurrEOM FROM #EOM);
+DECLARE @PrevEOM date = (SELECT PrevEOM FROM #EOM);
+
+SELECT
+    COALESCE(c.CreditLineNumber, p.CreditLineNumber) AS CreditLineNumber,
+
+    -- Prefer current metadata if present
+    COALESCE(c.CIF,        p.CIF)        AS CIF,
+    COALESCE(c.ClientName, p.ClientName) AS ClientName,
+    COALESCE(c.ApplID,     p.ApplID)     AS ApplID,
+    COALESCE(c.FormulaLine,p.FormulaLine)AS FormulaLine,
+    COALESCE(c.BankCode,   p.BankCode)   AS BankCode,
+
+    @CurrEOM AS LoadDate_Curr,
+    @PrevEOM AS LoadDate_Prev,
+
+    ISNULL(c.SecUnfunded_Curr, 0.00) AS SecUnfunded_Curr,
+    ISNULL(p.SecUnfunded_Prev, 0.00) AS SecUnfunded_Prev,
+
+    CAST(ISNULL(c.SecUnfunded_Curr,0.00) - ISNULL(p.SecUnfunded_Prev,0.00) AS decimal(38,2)) AS MoM_Diff,
+    CAST(CASE
+           WHEN ISNULL(p.SecUnfunded_Prev,0.00) = 0 THEN NULL
+           ELSE (ISNULL(c.SecUnfunded_Curr,0.00) - ISNULL(p.SecUnfunded_Prev,0.00))
+                / NULLIF(ABS(p.SecUnfunded_Prev),0.00)
+         END AS decimal(38,6)) AS MoM_Pct,
+
+    CASE WHEN ISNULL(p.SecUnfunded_Prev,0.00) = 0 AND ISNULL(c.SecUnfunded_Curr,0.00) <> 0 THEN 1 ELSE 0 END AS Flag_ZeroToNonZero,
+    CASE WHEN ISNULL(p.SecUnfunded_Prev,0.00) <> 0 AND ISNULL(c.SecUnfunded_Curr,0.00) = 0 THEN 1 ELSE 0 END AS Flag_NonZeroToZero
+INTO #MoM
+FROM #Curr c
+FULL OUTER JOIN #Prev p
+  ON c.CreditLineNumber = p.CreditLineNumber;
+
+/* 4) Results */
+-- Detailed variances
+SELECT *
+FROM #MoM
+ORDER BY ABS(MoM_Diff) DESC, CreditLineNumber;
+
+-- Quick top movers
+SELECT TOP 25 * FROM #MoM ORDER BY MoM_Diff DESC, CreditLineNumber; -- biggest increases
+SELECT TOP 25 * FROM #MoM ORDER BY MoM_Diff ASC,  CreditLineNumber; -- biggest decreases
+
+-- Optional rollups (uncomment as needed):
+-- SELECT BankCode, SUM(SecUnfunded_Prev) AS Prev_, SUM(SecUnfunded_Curr) AS Curr_, SUM(MoM_Diff) AS MoM_Diff
+-- FROM #MoM GROUP BY BankCode ORDER BY ABS(SUM(MoM_Diff)) DESC;
+
+
+
+
+
+
 -- === Define the two months once ===
 DECLARE @PrevDate date = DATEFROMPARTS(2025,7,31);
 DECLARE @CurrDate date = DATEFROMPARTS(2025,8,31);
