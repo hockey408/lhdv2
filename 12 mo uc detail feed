@@ -1,3 +1,104 @@
+-- === Define the two months once ===
+DECLARE @PrevDate date = DATEFROMPARTS(2025,7,31);
+DECLARE @CurrDate date = DATEFROMPARTS(2025,8,31);
+
+WITH Prev AS (
+    SELECT 
+        CAST(a.LoadDate AS date)                                AS LoadDate,
+        a.Cif,
+        a.CreditLineNumber,
+        a.RevolvingFlag,
+        a.FormulaLine,
+        CAST(a.NetBorrowingBase AS decimal(19,2))               AS NetBorrowingBase,
+        CAST(a.GrossLineAmount  AS decimal(19,2))               AS GrossLineAmount,
+        CAST(a.NetLineAmount    AS decimal(19,2))               AS NetLineAmount,
+        CAST(a.NetUtilized      AS decimal(19,2))               AS NetUtilized,
+        CAST(b.SecUnfunded      AS decimal(19,2))               AS SecUnfunded,
+        CAST(CASE
+            WHEN a.NetBorrowingBase < a.NetLineAmount 
+                 THEN (a.NetBorrowingBase - a.NetUtilized)
+            ELSE      (a.NetLineAmount   - a.NetUtilized)
+        END AS decimal(19,2))                                   AS Recalculated_SecUnfunded
+    FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY a
+    LEFT JOIN CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED b
+        ON a.LoadDate = b.LoadDate
+       AND a.CreditLineNumber = b.CreditLineNumber
+    WHERE a.LoadDate = @PrevDate
+      AND a.CreditLineNumber IN (
+        '200147535IMXARLINE1',
+        '200082386IMXARLINE2',
+        '200287492IMXARLINE1',
+        '200093013IMXARLINE1',
+        '200056647IMXARLINE1')
+),
+Curr AS (
+    SELECT 
+        CAST(a.LoadDate AS date)                                AS LoadDate,
+        a.Cif,
+        a.CreditLineNumber,
+        a.RevolvingFlag,
+        a.FormulaLine,
+        CAST(a.NetBorrowingBase AS decimal(19,2))               AS NetBorrowingBase,
+        CAST(a.GrossLineAmount  AS decimal(19,2))               AS GrossLineAmount,
+        CAST(a.NetLineAmount    AS decimal(19,2))               AS NetLineAmount,
+        CAST(a.NetUtilized      AS decimal(19,2))               AS NetUtilized,
+        CAST(b.SecUnfunded      AS decimal(19,2))               AS SecUnfunded,
+        CAST(CASE
+            WHEN a.NetBorrowingBase < a.NetLineAmount 
+                 THEN (a.NetBorrowingBase - a.NetUtilized)
+            ELSE      (a.NetLineAmount   - a.NetUtilized)
+        END AS decimal(19,2))                                   AS Recalculated_SecUnfunded
+    FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY a
+    LEFT JOIN CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED b
+        ON a.LoadDate = b.LoadDate
+       AND a.CreditLineNumber = b.CreditLineNumber
+    WHERE a.LoadDate = @CurrDate
+      AND a.CreditLineNumber IN (
+        '200147535IMXARLINE1',
+        '200082386IMXARLINE2',
+        '200287492IMXARLINE1',
+        '200093013IMXARLINE1',
+        '200056647IMXARLINE1')
+)
+
+SELECT
+    c.LoadDate,
+    c.Cif,
+    c.CreditLineNumber,
+    c.RevolvingFlag,
+    c.FormulaLine,
+
+    p.NetBorrowingBase  AS PrevMonth_NetBorrowingBase,
+    c.NetBorrowingBase  AS CurrMonth_NetBorrowingBase,
+    ISNULL(c.NetBorrowingBase,0)  - ISNULL(p.NetBorrowingBase,0)  AS NetBorrowingBase_Change,
+
+    p.GrossLineAmount   AS PrevMonth_GrossLineAmount,
+    c.GrossLineAmount   AS CurrMonth_GrossLineAmount,
+    ISNULL(c.GrossLineAmount,0)   - ISNULL(p.GrossLineAmount,0)   AS GrossLineAmount_Change,
+
+    p.NetLineAmount     AS PrevMonth_NetLineAmount,
+    c.NetLineAmount     AS CurrMonth_NetLineAmount,
+    ISNULL(c.NetLineAmount,0)     - ISNULL(p.NetLineAmount,0)     AS NetLineAmount_Change,
+
+    p.NetUtilized       AS PrevMonth_NetUtilized,
+    c.NetUtilized       AS CurrMonth_NetUtilized,
+    ISNULL(c.NetUtilized,0)       - ISNULL(p.NetUtilized,0)       AS NetUtilized_Change,
+
+    p.SecUnfunded       AS PrevMonth_SecUnfunded,
+    c.SecUnfunded       AS CurrMonth_SecUnfunded,
+    ISNULL(c.SecUnfunded,0)       - ISNULL(p.SecUnfunded,0)       AS SecUnfunded_Change,
+
+    p.Recalculated_SecUnfunded AS PrevMonth_Recalc_SecUnfunded,
+    c.Recalculated_SecUnfunded AS CurrMonth_Recalc_SecUnfunded,
+    ISNULL(c.Recalculated_SecUnfunded,0) - ISNULL(p.Recalculated_SecUnfunded,0) AS Recalc_SecUnfunded_Change
+FROM Curr c
+LEFT JOIN Prev p
+  ON p.CreditLineNumber = c.CreditLineNumber;
+
+
+
+
+
 IF OBJECT_ID('tempdb..#PrevMonth') IS NOT NULL DROP TABLE #PrevMonth;
 IF OBJECT_ID('tempdb..#CurrMonth') IS NOT NULL DROP TABLE #CurrMonth;
 
