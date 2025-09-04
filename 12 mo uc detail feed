@@ -1,3 +1,173 @@
+/*=============================================================================
+  Portfolio-Wide Review with StDev Floor (Fix A) + SeverityScore/Rank
+  - Latest anchor = EOMONTH(GETDATE(), -1)
+  - Per credit line: evaluate latest available month on/before anchor
+  - Rolling Z vs trailing 12 months (excluding current), with stdev floor
+  - Returns union of:
+      (a) Top @TopN by |MoM_Diff| and
+      (b) All with |Z| >= @ZThreshold (min history)
+=============================================================================*/
+
+SET NOCOUNT ON;
+
+DECLARE @CurrEOM          date          = EOMONTH(GETDATE(), -1);
+DECLARE @LookbackMonths   int           = 12;
+DECLARE @ZThreshold       decimal(10,4) = 2.0000;   -- notable outlier
+DECLARE @TopN             int           = 25;       -- top-N abs $ movers
+DECLARE @DollarThreshold  decimal(38,2) = NULL;     -- e.g., 250000 to always include big $ moves
+
+-- Severity weights (tune as you like)
+DECLARE @wZ   float = 100.0;   -- per 1.0 of |Z|
+DECLARE @wAmt float = 10.0;    -- per log10(|$|+1)
+DECLARE @wPct float = 1.0;     -- per percentage point (100×|MoM_Pct|)
+
+-- *** Fix A: StDev floor parameters ***
+DECLARE @StdFloorAbs         decimal(38,6) = 250.0;   -- absolute $ floor
+DECLARE @StdFloorPctOfMean   decimal(9,6)  = 0.005;   -- 0.5% of trailing mean
+
+;WITH rng AS (
+    SELECT DATEADD(MONTH, -@LookbackMonths, @CurrEOM) AS StartEOM,
+           @CurrEOM                                   AS EndEOM
+),
+base AS (
+    SELECT
+        cu.LoadDate,
+        cu.CreditLineNumber,
+        CAST(cu.SecUnfunded AS decimal(38,2)) AS SecUnfunded,
+        cl.CIF,
+        cl.ClientName,
+        cl.ApplID,
+        cl.FormulaLine
+    FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+    LEFT JOIN CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY cl
+           ON cl.LoadDate = cu.LoadDate
+          AND cl.CreditLineNumber = cu.CreditLineNumber
+    CROSS JOIN rng
+    WHERE cu.LoadDate BETWEEN rng.StartEOM AND rng.EndEOM
+),
+series AS (
+    SELECT
+        b.*,
+        LAG(b.SecUnfunded, 1) OVER (PARTITION BY b.CreditLineNumber ORDER BY b.LoadDate) AS Prev_SecUnfunded,
+        AVG(b.SecUnfunded)   OVER (PARTITION BY b.CreditLineNumber ORDER BY b.LoadDate
+                                   ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS Mean_Prev12,
+        STDEV(b.SecUnfunded) OVER (PARTITION BY b.CreditLineNumber ORDER BY b.LoadDate
+                                   ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS StDev_Prev12,
+        COUNT(b.SecUnfunded) OVER (PARTITION BY b.CreditLineNumber ORDER BY b.LoadDate
+                                   ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS Cnt_Prev12,
+        ROW_NUMBER() OVER (PARTITION BY b.CreditLineNumber ORDER BY b.LoadDate DESC) AS rn_desc
+    FROM base b
+),
+calc AS (
+    SELECT
+        s.LoadDate                                AS LoadDate_Curr,
+        s.CreditLineNumber,
+        s.CIF, s.ClientName, s.ApplID, s.FormulaLine,
+
+        s.SecUnfunded                              AS SecUnfunded_Curr,
+        s.Prev_SecUnfunded                         AS SecUnfunded_Prev,
+
+        CAST(s.SecUnfunded - ISNULL(s.Prev_SecUnfunded,0.00) AS decimal(38,2)) AS MoM_Diff,
+        CAST(CASE WHEN ISNULL(s.Prev_SecUnfunded,0.00)=0 THEN NULL
+                  ELSE (s.SecUnfunded - s.Prev_SecUnfunded) / NULLIF(ABS(s.Prev_SecUnfunded),0.00)
+             END AS decimal(38,6)) AS MoM_Pct,
+
+        CAST(s.Mean_Prev12  AS decimal(38,4))  AS Mean_Prev12,
+        CAST(s.StDev_Prev12 AS decimal(38,4))  AS StDev_Prev12,
+        s.Cnt_Prev12,
+
+        /* -------- Fix A: Z with stdev floor --------
+           Effective floor = MAX(@StdFloorAbs, |Mean_Prev12| * @StdFloorPctOfMean)
+           If StDev_Prev12 < floor => Z = NULL (unreliable)
+        */
+        CAST(
+          CASE 
+            WHEN s.Cnt_Prev12 < 6 THEN NULL  -- require minimum history
+            WHEN s.StDev_Prev12 IS NULL THEN NULL
+            WHEN s.StDev_Prev12 <
+                 CASE 
+                   WHEN s.Mean_Prev12 IS NULL THEN @StdFloorAbs
+                   ELSE
+                     CASE 
+                       WHEN @StdFloorAbs > (ABS(s.Mean_Prev12) * @StdFloorPctOfMean)
+                            THEN @StdFloorAbs
+                            ELSE (ABS(s.Mean_Prev12) * @StdFloorPctOfMean)
+                     END
+                 END
+              THEN NULL
+            ELSE (s.SecUnfunded - s.Mean_Prev12) / s.StDev_Prev12
+          END AS decimal(38,4)
+        ) AS Z_Prev12
+
+    FROM series s
+    WHERE s.rn_desc = 1  -- latest available per line
+),
+ranked_absdiff AS (
+    SELECT
+        c.*,
+        ROW_NUMBER() OVER (ORDER BY ABS(c.MoM_Diff) DESC, c.CreditLineNumber) AS rn_absdiff
+    FROM calc c
+),
+review_set AS (
+    SELECT *
+    FROM ranked_absdiff r
+    WHERE
+           (r.Cnt_Prev12 >= 6 AND r.Z_Prev12 IS NOT NULL AND ABS(r.Z_Prev12) >= @ZThreshold)
+        OR (r.rn_absdiff <= @TopN)
+        OR (@DollarThreshold IS NOT NULL AND ABS(r.MoM_Diff) >= @DollarThreshold)
+),
+scored AS (
+    SELECT
+        rs.*,
+        ABS(ISNULL(rs.Z_Prev12, 0))             AS AbsZ,
+        LOG10(ABS(ISNULL(rs.MoM_Diff,0)) + 1.0) AS LogAmt,
+        ABS(ISNULL(rs.MoM_Pct,0)) * 100.0       AS AbsPctPoints,
+
+        (@wZ   * ABS(ISNULL(rs.Z_Prev12, 0))) +
+        (@wAmt * LOG10(ABS(ISNULL(rs.MoM_Diff,0)) + 1.0)) +
+        (@wPct * (ABS(ISNULL(rs.MoM_Pct,0)) * 100.0)) AS SeverityScore
+    FROM review_set rs
+)
+SELECT
+    s.CreditLineNumber,
+    s.CIF,
+    s.ClientName,
+    s.ApplID,
+    s.FormulaLine,
+
+    s.LoadDate_Curr,
+    s.SecUnfunded_Prev,
+    s.SecUnfunded_Curr,
+
+    s.MoM_Diff,
+    s.MoM_Pct,
+
+    s.Mean_Prev12,
+    s.StDev_Prev12,
+    s.Cnt_Prev12,
+    s.Z_Prev12,
+
+    s.SeverityScore,
+
+    ROW_NUMBER() OVER (
+        ORDER BY
+            s.SeverityScore DESC,
+            ABS(ISNULL(s.Z_Prev12,0)) DESC,
+            ABS(s.MoM_Diff) DESC,
+            ABS(ISNULL(s.MoM_Pct,0)) DESC,
+            s.CreditLineNumber
+    ) AS SeverityRank
+FROM scored s
+ORDER BY SeverityRank;
+
+
+
+
+
+
+
+
+
 DECLARE @StdFloorAbs       decimal(38,6) = 250.0;   -- absolute stdev floor in $
 DECLARE @StdFloorPctOfMean decimal(9,6)  = 0.005;   -- 0.5% of trailing mean
 
