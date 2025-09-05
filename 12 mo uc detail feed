@@ -1,3 +1,36 @@
+# --- DIAGNOSTIC: just tell me what you passed in ---
+import pandas as pd
+
+if len(args) == 0:
+    raise RuntimeError("No input given. Call like: =PY(<cell>, Sheet1!A1:Q50000) or =PY(<cell>, MyTable[#All])")
+
+raw = args[0]
+df = pd.DataFrame(raw) if not isinstance(raw, pd.DataFrame) else raw.copy()
+
+# Try to detect if the FIRST ROW contains your headers; if so, promote it.
+first_row = df.iloc[0].astype(str).str.strip().tolist()
+expected_any = {"CreditLineNumber","LoadDate_Curr","SecUnfunded_Curr"}  # from precompute SQL
+headers_look_ok = len(set(first_row) & expected_any) > 0
+
+if headers_look_ok and "CreditLineNumber" not in df.columns:
+    df.columns = [str(x).strip() for x in first_row]
+    df = df.iloc[1:].reset_index(drop=True)
+
+# Always strip column whitespace
+df.columns = df.columns.astype(str).str.strip()
+
+print("Shape (rows, cols):", df.shape)
+print("First 12 column names:", df.columns.tolist()[:12])
+
+# Show the first 5 rows so we can see if headers are correct
+df.head(5)
+
+
+
+
+
+
+
 # Python in Excel — Range-Passed Review (fast, no name lookup)
 # Call pattern:
 #   =PY(<this_cell>, Sheet1!A1:Q50000)
