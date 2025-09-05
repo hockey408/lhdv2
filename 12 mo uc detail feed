@@ -1,3 +1,17 @@
+import pandas as pd
+
+df = args[0]  # take the first argument passed in (your range or table)
+df = pd.DataFrame(df) if not isinstance(df, pd.DataFrame) else df.copy()
+
+print("Shape:", df.shape)
+print("First 5 columns:", df.columns.tolist()[:5])
+df.head(5)
+
+
+
+
+
+
 # Robust Top-25 review from precomputed SQL result
 # Call this cell with a range/table that INCLUDES the header row, e.g.:
 #   =PY(tblPrecomputed[#All])    or    =PY(Sheet1!A1:K5000)
