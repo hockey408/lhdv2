@@ -1,3 +1,127 @@
+# Robust Top-25 review from precomputed SQL result
+# Call this cell with a range/table that INCLUDES the header row, e.g.:
+#   =PY(tblPrecomputed[#All])    or    =PY(Sheet1!A1:K5000)
+
+import pandas as pd
+import numpy as np
+import re
+
+TOP_N = 25
+W_Z, W_AMT, W_PCT = 100.0, 10.0, 1.0  # severity weights
+
+# ---------- ingest ----------
+if len(args) == 0:
+    raise RuntimeError(
+        "No input provided. Call like: =PY(tblPrecomputed[#All]) or =PY(Sheet1!A1:K5000) (headers included)."
+    )
+
+raw = args[0]
+df = pd.DataFrame(raw) if not isinstance(raw, pd.DataFrame) else raw.copy()
+
+# If columns aren't strings (e.g., 0..N), assume first row contains headers and promote it
+if not all(isinstance(c, str) for c in df.columns):
+    first = df.iloc[0].astype(str).tolist()
+    df = df.iloc[1:].reset_index(drop=True)
+    df.columns = first
+
+# Normalize headers: strip, lower, replace spaces/dots/dashes with underscores, squeeze repeats
+def norm(s):
+    s = str(s).strip().lower()
+    s = re.sub(r"[ \t\-.]+", "_", s)
+    s = re.sub(r"_+", "_", s)
+    return s.strip("_")
+
+df.columns = [norm(c) for c in df.columns]
+
+# Build a lookup from normalized name -> original column name
+norm_to_orig = {norm(c): c for c in df.columns}  # after norm, norm(c)==c; we’ll keep for clarity
+
+# Required canonical columns and acceptable aliases (normalized)
+aliases = {
+    "loaddate_curr": {"loaddate_curr","loaddate","load_date_curr","loaddate_current","load_date"},
+    "creditlinenumber": {"creditlinenumber","credit_line_number","cln","line_number"},
+    "secunfunded_curr": {"secunfunded_curr","secunfunded","sec_unfunded_curr","secured_unfunded_curr"},
+    "prev_secunfunded": {"prev_secunfunded","prev_sec_unfunded","previous_secunfunded","secunfunded_prev"},
+    "mom_diff": {"mom_diff","mom$","delta","change","mom_change"},
+    "mom_pct": {"mom_pct","mom%","pct_change","percent_change","mom_percent"},
+    "mean_prev12": {"mean_prev12","avg_prev12","mean_12","rolling_mean_12"},
+    "stdev_prev12": {"stdev_prev12","std_prev12","stddev_prev12","rolling_std_12","stdev"},
+    "cnt_prev12": {"cnt_prev12","count_prev12","n_prev12","count_12"},
+    "z_prev12": {"z_prev12","zscore","z_score_prev12","z"},
+}
+
+# Resolve each canonical column by checking aliases against normalized df columns
+resolved = {}
+missing = []
+for canon, opts in aliases.items():
+    found = None
+    for opt in opts:
+        if opt in df.columns:
+            found = opt
+            break
+    if found:
+        resolved[canon] = found
+    else:
+        missing.append(canon)
+
+# If many are missing, show diagnostics to help fix the input
+if missing:
+    # Show what we do have (first 20 normalized headers)
+    have = ", ".join(list(df.columns)[:20])
+    raise ValueError(
+        "Some expected columns were not found.\n"
+        f"Missing (canonical names): {missing}\n"
+        "Make sure you passed the PRECOMPUTE SQL output (one row per credit line) and the header row is included.\n"
+        f"Detected (normalized) headers: {have}\n"
+        "Tip: If your headers look different, rename them in Excel to the expected names."
+    )
+
+# For convenience, get original names (they're equal to normalized now, but left here for clarity)
+c = resolved  # shorthand
+
+# Make numerics numeric
+num_cols = [c["secunfunded_curr"], c["prev_secunfunded"], c["mom_diff"], c["mom_pct"],
+            c["mean_prev12"], c["stdev_prev12"], c["cnt_prev12"], c["z_prev12"]]
+for col in num_cols:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+# Severity score (simple & fast)
+abs_z   = df[c["z_prev12"]].abs().fillna(0.0)
+abs_amt = df[c["mom_diff"]].abs().fillna(0.0)
+abs_pct = (df[c["mom_pct"]].abs() * 100.0).fillna(0.0)
+
+df["severity_score"] = W_Z*abs_z + W_AMT*np.log10(abs_amt + 1.0) + W_PCT*abs_pct
+
+# Sort & take Top N
+order = ["severity_score", c["z_prev12"], c["mom_diff"], c["mom_pct"], c["creditlinenumber"]]
+out = df.sort_values(order, ascending=[False, False, False, False, True]).head(TOP_N).copy()
+out.insert(0, "severity_rank", np.arange(1, len(out)+1))
+
+# Build tidy output (include common metadata if present)
+cols = [
+    "severity_rank","severity_score",
+    c["creditlinenumber"], c["loaddate_curr"],
+    c["secunfunded_curr"], c["prev_secunfunded"],
+    c["mom_diff"], c["mom_pct"],
+    c["mean_prev12"], c["stdev_prev12"], c["cnt_prev12"], c["z_prev12"],
+]
+# Try to add nice-to-have metadata if columns exist with common names
+for extra in ["cif","clientname","applid","formulaline","revolvingflag","line_status",
+              "netlineamount","netutilized","netdisbursed","netborrowingbase","business_unit"]:
+    if extra in df.columns:
+        cols.append(extra)
+
+# Drop any that aren't present (shouldn't be necessary but safe)
+cols = [col for col in cols if col in out.columns]
+
+# Return to Excel
+out[cols]
+
+
+
+
+
+
 # --- DIAGNOSTIC: just tell me what you passed in ---
 import pandas as pd
 
