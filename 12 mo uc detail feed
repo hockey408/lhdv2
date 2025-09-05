@@ -1,3 +1,26 @@
+df = xl("tblPrecomputed")  # the result of the SQL above
+df["AbsZ"] = df["Z_Prev12"].abs()
+df["AbsAmt"] = df["MoM_Diff"].abs()
+df["AbsPctPoints"] = (df["MoM_Pct"].abs() * 100).fillna(0)
+
+# Simple severity score (same weights as before)
+W_Z, W_AMT, W_PCT = 100.0, 10.0, 1.0
+df["SeverityScore"] = (
+    W_Z * df["AbsZ"].fillna(0) +
+    W_AMT * np.log10(df["AbsAmt"].fillna(0) + 1) +
+    W_PCT * df["AbsPctPoints"]
+)
+
+review = df.sort_values(
+    ["SeverityScore","AbsZ","AbsAmt","AbsPctPoints","CreditLineNumber"],
+    ascending=[False, False, False, False, True]
+).reset_index(drop=True)
+review["SeverityRank"] = np.arange(1, len(review)+1)
+review.head(50)  # return top 50 only
+
+
+
+
 /*==============================================================
   Portfolio Variance Precompute (hand-off to Python/Excel)
   - Population from CREDIT_LINE_MONTHLY (BUSINESS_UNIT='BUS00')
