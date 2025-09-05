@@ -1,3 +1,97 @@
+# Python in Excel — Range-Passed Review (fast, no name lookup)
+# Call pattern:
+#   =PY(<this_cell>, Sheet1!A1:Q50000)
+#   =PY(<this_cell>, tblPrecomputed[#All])
+
+import numpy as np
+import pandas as pd
+
+# ---------- CONFIG ----------
+TOP_N = 25                 # rows to return
+Z_THRESHOLD = 2.0          # optional: include rows with |Z| >= threshold (still ranked by score)
+W_Z, W_AMT, W_PCT = 100.0, 10.0, 1.0   # severity weights
+
+# ---------- INPUT ----------
+if len(args) == 0:
+    raise RuntimeError(
+        "No input range provided. In the formula bar, pass a range or table, e.g.:\n"
+        "  =PY(<this_cell>, Sheet1!A1:Q50000)\n"
+        "  =PY(<this_cell>, tblPrecomputed[#All])"
+    )
+
+df = args[0].copy()
+if not isinstance(df, pd.DataFrame):
+    # If Excel passed a numpy array, convert to DataFrame
+    df = pd.DataFrame(df)
+
+# Normalize headers (first row must be headers in the passed range/table)
+df.columns = df.columns.astype(str).str.strip()
+
+# ---------- REQUIRED COLUMNS (from the precompute SQL) ----------
+required = [
+    "LoadDate_Curr","CreditLineNumber","SecUnfunded_Curr",
+    "Prev_SecUnfunded","MoM_Diff","MoM_Pct",
+    "Mean_Prev12","StDev_Prev12","Cnt_Prev12","Z_Prev12"
+]
+missing = [c for c in required if c not in df.columns]
+if missing:
+    raise ValueError(
+        "Missing required columns: %s\n"
+        "Found columns: %s\n"
+        "Make sure you passed the PRECOMPUTE SQL output (one row per credit line) and included the header row in the range."
+        % (missing, sorted(df.columns.tolist()))
+    )
+
+# ---------- TYPES ----------
+num_cols = ["SecUnfunded_Curr","Prev_SecUnfunded","MoM_Diff","MoM_Pct",
+            "Mean_Prev12","StDev_Prev12","Cnt_Prev12","Z_Prev12"]
+for c in num_cols:
+    df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# ---------- SEVERITY SCORE (very light) ----------
+abs_z   = df["Z_Prev12"].abs().fillna(0.0)
+abs_amt = df["MoM_Diff"].abs().fillna(0.0)
+abs_pct = (df["MoM_Pct"].abs() * 100.0).fillna(0.0)
+
+df["SeverityScore"] = (
+    W_Z * abs_z +
+    W_AMT * np.log10(abs_amt + 1.0) +
+    W_PCT * abs_pct
+)
+
+# Optional: force-include Z outliers (|Z| >= threshold)
+mask_z = abs_z >= Z_THRESHOLD
+
+# Final ranking
+order_cols = ["SeverityScore","Z_Prev12","MoM_Diff","MoM_Pct","CreditLineNumber"]
+review = df.sort_values(order_cols, ascending=[False, False, False, False, True]).copy()
+
+# If you want to *only* include Z-outliers + top-N by SeverityScore, uncomment below:
+# review = review[mask_z].copy() if mask_z.any() else review
+
+# Keep top N
+review = review.head(TOP_N).reset_index(drop=True)
+
+# Build clean output
+cols = [
+    "CreditLineNumber","LoadDate_Curr",
+    "SecUnfunded_Curr","Prev_SecUnfunded",
+    "MoM_Diff","MoM_Pct","Mean_Prev12","StDev_Prev12","Cnt_Prev12","Z_Prev12",
+    "SeverityScore"
+]
+# Only include those that exist (in case extra columns came through)
+cols = [c for c in cols if c in review.columns]
+
+# Add a 1-based rank
+review.insert(0, "SeverityRank", np.arange(1, len(review)+1))
+
+# Return to Excel
+review[["SeverityRank"] + cols]
+
+
+
+
+
 # Minimal check that Python can see your table and how big it is.
 TABLE_NAME = "tblPrecomputed"  # <- change if your table has a different name
 
