@@ -36,15 +36,15 @@ W_PCT = 1.0                  # weight per percentage point (100 * |MoM_Pct|)
 # Ensure expected columns exist
 expected_cols = {
     "LoadDate","CreditLineNumber","CIF","ClientName","ApplID","FormulaLine",
-    "BUSINESS_UNIT","RevolvingFlag","Line_Status","NetLineAmount","NetUtilized",
+    "BusinessUnit","RevolvingFlag","Line_Status","NetLineAmount","NetUtilized",
     "NetDisbursed","NetBorrowingBase","SecUnfunded"
 }
 missing = sorted(list(expected_cols - set(df.columns)))
 if missing:
     raise ValueError(f"Missing columns in Excel table: {missing}")
 
-# Filter to BUSINESS_UNIT='BUS00' (population per your requirement)
-df = df[df["BUSINESS_UNIT"] == "BUS00"].copy()
+# Filter to BusinessUnit='BUS00' (population per your requirement)
+df = df[df["BusinessUnit"] == "BUS00"].copy()
 
 # Parse dates and sort
 df["LoadDate"] = pd.to_datetime(df["LoadDate"]).dt.date
