@@ -1,3 +1,177 @@
+/*==============================================================
+  Portfolio Variance Precompute (hand-off to Python/Excel)
+  - Population from CREDIT_LINE_MONTHLY (BUSINESS_UNIT='BUS00')
+  - SecUnfunded from CALCULATED_UNFUNDED
+  - Current EOM = last day of previous month
+  - Output: ONE row per CreditLineNumber (latest ≤ @CurrEOM) with:
+      Prev_SecUnfunded, Mean_Prev12, StDev_Prev12 (prev-12 only),
+      Z_Prev12 (with stdev floor), MoM_Diff, MoM_Pct,
+      and requested CLM metadata/amounts
+==============================================================*/
+
+SET NOCOUNT ON;
+
+DECLARE @LookbackMonths int  = 13; -- current + prior 12
+-- Current EOM without EOMONTH(): last day of previous month
+DECLARE @CurrEOM  date = DATEADD(DAY, -DAY(CAST(GETDATE() AS date)), CAST(GETDATE() AS date));
+DECLARE @StartEOM date = DATEADD(MONTH, -(@LookbackMonths - 1), @CurrEOM);
+
+-- Z-score floor (Fix A)
+DECLARE @StdFloorAbs         decimal(38,6) = 250.0;   -- absolute $ floor
+DECLARE @StdFloorPctOfMean   decimal(9,6)  = 0.005;   -- 0.5% of trailing mean
+DECLARE @MinHistory          int           = 6;       -- min months in prev window to compute Z
+
+;WITH base AS (
+    /* Pull last 13 months for BUS00 population from CLM, join SecUnfunded from CU */
+    SELECT
+        cl.LoadDate,
+        cl.CreditLineNumber,
+        cl.CIF,
+        cl.ClientName,
+        cl.ApplID,
+        cl.FormulaLine,
+        cl.BUSINESS_UNIT,
+        cl.RevolvingFlag,
+        cl.Line_Status,
+
+        CAST(cl.NetLineAmount    AS decimal(38,2)) AS NetLineAmount,
+        CAST(cl.NetUtilized      AS decimal(38,2)) AS NetUtilized,
+        CAST(cl.NetDisbursed     AS decimal(38,2)) AS NetDisbursed,
+        CAST(cl.NetBorrowingBase AS decimal(38,2)) AS NetBorrowingBase,
+
+        CAST(cu.SecUnfunded      AS decimal(38,2)) AS SecUnfunded
+    FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY      cl
+    LEFT JOIN CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+           ON cu.LoadDate         = cl.LoadDate
+          AND cu.CreditLineNumber = cl.CreditLineNumber
+    WHERE cl.BUSINESS_UNIT = 'BUS00'
+      AND cl.LoadDate >= @StartEOM
+      AND cl.LoadDate <= @CurrEOM
+),
+series AS (
+    /* Compute per-line rolling (prev-12) stats and prev month */
+    SELECT
+        b.*,
+
+        LAG(b.SecUnfunded, 1) OVER (
+            PARTITION BY b.CreditLineNumber
+            ORDER BY b.LoadDate
+        ) AS Prev_SecUnfunded,
+
+        /* prev-12 window excludes the current row via ... AND 1 PRECEDING */
+        AVG(b.SecUnfunded)   OVER (
+            PARTITION BY b.CreditLineNumber
+            ORDER BY b.LoadDate
+            ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+        ) AS Mean_Prev12,
+
+        STDEV(b.SecUnfunded) OVER (
+            PARTITION BY b.CreditLineNumber
+            ORDER BY b.LoadDate
+            ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+        ) AS StDev_Prev12,
+
+        COUNT(b.SecUnfunded) OVER (
+            PARTITION BY b.CreditLineNumber
+            ORDER BY b.LoadDate
+            ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+        ) AS Cnt_Prev12,
+
+        ROW_NUMBER() OVER (
+            PARTITION BY b.CreditLineNumber
+            ORDER BY b.LoadDate DESC
+        ) AS rn_desc
+    FROM base b
+),
+calc AS (
+    /* Keep latest available month per line; compute MoM, Z with stdev floor */
+    SELECT
+        s.LoadDate                       AS LoadDate_Curr,
+        s.CreditLineNumber,
+        s.CIF,
+        s.ClientName,
+        s.ApplID,
+        s.FormulaLine,
+        s.BUSINESS_UNIT,
+        s.RevolvingFlag,
+        s.Line_Status,
+
+        s.NetLineAmount,
+        s.NetUtilized,
+        s.NetDisbursed,
+        s.NetBorrowingBase,
+
+        s.SecUnfunded                   AS SecUnfunded_Curr,
+        s.Prev_SecUnfunded,
+
+        CAST(s.SecUnfunded - ISNULL(s.Prev_SecUnfunded,0.00) AS decimal(38,2)) AS MoM_Diff,
+        CAST(
+            CASE WHEN ISNULL(s.Prev_SecUnfunded,0.00)=0 THEN NULL
+                 ELSE (s.SecUnfunded - s.Prev_SecUnfunded) / NULLIF(ABS(s.Prev_SecUnfunded),0.00)
+            END AS decimal(38,6)
+        ) AS MoM_Pct,
+
+        CAST(s.Mean_Prev12  AS decimal(38,4)) AS Mean_Prev12,
+        CAST(s.StDev_Prev12 AS decimal(38,4)) AS StDev_Prev12,
+        s.Cnt_Prev12,
+
+        /* Z-score with stdev floor (Fix A):
+           floor = MAX(@StdFloorAbs, ABS(Mean_Prev12) * @StdFloorPctOfMean).
+           If StDev_Prev12 < floor OR insufficient history => Z = NULL.
+        */
+        CAST(
+            CASE
+              WHEN s.Cnt_Prev12 < @MinHistory THEN NULL
+              WHEN s.StDev_Prev12 IS NULL THEN NULL
+              WHEN s.StDev_Prev12 <
+                   CASE
+                     WHEN s.Mean_Prev12 IS NULL THEN @StdFloorAbs
+                     ELSE CASE
+                            WHEN @StdFloorAbs > (ABS(s.Mean_Prev12) * @StdFloorPctOfMean)
+                                 THEN @StdFloorAbs
+                                 ELSE (ABS(s.Mean_Prev12) * @StdFloorPctOfMean)
+                          END
+                   END
+                   THEN NULL
+              ELSE (s.SecUnfunded - s.Mean_Prev12) / s.StDev_Prev12
+            END AS decimal(38,4)
+        ) AS Z_Prev12
+    FROM series s
+    WHERE s.rn_desc = 1
+)
+SELECT
+    c.LoadDate_Curr,
+    c.CreditLineNumber,
+    c.CIF,
+    c.ClientName,
+    c.ApplID,
+    c.FormulaLine,
+    c.BUSINESS_UNIT,
+    c.RevolvingFlag,
+    c.Line_Status,
+
+    c.NetLineAmount,
+    c.NetUtilized,
+    c.NetDisbursed,
+    c.NetBorrowingBase,
+
+    c.Prev_SecUnfunded,
+    c.SecUnfunded_Curr,
+    c.MoM_Diff,
+    c.MoM_Pct,
+
+    c.Mean_Prev12,
+    c.StDev_Prev12,
+    c.Cnt_Prev12,
+    c.Z_Prev12
+FROM calc c
+ORDER BY ABS(c.MoM_Diff) DESC, c.CreditLineNumber;
+
+
+
+
+
+
 # Python in Excel: Portfolio variance & outlier review
 # Requirements: your SQL extract is in an Excel Table named "tblCreditLines"
 
