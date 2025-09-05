@@ -1,3 +1,162 @@
+# Python in Excel: Portfolio variance & outlier review
+# Requirements: your SQL extract is in an Excel Table named "tblCreditLines"
+
+import pandas as pd
+import numpy as np
+from datetime import date
+try:
+    # Python in Excel function to pull an Excel Table by name
+    df = xl("tblCreditLines")
+except NameError:
+    # Fallback for testing outside Excel: df must be defined externally
+    raise RuntimeError("In Python in Excel, rename your data table to 'tblCreditLines' and re-run this cell.")
+
+# -------------------------
+# Tunable parameters
+# -------------------------
+LOOKBACK = 12                # trailing months (excluding current month)
+MIN_HISTORY = 6              # minimum months to compute any Z/Robust Z
+Z_THRESHOLD = 2.0            # notable Z
+ROBUST_Z_THRESHOLD = 2.5     # optional robust Z threshold for review
+TOP_N = 25                   # top N by $ move (abs)
+DOLLAR_ALWAYS_INCLUDE = None # e.g., 250000 to always include very large $ moves
+
+# Stdev floor (Fix A)
+STD_FLOOR_ABS = 250.0        # absolute $ floor
+STD_FLOOR_PCT_OF_MEAN = 0.005 # 0.5% of trailing mean
+
+# SeverityScore weights
+W_Z = 100.0                  # weight per 1.0 of |Z|
+W_AMT = 10.0                 # weight per log10(|$|+1)
+W_PCT = 1.0                  # weight per percentage point (100 * |MoM_Pct|)
+
+# -------------------------
+# Prep & sanity checks
+# -------------------------
+# Ensure expected columns exist
+expected_cols = {
+    "LoadDate","CreditLineNumber","CIF","ClientName","ApplID","FormulaLine",
+    "BUSINESS_UNIT","RevolvingFlag","Line_Status","NetLineAmount","NetUtilized",
+    "NetDisbursed","NetBorrowingBase","SecUnfunded"
+}
+missing = sorted(list(expected_cols - set(df.columns)))
+if missing:
+    raise ValueError(f"Missing columns in Excel table: {missing}")
+
+# Filter to BUSINESS_UNIT='BUS00' (population per your requirement)
+df = df[df["BUSINESS_UNIT"] == "BUS00"].copy()
+
+# Parse dates and sort
+df["LoadDate"] = pd.to_datetime(df["LoadDate"]).dt.date
+df = df.sort_values(["CreditLineNumber","LoadDate"]).reset_index(drop=True)
+
+# Latest month-end anchor = last day of previous month relative to "today"
+today = date.today()
+curr_eom = (pd.Timestamp(today).to_period("M") - 1).to_timestamp("M").date()
+df = df[df["LoadDate"] <= curr_eom].copy()
+
+# -----------------------------------------
+# Per-line rolling stats (exclude current)
+# -----------------------------------------
+def compute_metrics(g: pd.DataFrame) -> pd.DataFrame:
+    g = g.sort_values("LoadDate").copy()
+    s = g["SecUnfunded"].astype(float)
+
+    # Prior month
+    g["Prev_SecUnfunded"] = s.shift(1)
+
+    # Trailing (prev-12) windows built on the *shifted* series so current is excluded
+    prev = s.shift(1)
+
+    roll = prev.rolling(window=LOOKBACK, min_periods=MIN_HISTORY)
+    g["Mean_Prev12"] = roll.mean()
+    g["StDev_Prev12"] = roll.std(ddof=1)
+
+    # Z with stdev floor
+    eff_floor = np.maximum(STD_FLOOR_ABS, np.abs(g["Mean_Prev12"]) * STD_FLOOR_PCT_OF_MEAN)
+    z_num = (s - g["Mean_Prev12"])
+    z_den = g["StDev_Prev12"]
+    z_ok = (g["StDev_Prev12"].notna()) & (g["StDev_Prev12"] >= eff_floor) & (roll.count() >= MIN_HISTORY)
+    g["Z_Prev12"] = np.where(z_ok, z_num / z_den, np.nan)
+
+    # Robust Z: median & MAD on prev-12 (exclude current)
+    med_prev12 = roll.median()
+    # MAD: median of |prev - median|
+    mad_prev12 = (prev - med_prev12).abs().rolling(window=LOOKBACK, min_periods=MIN_HISTORY).median()
+    robust_den_ok = (mad_prev12.notna()) & (mad_prev12 > 0) & (roll.count() >= MIN_HISTORY)
+    g["RobustZ_Prev12"] = np.where(
+        robust_den_ok, 0.6745 * (s - med_prev12) / mad_prev12, np.nan
+    )
+
+    # MoM diffs
+    g["MoM_Diff"] = (s - g["Prev_SecUnfunded"]).round(2)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        g["MoM_Pct"] = np.where(
+            g["Prev_SecUnfunded"].fillna(0) == 0,
+            np.nan,
+            (s - g["Prev_SecUnfunded"]) / np.abs(g["Prev_SecUnfunded"])
+        )
+
+    return g
+
+df_metrics = df.groupby("CreditLineNumber", group_keys=False).apply(compute_metrics)
+
+# -----------------------------------------
+# Latest month per credit line (on/before curr_eom)
+# -----------------------------------------
+idx_latest = df_metrics.groupby("CreditLineNumber")["LoadDate"].transform("max") == df_metrics["LoadDate"]
+latest = df_metrics[idx_latest].copy()
+
+# SeverityScore & Rank
+latest["AbsZ"] = latest["Z_Prev12"].abs()
+latest["AbsAmt"] = latest["MoM_Diff"].abs()
+latest["AbsPctPoints"] = (latest["MoM_Pct"].abs() * 100.0).fillna(0)
+
+latest["SeverityScore"] = (
+    W_Z * latest["AbsZ"].fillna(0)
+    + W_AMT * np.log10(latest["AbsAmt"].fillna(0) + 1.0)
+    + W_PCT * latest["AbsPctPoints"]
+)
+
+# Candidate sets: Z outliers, Top-N $ movers, optional dollar threshold
+mask_z = (latest["AbsZ"].notna()) & (latest["AbsZ"] >= Z_THRESHOLD)
+top_n_idx = latest["AbsAmt"].rank(method="first", ascending=False) <= TOP_N
+if DOLLAR_ALWAYS_INCLUDE is not None:
+    mask_big = latest["AbsAmt"] >= DOLLAR_ALWAYS_INCLUDE
+else:
+    mask_big = pd.Series(False, index=latest.index)
+
+review = latest[mask_z | top_n_idx | mask_big].copy()
+
+# Rank rows for review
+review = review.sort_values(
+    by=["SeverityScore","AbsZ","AbsAmt","AbsPctPoints","CreditLineNumber"],
+    ascending=[False, False, False, False, True]
+).reset_index(drop=True)
+review["SeverityRank"] = np.arange(1, len(review) + 1)
+
+# Optional: also include RobustZ thresholding (uncomment if you want it to force include)
+# mask_robust = review["RobustZ_Prev12"].abs() >= ROBUST_Z_THRESHOLD
+# review.loc[mask_robust & ~mask_z, "SeverityScore"] += 50.0  # small bump for robust-only outliers
+# review = review.sort_values(by=["SeverityScore","AbsZ","AbsAmt","AbsPctPoints","CreditLineNumber"],
+#                             ascending=[False, False, False, False, True]).reset_index(drop=True)
+# review["SeverityRank"] = np.arange(1, len(review) + 1)
+
+# Select final columns for Excel
+cols_out = [
+    "SeverityRank","SeverityScore",
+    "LoadDate","CreditLineNumber","CIF","ClientName","ApplID","FormulaLine",
+    "RevolvingFlag","Line_Status","NetLineAmount","NetUtilized","NetDisbursed","NetBorrowingBase",
+    "Prev_SecUnfunded","SecUnfunded","MoM_Diff","MoM_Pct",
+    "Mean_Prev12","StDev_Prev12","Z_Prev12","RobustZ_Prev12"
+]
+review_out = review[cols_out]
+
+# Return the review table back to Excel (spills into the sheet)
+review_out
+
+
+
 -- Base extract for Python-in-Excel variance analysis
 -- Population = CREDIT_LINE_MONTHLY (BUSINESS_UNIT='BUS00')
 -- SecUnfunded pulled from CALCULATED_UNFUNDED
