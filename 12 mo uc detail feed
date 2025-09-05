@@ -1,3 +1,14 @@
+# Minimal check that Python can see your table and how big it is.
+TABLE_NAME = "tblPrecomputed"  # <- change if your table has a different name
+
+df = xl(TABLE_NAME)
+print("Rows x Cols:", df.shape)
+df.columns = df.columns.str.strip()
+print("Sample cols:", df.columns.tolist()[:12])
+df.head(3)
+
+
+
 # ==============================
 # Clean Review Builder (fast)
 # Works with *precomputed* SQL output per line (latest month)
