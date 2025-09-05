@@ -1,3 +1,174 @@
+# ==============================
+# Clean Review Builder (fast)
+# Works with *precomputed* SQL output per line (latest month)
+# ==============================
+
+import re
+import numpy as np
+import pandas as pd
+
+# ---- Set this to your Excel Table / Named Range ----
+TABLE_NAME = "tblPrecomputed"   # <-- change to your actual table name
+
+# ---- Tunable parameters ----
+TOP_N = 50                 # number of rows to return
+Z_THRESHOLD = 2.0          # optional: include rows with |Z| >= threshold
+DOLLAR_ALWAYS_INCLUDE = None  # e.g., 250000 to always include very large $ moves
+
+# Severity weights
+W_Z   = 100.0    # per 1.0 of |Z|
+W_AMT = 10.0     # per log10(|$|+1)
+W_PCT = 1.0      # per percentage point (100 * |MoM_Pct|)
+
+# Z stdev floor (Fix A) used if we need to recompute Z
+MIN_HISTORY = 6
+STD_FLOOR_ABS = 250.0
+STD_FLOOR_PCT_OF_MEAN = 0.005  # 0.5% of mean
+
+# ---- Load data from Excel ----
+df = xl(TABLE_NAME)
+
+# Normalize column names: strip spaces
+df.columns = df.columns.str.strip()
+
+# Helper: pick a column by preferred name, falling back to suffixed variants (e.g., "Z_Prev12.1")
+def pick(colname: str) -> str | None:
+    if colname in df.columns:
+        return colname
+    # exact suffix like .1 or .2
+    matches = [c for c in df.columns if re.fullmatch(fr"{re.escape(colname)}(\.\d+)?", str(c))]
+    return matches[0] if matches else None
+
+# Map required columns (accept a couple of common variants)
+col_LoadDate   = pick("LoadDate_Curr") or pick("LoadDate")
+col_CLN        = pick("CreditLineNumber")
+col_SecCurr    = pick("SecUnfunded_Curr") or pick("SecUnfunded")
+col_SecPrev    = pick("Prev_SecUnfunded")
+col_Mean       = pick("Mean_Prev12")
+col_StDev      = pick("StDev_Prev12")
+col_Cnt        = pick("Cnt_Prev12")
+col_MoMdiff    = pick("MoM_Diff")
+col_MoMpct     = pick("MoM_Pct")
+col_Z          = pick("Z_Prev12")
+
+required = {
+    "CreditLineNumber": col_CLN,
+    "LoadDate (Curr or generic)": col_LoadDate,
+    "SecUnfunded (Curr or generic)": col_SecCurr,
+}
+missing_core = [k for k,v in required.items() if v is None]
+if missing_core:
+    raise ValueError(
+        "Your table is missing core columns needed for ranking.\n"
+        f"Missing: {missing_core}\n"
+        f"Columns found: {sorted(df.columns.tolist())}"
+    )
+
+# Ensure numeric types for calculations
+for c in [col_SecCurr, col_SecPrev, col_Mean, col_StDev, col_Cnt, col_MoMdiff, col_MoMpct, col_Z]:
+    if c and c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# Compute MoM fields if they’re missing but we have current/prev
+if col_MoMdiff is None and col_SecPrev:
+    df["MoM_Diff"] = (df[col_SecCurr] - df[col_SecPrev]).round(2)
+    col_MoMdiff = "MoM_Diff"
+
+if col_MoMpct is None and col_SecPrev:
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["MoM_Pct"] = np.where(
+            df[col_SecPrev].fillna(0) == 0,
+            np.nan,
+            (df[col_SecCurr] - df[col_SecPrev]) / np.abs(df[col_SecPrev])
+        )
+    col_MoMpct = "MoM_Pct"
+
+# Recompute Z if missing and inputs exist (uses same stdev floor logic you asked for)
+if col_Z is None and all(x is not None for x in [col_Mean, col_StDev, col_Cnt]):
+    mean = df[col_Mean].astype(float)
+    stdev = df[col_StDev].astype(float)
+    cnt = df[col_Cnt].astype(float)
+    curr = df[col_SecCurr].astype(float)
+
+    eff_floor = np.maximum(STD_FLOOR_ABS, np.abs(mean) * STD_FLOOR_PCT_OF_MEAN)
+    ok = (cnt >= MIN_HISTORY) & stdev.notna() & (stdev >= eff_floor)
+    df["Z_Prev12"] = np.where(ok, (curr - mean) / stdev, np.nan)
+    col_Z = "Z_Prev12"
+
+# Build severity components (handle nulls)
+df["AbsZ"]          = df[col_Z].abs() if col_Z else 0.0
+df["AbsAmt"]        = df[col_MoMdiff].abs() if col_MoMdiff else 0.0
+df["AbsPctPoints"]  = (df[col_MoMpct].abs() * 100.0).fillna(0) if col_MoMpct else 0.0
+
+# Composite SeverityScore
+df["SeverityScore"] = (
+    W_Z   * df["AbsZ"].fillna(0) +
+    W_AMT * np.log10(df["AbsAmt"].fillna(0) + 1.0) +
+    W_PCT * df["AbsPctPoints"]
+)
+
+# Candidate filters (fast)
+mask_z   = (df["AbsZ"].notna()) & (df["AbsZ"] >= Z_THRESHOLD) if col_Z else False
+mask_top = df["AbsAmt"].rank(method="first", ascending=False) <= TOP_N if col_MoMdiff else False
+mask_big = (df["AbsAmt"] >= DOLLAR_ALWAYS_INCLUDE) if DOLLAR_ALWAYS_INCLUDE is not None else False
+
+# If none of the masks exist (e.g., missing MoM), just sort everything and take TOP_N
+if (isinstance(mask_z, bool) and isinstance(mask_top, bool) and isinstance(mask_big, bool)):
+    review = df.copy()
+else:
+    review = df[ mask_z | mask_top | mask_big ].copy()
+    if review.empty:
+        # Fallback: take top-N by SeverityScore
+        review = df.copy()
+
+# Final ordering & rank
+review = review.sort_values(
+    by=["SeverityScore","AbsZ","AbsAmt","AbsPctPoints", col_CLN],
+    ascending=[False, False, False, False, True]
+).reset_index(drop=True)
+review["SeverityRank"] = np.arange(1, len(review)+1)
+
+# Build clean output with whatever columns are available
+cols_keep = [
+    "SeverityRank","SeverityScore",
+    col_LoadDate, col_CLN,
+    "AbsAmt","AbsPctPoints","AbsZ",
+]
+# Add common fields if present
+for c in [
+    col_SecPrev, col_SecCurr, col_MoMdiff, col_MoMpct,
+    col_Mean, col_StDev, col_Cnt, col_Z,
+    "CIF","ClientName","ApplID","FormulaLine","RevolvingFlag","Line_Status",
+    "NetLineAmount","NetUtilized","NetDisbursed","NetBorrowingBase",
+    "BUSINESS_UNIT"
+]:
+    if c and c in review.columns and c not in cols_keep:
+        cols_keep.append(c)
+
+# Make nicer header names (optional)
+rename_map = {
+    col_LoadDate: "LoadDate",
+    col_CLN: "CreditLineNumber",
+    col_SecCurr: "SecUnfunded_Curr",
+    col_SecPrev: "Prev_SecUnfunded",
+    col_MoMdiff: "MoM_Diff",
+    col_MoMpct:  "MoM_Pct",
+    col_Mean:    "Mean_Prev12",
+    col_StDev:   "StDev_Prev12",
+    col_Cnt:     "Cnt_Prev12",
+    col_Z:       "Z_Prev12",
+}
+review_out = review[cols_keep].rename(columns={k:v for k,v in rename_map.items() if k})
+
+# Return only the top N rows to Excel (fast)
+review_out.head(TOP_N)
+
+
+
+
+
+
+
 df = xl("tblPrecomputed")  # the result of the SQL above
 df["AbsZ"] = df["Z_Prev12"].abs()
 df["AbsAmt"] = df["MoM_Diff"].abs()
