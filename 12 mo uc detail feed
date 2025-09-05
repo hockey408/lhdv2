@@ -1,3 +1,80 @@
+/*==============================================================
+  Base extract for Python-in-Excel variance analysis
+  - SQL Server (CRDLMTUFCALC)
+  - Pulls current EOM (as of today) + trailing @LookbackMonths-1 EOMs
+  - One row per (LoadDate, CreditLineNumber)
+==============================================================*/
+
+SET NOCOUNT ON;
+
+DECLARE @CurrEOM         date = EOMONTH(GETDATE(), -1);  -- e.g., today 2025-09-05 -> 2025-08-31
+DECLARE @LookbackMonths  int  = 13;  -- current + prior 12 (adjust if you want more history)
+
+;WITH rng AS (
+    SELECT
+        /* Start at the earliest month we want to include */
+        EOMONTH(DATEADD(MONTH, -( @LookbackMonths - 1 ), @CurrEOM)) AS StartEOM,
+        @CurrEOM AS EndEOM
+),
+-- Pull SecUnfunded + join line metadata
+raw AS (
+    SELECT
+        cu.LoadDate,
+        cu.CreditLineNumber,
+        CAST(cu.SecUnfunded AS decimal(38,2)) AS SecUnfunded,
+        cl.CIF,
+        cl.ClientName,
+        cl.ApplID,
+        cl.FormulaLine
+    FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+    LEFT JOIN CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY cl
+           ON cl.LoadDate = cu.LoadDate
+          AND cl.CreditLineNumber = cu.CreditLineNumber
+    CROSS JOIN rng
+    WHERE cu.LoadDate BETWEEN rng.StartEOM AND rng.EndEOM
+
+    /* Optional: scope filters (uncomment as desired)
+       AND cl.ApplID = 'LN'
+       AND cl.FormulaLine = 1
+       -- AND cl.ClientName IS NOT NULL
+       -- AND cu.CreditLineNumber IN ('123456','789012')
+    */
+),
+/* If your source can have duplicates per (LoadDate, CreditLineNumber)
+   (e.g., multiple calc runs without RunID scoping), keep a deterministic
+   single record. MAX() is a safe choice for balances that should end
+   the month at a single figure. Switch to SUM() if your data model
+   expects summation across fragments. */
+dedup AS (
+    SELECT
+        LoadDate,
+        CreditLineNumber,
+        MAX(SecUnfunded) AS SecUnfunded,   -- or SUM(SecUnfunded)
+        MAX(CIF)         AS CIF,
+        MAX(ClientName)  AS ClientName,
+        MAX(ApplID)      AS ApplID,
+        MAX(FormulaLine) AS FormulaLine
+    FROM raw
+    GROUP BY LoadDate, CreditLineNumber
+)
+SELECT
+    LoadDate,
+    CreditLineNumber,
+    SecUnfunded,      -- numeric, cast already applied
+    CIF,
+    ClientName,
+    ApplID,
+    FormulaLine
+FROM dedup
+ORDER BY LoadDate, CreditLineNumber;
+
+
+
+
+
+
+
+
 /*=============================================================================
   Portfolio-Wide Review with StDev Floor (Fix A) + SeverityScore/Rank
   - Latest anchor = EOMONTH(GETDATE(), -1)
