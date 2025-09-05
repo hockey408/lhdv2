@@ -1,3 +1,37 @@
+-- Base extract for Python-in-Excel variance analysis
+-- One row per (LoadDate, CreditLineNumber)
+
+SET NOCOUNT ON;
+
+DECLARE @LookbackMonths int  = 13;  -- current + 12 back
+-- Compute latest month end (works without EOMONTH)
+DECLARE @CurrEOM date = DATEADD(DAY, -DAY(CAST(GETDATE() AS date)), CAST(GETDATE() AS date));
+DECLARE @StartEOM date = DATEADD(MONTH, -(@LookbackMonths - 1), @CurrEOM);
+
+SELECT
+    cu.LoadDate,
+    cu.CreditLineNumber,
+    CAST(cu.SecUnfunded AS decimal(38,2)) AS SecUnfunded,
+    cl.CIF,
+    cl.ClientName,
+    cl.ApplID,
+    cl.FormulaLine
+FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+LEFT JOIN CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY cl
+       ON cl.LoadDate = cu.LoadDate
+      AND cl.CreditLineNumber = cu.CreditLineNumber
+WHERE cu.LoadDate >= @StartEOM
+  AND cu.LoadDate <= @CurrEOM
+-- Optional scope filters:
+--   AND cl.ApplID = 'LN'
+--   AND cl.FormulaLine = 1
+ORDER BY cu.LoadDate, cu.CreditLineNumber;
+
+
+
+
+
+
 /*==============================================================
   Base extract for Python-in-Excel variance analysis
   - SQL Server (CRDLMTUFCALC)
