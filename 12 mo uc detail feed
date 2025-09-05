@@ -1,4 +1,55 @@
 -- Base extract for Python-in-Excel variance analysis
+-- Population = CREDIT_LINE_MONTHLY (BUSINESS_UNIT='BUS00')
+-- SecUnfunded pulled from CALCULATED_UNFUNDED
+
+SET NOCOUNT ON;
+
+DECLARE @LookbackMonths int  = 13;  -- current + 12 back
+-- Latest month-end (works without EOMONTH)
+DECLARE @CurrEOM  date = DATEADD(DAY, -DAY(CAST(GETDATE() AS date)), CAST(GETDATE() AS date));
+DECLARE @StartEOM date = DATEADD(MONTH, -(@LookbackMonths - 1), @CurrEOM);
+
+SELECT
+    cl.LoadDate,
+    cl.CreditLineNumber,
+    cl.CIF,
+    cl.ClientName,
+    cl.ApplID,
+    cl.FormulaLine,
+    cl.BUSINESS_UNIT,
+    cl.RevolvingFlag,
+    cl.Line_Status,
+
+    -- Amounts from CREDIT_LINE_MONTHLY
+    CAST(cl.NetLineAmount     AS decimal(38,2)) AS NetLineAmount,
+    CAST(cl.NetUtilized       AS decimal(38,2)) AS NetUtilized,
+    CAST(cl.NetDisbursed      AS decimal(38,2)) AS NetDisbursed,
+    CAST(cl.NetBorrowingBase  AS decimal(38,2)) AS NetBorrowingBase,
+
+    -- Only SecUnfunded from CALCULATED_UNFUNDED
+    CAST(cu.SecUnfunded       AS decimal(38,2)) AS SecUnfunded
+
+FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY      cl
+LEFT JOIN CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED cu
+       ON cu.LoadDate         = cl.LoadDate
+      AND cu.CreditLineNumber = cl.CreditLineNumber
+
+WHERE cl.LoadDate >= @StartEOM
+  AND cl.LoadDate <= @CurrEOM
+  AND cl.BUSINESS_UNIT = 'BUS00'
+
+-- Optional scope refinements (uncomment as needed):
+--   AND cl.ApplID = 'LN'
+--   AND cl.FormulaLine = 1
+--   AND cl.Line_Status IN ('Active','Open')
+
+ORDER BY cl.LoadDate, cl.CreditLineNumber;
+
+
+
+
+
+-- Base extract for Python-in-Excel variance analysis
 -- One row per (LoadDate, CreditLineNumber)
 
 SET NOCOUNT ON;
