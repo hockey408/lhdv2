@@ -1,4 +1,59 @@
 import pandas as pd
+import numpy as np
+
+# 1) Pull your table into a DataFrame.
+#    Change the table name if yours is different.
+#    headers=True tells Python that the first row contains headers.
+df = xl("tblPrecomputed[#All]", headers=True).copy()
+
+# 2) Light sanity check
+df.columns = df.columns.astype(str).str.strip()
+print("Rows x Cols:", df.shape)
+print("First 10 cols:", df.columns.tolist()[:10])
+
+# 3) Expect the precomputed SQL columns (one row per credit line)
+required = [
+    "LoadDate_Curr","CreditLineNumber","SecUnfunded_Curr",
+    "Prev_SecUnfunded","MoM_Diff","MoM_Pct",
+    "Mean_Prev12","StDev_Prev12","Cnt_Prev12","Z_Prev12"
+]
+missing = [c for c in required if c not in df.columns]
+if missing:
+    raise ValueError(
+        f"Missing columns: {missing}\n"
+        f"Found: {sorted(df.columns.tolist())}\n"
+        "Check your header row and table name."
+    )
+
+# 4) Fast severity score + Top 25
+for c in ["SecUnfunded_Curr","Prev_SecUnfunded","MoM_Diff","MoM_Pct",
+          "Mean_Prev12","StDev_Prev12","Cnt_Prev12","Z_Prev12"]:
+    df[c] = pd.to_numeric(df[c], errors="coerce")
+
+W_Z, W_AMT, W_PCT = 100.0, 10.0, 1.0
+abs_z   = df["Z_Prev12"].abs().fillna(0.0)
+abs_amt = df["MoM_Diff"].abs().fillna(0.0)
+abs_pct = (df["MoM_Pct"].abs() * 100.0).fillna(0.0)
+
+df["SeverityScore"] = W_Z*abs_z + W_AMT*np.log10(abs_amt + 1.0) + W_PCT*abs_pct
+out = df.sort_values(
+    ["SeverityScore","Z_Prev12","MoM_Diff","MoM_Pct","CreditLineNumber"],
+    ascending=[False, False, False, False, True]
+).head(25).copy()
+
+out.insert(0, "SeverityRank", np.arange(1, len(out)+1))
+out[[
+    "SeverityRank","SeverityScore","CreditLineNumber","LoadDate_Curr",
+    "SecUnfunded_Curr","Prev_SecUnfunded","MoM_Diff","MoM_Pct",
+    "Mean_Prev12","StDev_Prev12","Cnt_Prev12","Z_Prev12"
+]]
+
+
+
+
+
+
+import pandas as pd
 df = args[0]
 df = pd.DataFrame(df) if not isinstance(df, pd.DataFrame) else df.copy()
 df.head()
