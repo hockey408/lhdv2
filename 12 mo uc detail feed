@@ -1,3 +1,63 @@
+import numpy as np
+
+# --- 0) Parameters (tune as you like) ---
+MIN_HISTORY          = 6       # need this many prior months to trust stats
+STD_FLOOR_ABS        = 250.0   # absolute stdev floor in $
+STD_FLOOR_PCT_OF_MEAN= 0.005   # 0.5% of trailing mean
+
+# --- 1) Ensure numeric types for all stat columns ---
+num_cols_expected = [
+    "SecUnfunded_Curr","Prev_SecUnfunded","MoM_Diff","MoM_Pct",
+    "Mean_Prev12","StDev_Prev12","Cnt_Prev12","Z_Prev12"
+]
+for c in num_cols_expected:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# --- 2) (Re)compute MoM if missing (or keep what’s there) ---
+if "MoM_Diff" not in df.columns and {"SecUnfunded_Curr","Prev_SecUnfunded"}.issubset(df.columns):
+    df["MoM_Diff"] = (df["SecUnfunded_Curr"] - df["Prev_SecUnfunded"]).round(2)
+
+if "MoM_Pct" not in df.columns and {"SecUnfunded_Curr","Prev_SecUnfunded"}.issubset(df.columns):
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["MoM_Pct"] = np.where(
+            df["Prev_SecUnfunded"].fillna(0)==0,
+            np.nan,
+            (df["SecUnfunded_Curr"] - df["Prev_SecUnfunded"]) / np.abs(df["Prev_SecUnfunded"])
+        )
+
+# --- 3) (Re)compute Z with stdev floor if missing or untrusted ---
+need_for_z = {"Mean_Prev12","StDev_Prev12","Cnt_Prev12","SecUnfunded_Curr"}
+if ("Z_Prev12" not in df.columns or df["Z_Prev12"].isna().all()) and need_for_z.issubset(df.columns):
+    mean  = df["Mean_Prev12"].astype(float)
+    stdev = df["StDev_Prev12"].astype(float)
+    cnt   = df["Cnt_Prev12"].astype(float)
+    curr  = df["SecUnfunded_Curr"].astype(float)
+
+    eff_floor = np.maximum(STD_FLOOR_ABS, np.abs(mean) * STD_FLOOR_PCT_OF_MEAN)
+    ok = (cnt >= MIN_HISTORY) & stdev.notna() & (stdev >= eff_floor)
+    df["Z_Prev12"] = np.where(ok, (curr - mean) / stdev, np.nan)
+
+# --- 4) Convenience analysis columns ---
+df["Abs_MoM"]       = df["MoM_Diff"].abs()
+df["Pct_Points"]    = (df["MoM_Pct"].abs() * 100.0)  # %-points
+df["Abs_Z"]         = df["Z_Prev12"].abs()
+
+# --- 5) Useful flags for review/explanations ---
+df["Flag_Z_3plus"]        = (df["Abs_Z"] >= 3.0).astype(int)
+df["Flag_Z_2plus"]        = ((df["Abs_Z"] >= 2.0) & (df["Abs_Z"] < 3.0)).astype(int)
+df["Flag_BigDollar"]      = (df["Abs_MoM"] >= 250000).astype(int)   # tweak threshold
+df["Flag_BigPercent"]     = (df["Pct_Points"] >= 25).astype(int)    # 25%-points
+df["Flag_ZeroToNonZero"]  = ((df["Prev_SecUnfunded"].fillna(0)==0) & (df["SecUnfunded_Curr"].fillna(0)!=0)).astype(int)
+df["Flag_NonZeroToZero"]  = ((df["Prev_SecUnfunded"].fillna(0)!=0) & (df["SecUnfunded_Curr"].fillna(0)==0)).astype(int)
+
+
+
+
+
+
+
+
 import pandas as pd
 import numpy as np
 
