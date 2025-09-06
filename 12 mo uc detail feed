@@ -1,3 +1,104 @@
+import pandas as pd
+import numpy as np
+
+TABLE_NAME = "tblPrecomputed"   # <-- no [#All]
+TOP_N = 25
+
+# thresholds / weights
+MIN_HISTORY           = 6
+STD_FLOOR_ABS         = 250.0
+STD_FLOOR_PCT_OF_MEAN = 0.005
+W_Z, W_AMT, W_PCT     = 100.0, 10.0, 1.0
+Z_FLAG_STRICT, Z_FLAG_WARN = 3.0, 2.0
+AMT_FLAG, PCT_FLAG    = 250000, 0.25
+
+df = xl(TABLE_NAME, headers=True).copy()
+df.columns = df.columns.astype(str).str.strip()
+
+# numeric
+for c in ["SecUnfunded_Curr","Prev_SecUnfunded","MoM_Diff","MoM_Pct",
+          "Mean_Prev12","StDev_Prev12","Cnt_Prev12","Z_Prev12"]:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# recompute MoM if missing
+if "MoM_Diff" not in df.columns and {"SecUnfunded_Curr","Prev_SecUnfunded"}.issubset(df.columns):
+    df["MoM_Diff"] = (df["SecUnfunded_Curr"] - df["Prev_SecUnfunded"]).round(2)
+if "MoM_Pct" not in df.columns and {"SecUnfunded_Curr","Prev_SecUnfunded"}.issubset(df.columns):
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["MoM_Pct"] = np.where(
+            df["Prev_SecUnfunded"].fillna(0)==0,
+            np.nan,
+            (df["SecUnfunded_Curr"] - df["Prev_SecUnfunded"]) / np.abs(df["Prev_SecUnfunded"])
+        )
+
+# recompute Z with floor if missing/all-NaN
+need_for_z = {"Mean_Prev12","StDev_Prev12","Cnt_Prev12","SecUnfunded_Curr"}
+if ("Z_Prev12" not in df.columns or df["Z_Prev12"].isna().all()) and need_for_z.issubset(df.columns):
+    mean, stdev = df["Mean_Prev12"].astype(float), df["StDev_Prev12"].astype(float)
+    cnt, curr   = df["Cnt_Prev12"].astype(float), df["SecUnfunded_Curr"].astype(float)
+    eff_floor = np.maximum(STD_FLOOR_ABS, np.abs(mean) * STD_FLOOR_PCT_OF_MEAN)
+    ok = (cnt >= MIN_HISTORY) & stdev.notna() & (stdev >= eff_floor)
+    df["Z_Prev12"] = np.where(ok, (curr - mean) / stdev, np.nan)
+elif "Z_Prev12" not in df.columns:
+    df["Z_Prev12"] = np.nan
+
+# convenience + flags
+df["Abs_MoM"]    = df["MoM_Diff"].abs()
+df["Pct_Points"] = df["MoM_Pct"].abs() * 100.0
+df["Abs_Z"]      = df["Z_Prev12"].abs()
+
+df["Flag_Z_3plus"]        = (df["Abs_Z"] >= Z_FLAG_STRICT).astype(int)
+df["Flag_Z_2plus"]        = ((df["Abs_Z"] >= Z_FLAG_WARN) & (df["Abs_Z"] < Z_FLAG_STRICT)).astype(int)
+df["Flag_BigDollar"]      = (df["Abs_MoM"] >= AMT_FLAG).astype(int)
+df["Flag_BigPercent"]     = (df["Pct_Points"] >= PCT_FLAG*100).astype(int)
+df["Flag_ZeroToNonZero"]  = ((df["Prev_SecUnfunded"].fillna(0)==0) & (df["SecUnfunded_Curr"].fillna(0)!=0)).astype(int)
+df["Flag_NonZeroToZero"]  = ((df["Prev_SecUnfunded"].fillna(0)!=0) & (df["SecUnfunded_Curr"].fillna(0)==0)).astype(int)
+
+def why_row(r):
+    bits = []
+    if r["Flag_Z_3plus"]:       bits.append("High Z (≥3σ)")
+    elif r["Flag_Z_2plus"]:     bits.append("Notable Z (≥2σ)")
+    if r["Flag_BigDollar"]:     bits.append(f"Big $ (≥{AMT_FLAG:,.0f})")
+    if r["Flag_BigPercent"]:    bits.append(f"Big % (≥{int(PCT_FLAG*100)}%)")
+    if r["Flag_ZeroToNonZero"]: bits.append("0 → non-0")
+    if r["Flag_NonZeroToZero"]: bits.append("non-0 → 0")
+    return "; ".join(bits) if bits else "Severity mix"
+
+df["Why"] = df.apply(why_row, axis=1)
+
+# severity + top N
+df["SeverityScore"] = (
+    W_Z * df["Abs_Z"].fillna(0) +
+    W_AMT * np.log10(df["Abs_MoM"].fillna(0) + 1.0) +
+    W_PCT * df["Pct_Points"].fillna(0)
+)
+
+review = df.sort_values(
+    ["SeverityScore","Z_Prev12","MoM_Diff","MoM_Pct","CreditLineNumber"],
+    ascending=[False, False, False, False, True]
+).head(TOP_N).copy()
+review.insert(0, "SeverityRank", np.arange(1, len(review)+1))
+
+cols = [
+    "SeverityRank","SeverityScore","Why",
+    "CreditLineNumber","LoadDate_Curr",
+    "SecUnfunded_Curr","Prev_SecUnfunded",
+    "MoM_Diff","MoM_Pct","Mean_Prev12","StDev_Prev12","Cnt_Prev12","Z_Prev12",
+    "Flag_Z_3plus","Flag_Z_2plus","Flag_BigDollar","Flag_BigPercent",
+    "Flag_ZeroToNonZero","Flag_NonZeroToZero"
+]
+for extra in ["CIF","ClientName","ApplID","FormulaLine","RevolvingFlag","Line_Status",
+              "NetLineAmount","NetUtilized","NetDisbursed","NetBorrowingBase","BUSINESS_UNIT"]:
+    if extra in review.columns and extra not in cols:
+        cols.append(extra)
+
+review[cols]
+
+
+
+
+
 # === Python in Excel: Phase 2 Core Metrics + Flags + Top 25 ===
 # Call in a Python cell with no args; it pulls the table via xl()
 # Example: =PY()
