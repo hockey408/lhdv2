@@ -1,3 +1,18 @@
+import numpy as np
+
+# Ensure numeric
+for c in ["SecUnfunded_Curr","Prev_SecUnfunded","MoM_Diff","MoM_Pct",
+          "Mean_Prev12","StDev_Prev12","Cnt_Prev12","Z_Prev12"]:
+    df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# Robust Z (median & MAD over prev 12 months, optional)
+# Needs historical data → skip if you only have 1 row/line
+df["RobustZ"] = np.nan  # placeholder for now
+
+
+
+
+
 import pandas as pd
 import numpy as np
 
