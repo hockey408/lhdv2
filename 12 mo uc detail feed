@@ -1,4 +1,15 @@
 import pandas as pd
+df = args[0]
+df = pd.DataFrame(df) if not isinstance(df, pd.DataFrame) else df.copy()
+df.head()
+
+
+
+
+
+
+
+import pandas as pd
 
 df = args[0]  # take the first argument passed in (your range or table)
 df = pd.DataFrame(df) if not isinstance(df, pd.DataFrame) else df.copy()
