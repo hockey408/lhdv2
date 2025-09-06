@@ -1,3 +1,94 @@
+import pandas as pd
+import numpy as np
+
+# ====== CONFIG ======
+TABLE_REF = "tblPrecomputed[#All]"  # change if needed (e.g., "Sheet1!A1:K5000")
+TOP_N = 25
+
+# thresholds
+Z_FLAG_STRICT = 3.0      # severe outlier
+Z_FLAG_WARN   = 2.0      # notable outlier
+AMT_FLAG      = 250000   # $ change threshold for "Big $" flag
+PCT_FLAG      = 0.25     # 25% MoM threshold for "Big %"
+# severity weights
+W_Z, W_AMT, W_PCT = 100.0, 10.0, 1.0
+
+# ====== LOAD & CLEAN ======
+df = xl(TABLE_REF, headers=True).copy()
+df.columns = df.columns.astype(str).str.strip()
+
+required = [
+    "LoadDate_Curr","CreditLineNumber","SecUnfunded_Curr",
+    "Prev_SecUnfunded","MoM_Diff","MoM_Pct",
+    "Mean_Prev12","StDev_Prev12","Cnt_Prev12","Z_Prev12"
+]
+missing = [c for c in required if c not in df.columns]
+if missing:
+    raise ValueError(f"Missing columns: {missing}\nFound: {sorted(df.columns.tolist())}")
+
+for c in ["SecUnfunded_Curr","Prev_SecUnfunded","MoM_Diff","MoM_Pct",
+          "Mean_Prev12","StDev_Prev12","Cnt_Prev12","Z_Prev12"]:
+    df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# ====== FLAGS ======
+abs_z   = df["Z_Prev12"].abs()
+abs_amt = df["MoM_Diff"].abs()
+abs_pct = df["MoM_Pct"].abs()
+
+df["Flag_Z_3plus"]        = (abs_z >= Z_FLAG_STRICT).astype(int)
+df["Flag_Z_2plus"]        = ((abs_z >= Z_FLAG_WARN) & (abs_z < Z_FLAG_STRICT)).astype(int)
+df["Flag_BigDollar"]      = (abs_amt >= AMT_FLAG).astype(int)
+df["Flag_BigPercent"]     = (abs_pct >= PCT_FLAG).astype(int)
+df["Flag_ZeroToNonZero"]  = ((df["Prev_SecUnfunded"].fillna(0)==0) & (df["SecUnfunded_Curr"].fillna(0)!=0)).astype(int)
+df["Flag_NonZeroToZero"]  = ((df["Prev_SecUnfunded"].fillna(0)!=0) & (df["SecUnfunded_Curr"].fillna(0)==0)).astype(int)
+
+# human-readable reason
+def reason(row):
+    r = []
+    if row["Flag_Z_3plus"]:       r.append("High Z (≥3σ)")
+    elif row["Flag_Z_2plus"]:     r.append("Notable Z (≥2σ)")
+    if row["Flag_BigDollar"]:     r.append(f"Big $ (≥{AMT_FLAG:,.0f})")
+    if row["Flag_BigPercent"]:    r.append(f"Big % (≥{int(PCT_FLAG*100)}%)")
+    if row["Flag_ZeroToNonZero"]: r.append("0 → non-0")
+    if row["Flag_NonZeroToZero"]: r.append("non-0 → 0")
+    return "; ".join(r) if r else "Severity mix"
+df["Why"] = df.apply(reason, axis=1)
+
+# ====== SEVERITY SCORE & RANK ======
+df["SeverityScore"] = (
+    W_Z   * abs_z.fillna(0) +
+    W_AMT * np.log10(abs_amt.fillna(0) + 1.0) +
+    W_PCT * (abs_pct.fillna(0) * 100.0)
+)
+
+review = df.sort_values(
+    ["SeverityScore","Z_Prev12","MoM_Diff","MoM_Pct","CreditLineNumber"],
+    ascending=[False, False, False, False, True]
+).head(TOP_N).copy()
+
+review.insert(0, "SeverityRank", np.arange(1, len(review)+1))
+
+# ====== OUTPUT (Top 25 with flags & reasons) ======
+cols = [
+    "SeverityRank","SeverityScore","Why",
+    "CreditLineNumber","LoadDate_Curr",
+    "SecUnfunded_Curr","Prev_SecUnfunded","MoM_Diff","MoM_Pct",
+    "Mean_Prev12","StDev_Prev12","Cnt_Prev12","Z_Prev12",
+    "Flag_Z_3plus","Flag_Z_2plus","Flag_BigDollar","Flag_BigPercent",
+    "Flag_ZeroToNonZero","Flag_NonZeroToZero"
+]
+# include common metadata if present
+for extra in ["CIF","ClientName","ApplID","FormulaLine","RevolvingFlag","Line_Status",
+              "NetLineAmount","NetUtilized","NetDisbursed","NetBorrowingBase","BUSINESS_UNIT"]:
+    if extra in review.columns:
+        cols.append(extra)
+
+review[cols]
+
+
+
+
+
 df = xl("tblPrecomputed[#All]", headers=True).copy()
 df.columns = df.columns.astype(str).str.strip()
 
