@@ -1,3 +1,9 @@
+df = xl("tblPrecomputed[#All]", headers=True).copy()
+df.columns = df.columns.astype(str).str.strip()
+
+
+
+
 import numpy as np
 
 # Ensure numeric
