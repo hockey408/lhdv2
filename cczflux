@@ -1,3 +1,182 @@
+-- =========================
+-- PARAMETERS (edit as needed)
+-- =========================
+WITH params AS (
+  SELECT
+    DATE '2025-08-31'::DATE AS asof_eom,     -- last month-end to include
+    12                                       AS lookback_months,  -- 12 + current = 13 months
+    0.05::FLOAT                               AS pct_synth_mom_flag,  -- 5%pt MoM change in mix
+    10000000::NUMERIC                         AS abs_synth_delta_flag, -- $10M MoM change in synthetic $
+    2.5::FLOAT                                AS z_threshold           -- z-score threshold on pct_synth
+),
+
+-- =========================
+-- (A) Map BANK_CODE to one of 3 categories
+--    Replace this with a real DIM table if you have one
+-- =========================
+bank_map AS (
+  SELECT 'BANK001'::VARCHAR(20) AS bank_code, 'CAT1'::VARCHAR(10) AS cat UNION ALL
+  SELECT 'BANK002', 'CAT2' UNION ALL
+  SELECT 'BANK003', 'CAT3'
+  -- TODO: add all BANK_CODEs here or JOIN to your bank dimension
+),
+
+-- =========================
+-- (B) Pull last 13 months and flag synthetic by category-specific logic
+--     >>> Plug your three rule sets into the placeholders <<<
+-- =========================
+raw AS (
+  SELECT
+      t.END_OF_MONTH_DATE::DATE                         AS eom,
+      t.BANK_CODE,                                      -- you said you want to key by BANK_CODE
+      bm.cat                                            AS bank_category,
+      t.CONTRACT_SOURCE_SYSTEM,
+      t.GL_ACCOUNT_HIER_LEVEL_4,
+      t.GL_BALANCE,
+
+      CASE
+        WHEN bm.cat = 'CAT1' AND ( /* TODO: CAT1_SYNTHETIC_CONDITION using row fields */ )
+          THEN 1
+        WHEN bm.cat = 'CAT2' AND ( /* TODO: CAT2_SYNTHETIC_CONDITION */ )
+          THEN 1
+        WHEN bm.cat = 'CAT3' AND ( /* TODO: CAT3_SYNTHETIC_CONDITION */ )
+          THEN 1
+        ELSE 0
+      END AS is_synth
+  FROM V_DPRT_CREDIT_INSTRUMENTS t
+  JOIN params p  ON 1=1
+  LEFT JOIN bank_map bm
+         ON bm.bank_code = t.BANK_CODE
+  WHERE t.END_OF_MONTH_DATE BETWEEN ADD_MONTHS(p.asof_eom, -p.lookback_months)
+                                AND p.asof_eom
+),
+
+-- =========================
+-- (C) Monthly aggregation: synthetic vs non-synthetic vs total
+-- =========================
+mth AS (
+  SELECT
+      eom,
+      BANK_CODE,
+      bank_category,
+      CONTRACT_SOURCE_SYSTEM,
+      GL_ACCOUNT_HIER_LEVEL_4,
+
+      SUM(CASE WHEN is_synth = 1 THEN GL_BALANCE ELSE 0 END)     AS synthetic_balance,
+      SUM(CASE WHEN is_synth = 0 THEN GL_BALANCE ELSE 0 END)     AS non_synthetic_balance,
+      SUM(GL_BALANCE)                                            AS total_balance,
+
+      CASE
+        WHEN SUM(GL_BALANCE) = 0 THEN NULL
+        ELSE 1.0 * SUM(CASE WHEN is_synth = 1 THEN GL_BALANCE ELSE 0 END)
+               / NULLIF(SUM(GL_BALANCE),0)
+      END AS pct_synthetic
+  FROM raw
+  GROUP BY 1,2,3,4,5
+),
+
+-- =========================
+-- (D) Time deltas and 12-month rolling statistics
+-- =========================
+calc AS (
+  SELECT
+      eom,
+      BANK_CODE,
+      bank_category,
+      CONTRACT_SOURCE_SYSTEM,
+      GL_ACCOUNT_HIER_LEVEL_4,
+
+      synthetic_balance,
+      non_synthetic_balance,
+      total_balance,
+      pct_synthetic,
+
+      -- MoM deltas
+      (synthetic_balance - LAG(synthetic_balance) OVER (
+         PARTITION BY BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+         ORDER BY eom
+       )) AS synth_delta_mom,
+
+      (pct_synthetic - LAG(pct_synthetic) OVER (
+         PARTITION BY BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+         ORDER BY eom
+       )) AS pct_synth_delta_mom,
+
+      -- Rolling 12 statistics on pct_synthetic (exclude current)
+      AVG(pct_synthetic) OVER (
+        PARTITION BY BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+        ORDER BY eom
+        ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+      ) AS avg_pct_synth_12,
+
+      STDDEV_SAMP(pct_synthetic) OVER (
+        PARTITION BY BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+        ORDER BY eom
+        ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+      ) AS sd_pct_synth_12
+  FROM mth
+),
+
+-- =========================
+-- (E) Z-score on pct_synthetic for the latest month only
+-- =========================
+scored AS (
+  SELECT
+      c.*,
+      CASE
+        WHEN sd_pct_synth_12 IS NULL OR sd_pct_synth_12 = 0 THEN NULL
+        ELSE (pct_synthetic - avg_pct_synth_12) / sd_pct_synth_12
+      END AS z_pct_synth
+  FROM calc c
+  JOIN params p ON 1=1
+  WHERE c.eom = p.asof_eom
+)
+
+-- =========================
+-- (F) Final anomaly list (ranked)
+-- =========================
+SELECT
+    eom,
+    BANK_CODE,
+    bank_category,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_HIER_LEVEL_4,
+
+    synthetic_balance,
+    non_synthetic_balance,
+    total_balance,
+    pct_synthetic,
+
+    synth_delta_mom,
+    pct_synth_delta_mom,
+    avg_pct_synth_12,
+    sd_pct_synth_12,
+    z_pct_synth,
+
+    -- Flags
+    CASE WHEN ABS(pct_synth_delta_mom) >= (SELECT pct_synth_mom_flag FROM params) THEN 1 ELSE 0 END AS flag_big_mix_change,
+    CASE WHEN ABS(synth_delta_mom)      >= (SELECT abs_synth_delta_flag FROM params) THEN 1 ELSE 0 END AS flag_big_abs_change,
+    CASE WHEN ABS(z_pct_synth)          >= (SELECT z_threshold FROM params) THEN 1 ELSE 0 END AS flag_z_outlier,
+
+    ROW_NUMBER() OVER (
+      ORDER BY
+        CASE WHEN ABS(synth_delta_mom) >= (SELECT abs_synth_delta_flag FROM params) THEN 1 ELSE 0 END DESC,
+        ABS(z_pct_synth) DESC NULLS LAST,
+        ABS(pct_synth_delta_mom) DESC NULLS LAST
+    ) AS anomaly_rank
+FROM scored
+WHERE
+    -- keep only interesting rows
+    ABS(pct_synth_delta_mom) >= (SELECT pct_synth_mom_flag FROM params)
+ OR ABS(synth_delta_mom)      >= (SELECT abs_synth_delta_flag FROM params)
+ OR ABS(z_pct_synth)          >= (SELECT z_threshold FROM params)
+ORDER BY anomaly_rank;
+
+
+
+
+
+
 WITH base AS (
   SELECT
       CAST(END_OF_MONTH_DATE AS DATE)                     AS EOM,
