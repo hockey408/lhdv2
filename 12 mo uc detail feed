@@ -1,3 +1,147 @@
+-- ====== PARAMETERS: edit these ======
+-- Anchor date = last month you want included (month-end date)
+-- Example: DATE '2025-08-31'
+WITH params AS (
+  SELECT
+    DATE '2025-08-31'::DATE AS asof_eom,    -- last month-end to include
+    12                                    AS lookback_months,  -- rolling window length
+    2.5                                   AS z_threshold,      -- flag threshold for |z|
+    0.10                                  AS pct_threshold,    -- 10% MoM threshold
+    10000000::NUMERIC                     AS abs_threshold     -- $10M absolute change
+),
+
+-- 1) Limit to the last (lookback_months + 1) months and pre-aggregate
+base AS (
+  SELECT
+      t.END_OF_MONTH_DATE::DATE                AS eom,
+      t.REVISED_BANK,
+      t.CONTRACT_SOURCE_SYSTEM,
+      t.GL_ACCOUNT_HIER_LEVEL_4,
+      SUM(t.GL_BALANCE)                        AS gl_balance
+  FROM V_DPRT_CREDIT_INSTRUMENTS t
+  JOIN params p ON 1=1
+  WHERE t.END_OF_MONTH_DATE BETWEEN
+        ADD_MONTHS(p.asof_eom, -(p.lookback_months))  -- include prior 12 months
+        AND p.asof_eom
+  GROUP BY 1,2,3,4
+),
+
+-- 2) Compute prior-month, Δ, %Δ, and rolling stats on Δ
+calc AS (
+  SELECT
+      eom,
+      REVISED_BANK,
+      CONTRACT_SOURCE_SYSTEM,
+      GL_ACCOUNT_HIER_LEVEL_4,
+
+      gl_balance                                           AS curr_bal,
+      LAG(gl_balance) OVER (
+        PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+        ORDER BY eom
+      )                                                    AS prev_bal,
+
+      /* MoM absolute change */
+      (gl_balance - LAG(gl_balance) OVER (
+         PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+         ORDER BY eom
+       ))                                                  AS delta,
+
+      /* MoM percent change (guard divide-by-zero) */
+      CASE
+        WHEN LAG(gl_balance) OVER (
+               PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+               ORDER BY eom
+             ) = 0
+          OR LAG(gl_balance) OVER (
+               PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+               ORDER BY eom
+             ) IS NULL
+        THEN NULL
+        ELSE (gl_balance - LAG(gl_balance) OVER (
+                PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+                ORDER BY eom
+             ))
+             / NULLIF(LAG(gl_balance) OVER (
+                PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+                ORDER BY eom
+             ), 0)
+      END                                                  AS pct_change,
+
+      /* Rolling stats of delta over prior N months (exclude current row) */
+      AVG( (gl_balance - LAG(gl_balance) OVER (
+               PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+               ORDER BY eom
+           )) )
+      OVER (
+        PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+        ORDER BY eom
+        ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+      )                                                    AS avg_delta_12,
+
+      STDDEV_SAMP( (gl_balance - LAG(gl_balance) OVER (
+                      PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+                      ORDER BY eom
+                    )) )
+      OVER (
+        PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+        ORDER BY eom
+        ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+      )                                                    AS sd_delta_12
+  FROM base
+),
+
+-- 3) Z-score and flags (current month only)
+scored AS (
+  SELECT
+      c.*,
+      CASE
+        WHEN sd_delta_12 IS NULL OR sd_delta_12 = 0 THEN NULL
+        ELSE (delta - avg_delta_12) / sd_delta_12
+      END AS z_score
+  FROM calc c
+  JOIN params p ON 1=1
+  WHERE c.eom = p.asof_eom                -- only show flags for latest month
+)
+
+-- 4) Rank anomalies and filter to interesting rows
+SELECT
+    eom,
+    REVISED_BANK,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_HIER_LEVEL_4,
+
+    prev_bal,
+    curr_bal,
+    delta,
+    pct_change,
+    z_score,
+
+    /* Flags for prioritization */
+    CASE WHEN ABS(z_score) >= p.z_threshold THEN 1 ELSE 0 END AS z_flag,
+    CASE WHEN ABS(delta)  >= p.abs_threshold THEN 1 ELSE 0 END AS abs_flag,
+    CASE WHEN ABS(pct_change) >= p.pct_threshold THEN 1 ELSE 0 END AS pct_flag,
+
+    /* Composite rank: materiality first, then z-score */
+    ROW_NUMBER() OVER (
+      ORDER BY
+        CASE WHEN ABS(delta) >= p.abs_threshold THEN 1 ELSE 0 END DESC,
+        ABS(z_score) DESC NULLS LAST,
+        ABS(pct_change) DESC NULLS LAST
+    ) AS anomaly_rank
+FROM scored s
+JOIN params p ON 1=1
+WHERE
+  /* Show rows that trip at least one meaningful flag */
+  (ABS(z_score) >= p.z_threshold)
+   OR (ABS(delta) >= p.abs_threshold)
+   OR (ABS(pct_change) >= p.pct_threshold)
+ORDER BY anomaly_rank
+;
+
+
+
+
+
 # Python in Excel — Robust Top-25 review (range/table passed via =PY(...))
 # Call example: =PY(Sheet1!A1:Q50000)   <-- include the header row in the range!
 
