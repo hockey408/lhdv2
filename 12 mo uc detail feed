@@ -1,3 +1,98 @@
+-- Set the anchor month (last month-end you want to analyze)
+-- Example: '2025-08-31'
+WITH params AS (
+    SELECT DATE '2025-08-31'::DATE AS asof_eom
+),
+
+-- 1) Pull current and prior month balances, aggregated by dimensions
+base AS (
+    SELECT
+        t.END_OF_MONTH_DATE::DATE AS eom,
+        t.REVISED_BANK,
+        t.CONTRACT_SOURCE_SYSTEM,
+        t.GL_ACCOUNT_HIER_LEVEL_4,
+        SUM(t.GL_BALANCE)           AS gl_balance,
+        SUM(t.SOURCE_SYSTEM_BALANCE) AS source_system_balance,
+        SUM(t.COMMITMENT_BALANCE)    AS commitment_balance,
+        SUM(t.EXPOSURE_AMOUNT)       AS exposure_amount,
+        SUM(t.AVAILABLE_BALANCE)     AS available_balance
+    FROM V_DPRT_CREDIT_INSTRUMENTS t
+    JOIN params p ON 1=1
+    WHERE t.END_OF_MONTH_DATE IN (p.asof_eom, ADD_MONTHS(p.asof_eom,-1))
+    GROUP BY 1,2,3,4
+),
+
+-- 2) Pivot to align current and prior month
+paired AS (
+    SELECT
+        REVISED_BANK,
+        CONTRACT_SOURCE_SYSTEM,
+        GL_ACCOUNT_HIER_LEVEL_4,
+
+        MAX(CASE WHEN eom = p.asof_eom
+                 THEN gl_balance END) AS curr_gl_balance,
+        MAX(CASE WHEN eom = ADD_MONTHS(p.asof_eom,-1)
+                 THEN gl_balance END) AS prev_gl_balance,
+
+        MAX(CASE WHEN eom = p.asof_eom
+                 THEN source_system_balance END) AS curr_source_bal,
+        MAX(CASE WHEN eom = ADD_MONTHS(p.asof_eom,-1)
+                 THEN source_system_balance END) AS prev_source_bal,
+
+        MAX(CASE WHEN eom = p.asof_eom
+                 THEN commitment_balance END) AS curr_commit,
+        MAX(CASE WHEN eom = ADD_MONTHS(p.asof_eom,-1)
+                 THEN commitment_balance END) AS prev_commit,
+
+        MAX(CASE WHEN eom = p.asof_eom
+                 THEN exposure_amount END) AS curr_exposure,
+        MAX(CASE WHEN eom = ADD_MONTHS(p.asof_eom,-1)
+                 THEN exposure_amount END) AS prev_exposure,
+
+        MAX(CASE WHEN eom = p.asof_eom
+                 THEN available_balance END) AS curr_available,
+        MAX(CASE WHEN eom = ADD_MONTHS(p.asof_eom,-1)
+                 THEN available_balance END) AS prev_available
+    FROM base b
+    JOIN params p ON 1=1
+    GROUP BY 1,2,3
+)
+
+-- 3) Calculate variance
+SELECT
+    REVISED_BANK,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_HIER_LEVEL_4,
+
+    curr_gl_balance, prev_gl_balance,
+    (curr_gl_balance - prev_gl_balance) AS gl_delta,
+    CASE WHEN prev_gl_balance = 0 OR prev_gl_balance IS NULL
+         THEN NULL
+         ELSE (curr_gl_balance - prev_gl_balance) / prev_gl_balance
+    END AS gl_pct_change,
+
+    curr_source_bal, prev_source_bal,
+    (curr_source_bal - prev_source_bal) AS source_delta,
+
+    curr_commit, prev_commit,
+    (curr_commit - prev_commit) AS commit_delta,
+
+    curr_exposure, prev_exposure,
+    (curr_exposure - prev_exposure) AS exposure_delta,
+
+    curr_available, prev_available,
+    (curr_available - prev_available) AS available_delta
+
+FROM paired
+ORDER BY ABS(curr_gl_balance - prev_gl_balance) DESC NULLS LAST
+FETCH FIRST 50 ROWS ONLY;
+
+
+
+
+
+
+
 WITH detail AS (
     SELECT
         END_OF_MONTH_DATE,
