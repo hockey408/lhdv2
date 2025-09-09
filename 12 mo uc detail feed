@@ -1,3 +1,37 @@
+WITH params AS (
+  SELECT
+    DATE '2025-08-31' AS asof_eom,
+    17 AS lookback_months   -- prior 17 + current = 18 months total
+),
+base AS (
+  SELECT
+      t.END_OF_MONTH_DATE::DATE AS eom,
+      t.BANK_CODE,
+      t.CONTRACT_SOURCE_SYSTEM,
+      t.GL_ACCOUNT_HIER_LEVEL_4,
+      t.LOAN_ID,
+      t.EXPOSURE_AMOUNT,
+      /* Map Non-Accrual to 1/0 if your source uses Y/N or text */
+      CASE
+        WHEN t.NON_ACCRUAL_FLAG IN (1, '1', 'Y', 'YES', 'T', 'TRUE') THEN 1
+        ELSE 0
+      END AS NON_ACCRUAL_FLAG,
+      t.INDUSTRY_CODE,
+      t.RISK_RATING
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  JOIN params p ON 1=1
+  WHERE t.END_OF_MONTH_DATE BETWEEN ADD_MONTHS(p.asof_eom, -lookback_months)
+                                AND p.asof_eom
+)
+SELECT *
+FROM base
+ORDER BY eom DESC
+LIMIT 100;
+
+
+
+
+
 -- Anchor at the latest month-end you want in the dashboard
 WITH params AS (
   SELECT
