@@ -1,3 +1,138 @@
+-- Set the anchor month (latest month-end you want to analyze)
+-- Example: DATE '2025-08-31'
+WITH params AS (
+  SELECT
+    DATE '2025-08-31'::DATE AS asof_eom,
+    12                      AS lookback_months,  -- prior 12 + current = 13 months
+    2.5::FLOAT              AS z_threshold,
+    0.10::FLOAT             AS pct_threshold,    -- 10% MoM % change threshold
+    10000000::NUMERIC       AS abs_threshold     -- $10M absolute MoM change threshold
+),
+
+/* 1) Pre-aggregate to month × dims to reduce volume */
+base AS (
+  SELECT
+      t.END_OF_MONTH_DATE::DATE AS eom,
+      t.BANK_CODE,
+      t.CONTRACT_SOURCE_SYSTEM,
+      t.GL_ACCOUNT_HIER_LEVEL_4,
+      SUM(t.GL_BALANCE) AS measure_val           -- swap this line to analyze other measures
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  JOIN params p ON 1=1
+  WHERE t.END_OF_MONTH_DATE BETWEEN ADD_MONTHS(p.asof_eom, -p.lookback_months)
+                                AND p.asof_eom
+  GROUP BY 1,2,3,4
+),
+
+/* 2) Compute prior-month and delta (single window usage) */
+calc1 AS (
+  SELECT
+      eom,
+      BANK_CODE,
+      CONTRACT_SOURCE_SYSTEM,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      measure_val                                                AS curr_val,
+      LAG(measure_val) OVER (
+        PARTITION BY BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+        ORDER BY eom
+      )                                                          AS prev_val,
+      (measure_val - LAG(measure_val) OVER (
+         PARTITION BY BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+         ORDER BY eom
+       ))                                                        AS delta
+  FROM base
+),
+
+/* 3) Add % change (uses prev_val computed above; still no nesting) */
+calc2 AS (
+  SELECT
+      eom,
+      BANK_CODE,
+      CONTRACT_SOURCE_SYSTEM,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      curr_val,
+      prev_val,
+      delta,
+      CASE
+        WHEN prev_val IS NULL OR prev_val = 0 THEN NULL
+        ELSE delta / prev_val
+      END AS pct_change
+  FROM calc1
+),
+
+/* 4) Rolling stats over delta (now delta is a simple column, so no nested window funcs) */
+roll AS (
+  SELECT
+      eom,
+      BANK_CODE,
+      CONTRACT_SOURCE_SYSTEM,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      curr_val,
+      prev_val,
+      delta,
+      pct_change,
+      AVG(delta)       OVER (
+        PARTITION BY BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+        ORDER BY eom
+        ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+      ) AS avg_delta_12,
+      STDDEV_SAMP(delta) OVER (
+        PARTITION BY BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+        ORDER BY eom
+        ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+      ) AS sd_delta_12
+  FROM calc2
+),
+
+/* 5) Latest month only + z-score */
+scored AS (
+  SELECT
+      r.*,
+      CASE
+        WHEN sd_delta_12 IS NULL OR sd_delta_12 = 0 THEN NULL
+        ELSE (delta - avg_delta_12) / sd_delta_12
+      END AS z_score
+  FROM roll r
+  JOIN params p ON r.eom = p.asof_eom
+)
+
+/* 6) Flag, rank, and return anomalies */
+SELECT
+    eom,
+    BANK_CODE,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    prev_val,
+    curr_val,
+    delta,
+    pct_change,
+    avg_delta_12,
+    sd_delta_12,
+    z_score,
+
+    CASE WHEN z_score IS NOT NULL AND ABS(z_score) >= p.z_threshold THEN 1 ELSE 0 END AS flag_z,
+    CASE WHEN ABS(delta)      >= p.abs_threshold                        THEN 1 ELSE 0 END AS flag_abs,
+    CASE WHEN ABS(pct_change) >= p.pct_threshold                         THEN 1 ELSE 0 END AS flag_pct,
+
+    ROW_NUMBER() OVER (
+      ORDER BY
+        CASE WHEN ABS(delta) >= p.abs_threshold THEN 1 ELSE 0 END DESC,
+        ABS(z_score) DESC NULLS LAST,
+        ABS(pct_change) DESC NULLS LAST
+    ) AS anomaly_rank
+FROM scored s
+JOIN params p ON 1=1
+WHERE
+      (z_score IS NOT NULL AND ABS(z_score) >= p.z_threshold)
+   OR (ABS(delta)      >= p.abs_threshold)
+   OR (ABS(pct_change) >= p.pct_threshold)
+ORDER BY anomaly_rank
+LIMIT 100;
+
+
+
+
+
 -- Set the anchor month you want to analyze (latest month-end available)
 -- Example: DATE '2025-08-31'
 WITH params AS (
