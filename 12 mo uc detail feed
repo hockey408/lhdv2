@@ -1,5 +1,325 @@
 WITH params AS (
   SELECT
+    DATE '2025-08-31' AS asof_eom,      -- latest month-end to report
+    17 AS lookback_months               -- prior 17 + current = 18 months
+),
+
+/* 0) Base slice (last 18 months); map NA flag to 1/0 */
+base AS (
+  SELECT
+      CAST(t.END_OF_MONTH_DATE AS DATE) AS eom,
+      t.BANK_CODE,
+      t.CONTRACT_SOURCE_SYSTEM,
+      t.GL_ACCOUNT_HIER_LEVEL_4,
+      t.LOAN_ID,
+      t.EXPOSURE_AMOUNT,
+      CASE
+        WHEN t.NON_ACCRUAL_FLAG IN (1, '1', 'Y', 'YES', 'T', 'TRUE') THEN 1
+        ELSE 0
+      END AS NON_ACCRUAL_FLAG,
+      t.INDUSTRY_CODE,     -- optional, keep if available
+      t.RISK_RATING        -- optional, keep if available
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  JOIN params p ON 1=1
+  WHERE t.END_OF_MONTH_DATE BETWEEN ADD_MONTHS(p.asof_eom, -lookback_months) AND p.asof_eom
+),
+
+/* 1) Month-over-month transitions per loan */
+lagged AS (
+  SELECT
+    b.*,
+    LAG(b.NON_ACCRUAL_FLAG) OVER (PARTITION BY b.LOAN_ID ORDER BY b.eom) AS prev_na_flag,
+    LAG(b.EXPOSURE_AMOUNT)  OVER (PARTITION BY b.LOAN_ID ORDER BY b.eom) AS prev_exposure
+  FROM base b
+),
+
+classified AS (
+  SELECT
+    eom, BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+    LOAN_ID, EXPOSURE_AMOUNT, prev_exposure,
+    NON_ACCRUAL_FLAG, prev_na_flag,
+    INDUSTRY_CODE, RISK_RATING,
+    CASE
+      WHEN NON_ACCRUAL_FLAG = 1 AND COALESCE(prev_na_flag,0) = 0 THEN 'ADD'
+      WHEN NON_ACCRUAL_FLAG = 0 AND COALESCE(prev_na_flag,0) = 1 THEN 'REMOVAL'
+      WHEN NON_ACCRUAL_FLAG = 1 AND COALESCE(prev_na_flag,0) = 1 THEN 'PERSIST'
+      ELSE 'OTHER'
+    END AS na_transition
+  FROM lagged
+),
+
+/* 2) Current month slice */
+current_month AS (
+  SELECT c.*
+  FROM classified c
+  JOIN params p ON c.eom = p.asof_eom
+),
+
+/* 3) KPI rollups for current month (by BANK/SYSTEM/GL_L4) */
+kpi AS (
+  SELECT
+    BANK_CODE,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_HIER_LEVEL_4,
+
+    SUM(CASE WHEN na_transition='ADD'     THEN EXPOSURE_AMOUNT  ELSE 0 END) AS adds_exposure,
+    COUNT(CASE WHEN na_transition='ADD'     THEN 1 END)                      AS adds_count,
+
+    SUM(CASE WHEN na_transition='REMOVAL' THEN prev_exposure  ELSE 0 END)   AS removals_exposure,
+    COUNT(CASE WHEN na_transition='REMOVAL' THEN 1 END)                      AS removals_count,
+
+    SUM(CASE WHEN na_transition='PERSIST' THEN EXPOSURE_AMOUNT ELSE 0 END)  AS persist_exposure,
+    COUNT(CASE WHEN na_transition='PERSIST' THEN 1 END)                      AS persist_count
+  FROM current_month
+  GROUP BY 1,2,3
+),
+
+na_eom AS (
+  SELECT
+    BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+    SUM(EXPOSURE_AMOUNT) AS na_eom_exposure,
+    COUNT(*)             AS na_eom_count
+  FROM current_month
+  WHERE NON_ACCRUAL_FLAG = 1
+  GROUP BY 1,2,3
+),
+
+kpi_out AS (
+  SELECT
+    'KPI'::VARCHAR(20) AS section,
+    (SELECT asof_eom FROM params) AS eom,
+    k.BANK_CODE, k.CONTRACT_SOURCE_SYSTEM, k.GL_ACCOUNT_HIER_LEVEL_4,
+    'na_eom_exposure'::VARCHAR(50) AS metric_name,
+    COALESCE(n.na_eom_exposure,0)::NUMERIC AS metric_value,
+    NULL::VARCHAR(100) AS extra_dim1,
+    NULL::VARCHAR(100) AS extra_dim2
+  FROM kpi k
+  LEFT JOIN na_eom n
+    ON n.BANK_CODE=k.BANK_CODE AND n.CONTRACT_SOURCE_SYSTEM=k.CONTRACT_SOURCE_SYSTEM AND n.GL_ACCOUNT_HIER_LEVEL_4=k.GL_ACCOUNT_HIER_LEVEL_4
+
+  UNION ALL
+  SELECT 'KPI', (SELECT asof_eom FROM params), k.BANK_CODE, k.CONTRACT_SOURCE_SYSTEM, k.GL_ACCOUNT_HIER_LEVEL_4,
+         'na_eom_count', COALESCE(n.na_eom_count,0), NULL, NULL
+  FROM kpi k
+  LEFT JOIN na_eom n
+    ON n.BANK_CODE=k.BANK_CODE AND n.CONTRACT_SOURCE_SYSTEM=k.CONTRACT_SOURCE_SYSTEM AND n.GL_ACCOUNT_HIER_LEVEL_4=k.GL_ACCOUNT_HIER_LEVEL_4
+
+  UNION ALL
+  SELECT 'KPI', (SELECT asof_eom FROM params), BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+         'adds_exposure', adds_exposure, NULL, NULL
+  FROM kpi
+  UNION ALL
+  SELECT 'KPI', (SELECT asof_eom FROM params), BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+         'adds_count', adds_count, NULL, NULL
+  FROM kpi
+  UNION ALL
+  SELECT 'KPI', (SELECT asof_eom FROM params), BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+         'removals_exposure', removals_exposure, NULL, NULL
+  FROM kpi
+  UNION ALL
+  SELECT 'KPI', (SELECT asof_eom FROM params), BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+         'removals_count', removals_count, NULL, NULL
+  FROM kpi
+  UNION ALL
+  SELECT 'KPI', (SELECT asof_eom FROM params), BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+         'persist_exposure', persist_exposure, NULL, NULL
+  FROM kpi
+  UNION ALL
+  SELECT 'KPI', (SELECT asof_eom FROM params), BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+         'persist_count', persist_count, NULL, NULL
+  FROM kpi
+),
+
+/* 4) Waterfall inputs: Start (prev NA), Adds, Removals, End (curr NA) */
+prev_na AS (
+  SELECT
+    BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+    SUM(EXPOSURE_AMOUNT) AS prev_na_exposure
+  FROM classified c
+  JOIN params p ON c.eom = ADD_MONTHS(p.asof_eom, -1)
+  WHERE c.NON_ACCRUAL_FLAG = 1
+  GROUP BY 1,2,3
+),
+curr_na AS (
+  SELECT
+    BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+    SUM(EXPOSURE_AMOUNT) AS curr_na_exposure
+  FROM current_month
+  WHERE NON_ACCRUAL_FLAG = 1
+  GROUP BY 1,2,3
+),
+flows AS (
+  SELECT
+    BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+    SUM(CASE WHEN na_transition='ADD'     THEN EXPOSURE_AMOUNT ELSE 0 END) AS adds_exposure,
+    SUM(CASE WHEN na_transition='REMOVAL' THEN prev_exposure  ELSE 0 END) AS removals_exposure
+  FROM current_month
+  GROUP BY 1,2,3
+),
+waterfall_long AS (
+  SELECT
+    'WATERFALL'::VARCHAR(20) AS section,
+    (SELECT asof_eom FROM params) AS eom,
+    COALESCE(c.BANK_CODE,p.BANK_CODE,f.BANK_CODE) AS BANK_CODE,
+    COALESCE(c.CONTRACT_SOURCE_SYSTEM,p.CONTRACT_SOURCE_SYSTEM,f.CONTRACT_SOURCE_SYSTEM) AS CONTRACT_SOURCE_SYSTEM,
+    COALESCE(c.GL_ACCOUNT_HIER_LEVEL_4,p.GL_ACCOUNT_HIER_LEVEL_4,f.GL_ACCOUNT_HIER_LEVEL_4) AS GL_ACCOUNT_HIER_LEVEL_4,
+    'start_balance'::VARCHAR(50) AS metric_name,
+    COALESCE(p.prev_na_exposure,0)::NUMERIC AS metric_value,
+    NULL::VARCHAR(100) AS extra_dim1,
+    NULL::VARCHAR(100) AS extra_dim2
+  FROM curr_na c
+  FULL OUTER JOIN prev_na p
+    ON p.BANK_CODE=c.BANK_CODE AND p.CONTRACT_SOURCE_SYSTEM=c.CONTRACT_SOURCE_SYSTEM AND p.GL_ACCOUNT_HIER_LEVEL_4=c.GL_ACCOUNT_HIER_LEVEL_4
+  FULL OUTER JOIN flows f
+    ON f.BANK_CODE = COALESCE(c.BANK_CODE,p.BANK_CODE)
+   AND f.CONTRACT_SOURCE_SYSTEM = COALESCE(c.CONTRACT_SOURCE_SYSTEM,p.CONTRACT_SOURCE_SYSTEM)
+   AND f.GL_ACCOUNT_HIER_LEVEL_4 = COALESCE(c.GL_ACCOUNT_HIER_LEVEL_4,p.GL_ACCOUNT_HIER_LEVEL_4)
+
+  UNION ALL
+  SELECT 'WATERFALL', (SELECT asof_eom FROM params), 
+         COALESCE(c.BANK_CODE,p.BANK_CODE,f.BANK_CODE),
+         COALESCE(c.CONTRACT_SOURCE_SYSTEM,p.CONTRACT_SOURCE_SYSTEM,f.CONTRACT_SOURCE_SYSTEM),
+         COALESCE(c.GL_ACCOUNT_HIER_LEVEL_4,p.GL_ACCOUNT_HIER_LEVEL_4,f.GL_ACCOUNT_HIER_LEVEL_4),
+         'adds', COALESCE(f.adds_exposure,0), NULL, NULL
+  FROM curr_na c
+  FULL OUTER JOIN prev_na p
+    ON p.BANK_CODE=c.BANK_CODE AND p.CONTRACT_SOURCE_SYSTEM=c.CONTRACT_SOURCE_SYSTEM AND p.GL_ACCOUNT_HIER_LEVEL_4=c.GL_ACCOUNT_HIER_LEVEL_4
+  FULL OUTER JOIN flows f
+    ON f.BANK_CODE = COALESCE(c.BANK_CODE,p.BANK_CODE)
+   AND f.CONTRACT_SOURCE_SYSTEM = COALESCE(c.CONTRACT_SOURCE_SYSTEM,p.CONTRACT_SOURCE_SYSTEM)
+   AND f.GL_ACCOUNT_HIER_LEVEL_4 = COALESCE(c.GL_ACCOUNT_HIER_LEVEL_4,p.GL_ACCOUNT_HIER_LEVEL_4)
+
+  UNION ALL
+  SELECT 'WATERFALL', (SELECT asof_eom FROM params), 
+         COALESCE(c.BANK_CODE,p.BANK_CODE,f.BANK_CODE),
+         COALESCE(c.CONTRACT_SOURCE_SYSTEM,p.CONTRACT_SOURCE_SYSTEM,f.CONTRACT_SOURCE_SYSTEM),
+         COALESCE(c.GL_ACCOUNT_HIER_LEVEL_4,p.GL_ACCOUNT_HIER_LEVEL_4,f.GL_ACCOUNT_HIER_LEVEL_4),
+         'removals', -COALESCE(f.removals_exposure,0), NULL, NULL
+  FROM curr_na c
+  FULL OUTER JOIN prev_na p
+    ON p.BANK_CODE=c.BANK_CODE AND p.CONTRACT_SOURCE_SYSTEM=c.CONTRACT_SOURCE_SYSTEM AND p.GL_ACCOUNT_HIER_LEVEL_4=c.GL_ACCOUNT_HIER_LEVEL_4
+  FULL OUTER JOIN flows f
+    ON f.BANK_CODE = COALESCE(c.BANK_CODE,p.BANK_CODE)
+   AND f.CONTRACT_SOURCE_SYSTEM = COALESCE(c.CONTRACT_SOURCE_SYSTEM,p.CONTRACT_SOURCE_SYSTEM)
+   AND f.GL_ACCOUNT_HIER_LEVEL_4 = COALESCE(c.GL_ACCOUNT_HIER_LEVEL_4,p.GL_ACCOUNT_HIER_LEVEL_4)
+
+  UNION ALL
+  SELECT 'WATERFALL', (SELECT asof_eom FROM params), 
+         COALESCE(c.BANK_CODE,p.BANK_CODE,f.BANK_CODE),
+         COALESCE(c.CONTRACT_SOURCE_SYSTEM,p.CONTRACT_SOURCE_SYSTEM,f.CONTRACT_SOURCE_SYSTEM),
+         COALESCE(c.GL_ACCOUNT_HIER_LEVEL_4,p.GL_ACCOUNT_HIER_LEVEL_4,f.GL_ACCOUNT_HIER_LEVEL_4),
+         'end_balance', COALESCE(c.curr_na_exposure,0), NULL, NULL
+  FROM curr_na c
+  FULL OUTER JOIN prev_na p
+    ON p.BANK_CODE=c.BANK_CODE AND p.CONTRACT_SOURCE_SYSTEM=c.CONTRACT_SOURCE_SYSTEM AND p.GL_ACCOUNT_HIER_LEVEL_4=c.GL_ACCOUNT_HIER_LEVEL_4
+  FULL OUTER JOIN flows f
+    ON f.BANK_CODE = COALESCE(c.BANK_CODE,p.BANK_CODE)
+   AND f.CONTRACT_SOURCE_SYSTEM = COALESCE(c.CONTRACT_SOURCE_SYSTEM,p.CONTRACT_SOURCE_SYSTEM)
+   AND f.GL_ACCOUNT_HIER_LEVEL_4 = COALESCE(c.GL_ACCOUNT_HIER_LEVEL_4,p.GL_ACCOUNT_HIER_LEVEL_4)
+),
+
+/* 5) Persistence months (avg duration in NA as of current eom) */
+na_only AS (
+  SELECT * FROM base WHERE NON_ACCRUAL_FLAG = 1
+),
+lag_na AS (
+  SELECT
+    n.*,
+    LAG(n.eom) OVER (PARTITION BY n.LOAN_ID ORDER BY n.eom) AS prev_eom
+  FROM na_only n
+),
+entries AS (
+  SELECT
+    l.*,
+    CASE WHEN l.prev_eom IS NULL OR l.prev_eom <> ADD_MONTHS(l.eom,-1) THEN 1 ELSE 0 END AS is_entry
+  FROM lag_na l
+),
+streaks AS (
+  SELECT
+    e.*,
+    SUM(is_entry) OVER (PARTITION BY e.LOAN_ID ORDER BY e.eom) AS streak_id
+  FROM entries e
+),
+fixed_streak_stats AS (
+  SELECT
+    s.LOAN_ID, s.BANK_CODE, s.CONTRACT_SOURCE_SYSTEM, s.GL_ACCOUNT_HIER_LEVEL_4,
+    s.INDUSTRY_CODE, s.RISK_RATING,
+    MIN(s.eom) OVER (PARTITION BY s.LOAN_ID, s.streak_id) AS entry_month,
+    s.eom,
+    ( (EXTRACT(YEAR  FROM s.eom) - EXTRACT(YEAR  FROM MIN(s.eom) OVER (PARTITION BY s.LOAN_ID, s.streak_id))) * 12
+    + (EXTRACT(MONTH FROM s.eom) - EXTRACT(MONTH FROM MIN(s.eom) OVER (PARTITION BY s.LOAN_ID, s.streak_id))) )::INT AS months_since_entry,
+    s.EXPOSURE_AMOUNT
+  FROM streaks s
+),
+curr_persistence AS (
+  SELECT
+    f.BANK_CODE, f.CONTRACT_SOURCE_SYSTEM, f.GL_ACCOUNT_HIER_LEVEL_4,
+    AVG(months_since_entry)::FLOAT AS avg_persistence_months
+  FROM fixed_streak_stats f
+  JOIN params p ON f.eom = p.asof_eom
+  GROUP BY 1,2,3
+),
+persistence_long AS (
+  SELECT
+    'PERSISTENCE'::VARCHAR(20) AS section,
+    (SELECT asof_eom FROM params) AS eom,
+    BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+    'avg_persistence_months'::VARCHAR(50) AS metric_name,
+    avg_persistence_months::NUMERIC AS metric_value,
+    NULL::VARCHAR(100) AS extra_dim1,
+    NULL::VARCHAR(100) AS extra_dim2
+  FROM curr_persistence
+),
+
+/* 6) Adds composition (by Industry & Risk) */
+adds_comp AS (
+  SELECT
+    c.BANK_CODE, c.CONTRACT_SOURCE_SYSTEM, c.GL_ACCOUNT_HIER_LEVEL_4,
+    COALESCE(c.INDUSTRY_CODE,'(unknown)') AS INDUSTRY_CODE,
+    COALESCE(c.RISK_RATING,'(unknown)')   AS RISK_RATING,
+    SUM(CASE WHEN c.na_transition='ADD' THEN c.EXPOSURE_AMOUNT ELSE 0 END) AS adds_exposure,
+    COUNT(CASE WHEN c.na_transition='ADD' THEN 1 END)                       AS adds_count
+  FROM current_month c
+  GROUP BY 1,2,3,4,5
+),
+adds_long AS (
+  SELECT
+    'ADDS_COMPOSITION'::VARCHAR(20) AS section,
+    (SELECT asof_eom FROM params) AS eom,
+    BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+    'adds_exposure'::VARCHAR(50) AS metric_name,
+    adds_exposure::NUMERIC AS metric_value,
+    INDUSTRY_CODE AS extra_dim1,
+    RISK_RATING  AS extra_dim2
+  FROM adds_comp
+
+  UNION ALL
+  SELECT
+    'ADDS_COMPOSITION', (SELECT asof_eom FROM params),
+    BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+    'adds_count', adds_count::NUMERIC,
+    INDUSTRY_CODE, RISK_RATING
+  FROM adds_comp
+)
+
+/* === Final unified long-format output === */
+SELECT * FROM kpi_out
+UNION ALL
+SELECT * FROM waterfall_long
+UNION ALL
+SELECT * FROM persistence_long
+UNION ALL
+SELECT * FROM adds_long
+ORDER BY section, BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4, metric_name, extra_dim1, extra_dim2
+LIMIT 10000;
+
+
+
+
+
+
+WITH params AS (
+  SELECT
     DATE '2025-08-31' AS asof_eom,
     17 AS lookback_months   -- prior 17 + current = 18 months total
 ),
