@@ -1,3 +1,39 @@
+, lagged AS (
+  SELECT
+    b.*,
+    LAG(b.NON_ACCRUAL_FLAG) OVER (
+      PARTITION BY b.LOAN_ID
+      ORDER BY b.eom
+    ) AS prev_na_flag,
+
+    LAG(b.EXPOSURE_AMOUNT) OVER (
+      PARTITION BY b.LOAN_ID
+      ORDER BY b.eom
+    ) AS prev_exposure
+  FROM base b
+),
+
+/* Classify each loan each month */
+classified AS (
+  SELECT
+    eom, BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+    LOAN_ID, EXPOSURE_AMOUNT, prev_exposure,
+    NON_ACCRUAL_FLAG, prev_na_flag,
+    INDUSTRY_CODE, RISK_RATING,
+
+    CASE
+      WHEN NON_ACCRUAL_FLAG = 1 AND COALESCE(prev_na_flag,0) = 0 THEN 'ADD'
+      WHEN NON_ACCRUAL_FLAG = 0 AND COALESCE(prev_na_flag,0) = 1 THEN 'REMOVAL'
+      WHEN NON_ACCRUAL_FLAG = 1 AND COALESCE(prev_na_flag,0) = 1 THEN 'PERSIST'
+      ELSE 'OTHER'
+    END AS na_transition
+  FROM lagged
+)
+
+
+
+
+
 -- Set the anchor month (latest month-end you want to analyze)
 -- Example: DATE '2025-08-31'
 WITH params AS (
