@@ -1,3 +1,143 @@
+-- Set the anchor month you want to analyze (latest month-end available)
+-- Example: DATE '2025-08-31'
+WITH params AS (
+  SELECT
+    DATE '2025-08-31'::DATE AS asof_eom,
+    12                      AS lookback_months,     -- prior 12 + current = 13 months total
+    2.5::FLOAT              AS z_threshold,         -- z-score flag threshold
+    0.10::FLOAT             AS pct_threshold,       -- 10% MoM % change threshold
+    10000000::NUMERIC       AS abs_threshold        -- $10M absolute MoM change threshold
+),
+
+/* 1) Pre-aggregate to reduce volume (month × dims) */
+base AS (
+  SELECT
+      t.END_OF_MONTH_DATE::DATE AS eom,
+      t.REVISED_BANK,
+      t.CONTRACT_SOURCE_SYSTEM,
+      t.GL_ACCOUNT_HIER_LEVEL_4,
+      SUM(t.GL_BALANCE) AS measure_val
+  FROM V_DPRT_CREDIT_INSTRUMENTS t
+  JOIN params p ON 1=1
+  WHERE t.END_OF_MONTH_DATE BETWEEN ADD_MONTHS(p.asof_eom, -p.lookback_months)
+                                AND p.asof_eom
+  GROUP BY 1,2,3,4
+),
+
+/* 2) Compute prior month, MoM Δ and %Δ, plus rolling stats on Δ over prior 12 months */
+calc AS (
+  SELECT
+      eom,
+      REVISED_BANK,
+      CONTRACT_SOURCE_SYSTEM,
+      GL_ACCOUNT_HIER_LEVEL_4,
+
+      measure_val                                                   AS curr_val,
+      LAG(measure_val) OVER (
+        PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+        ORDER BY eom
+      )                                                             AS prev_val,
+
+      (measure_val - LAG(measure_val) OVER (
+         PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+         ORDER BY eom
+       ))                                                           AS delta,
+
+      CASE
+        WHEN LAG(measure_val) OVER (
+               PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+               ORDER BY eom
+             ) IS NULL
+             OR LAG(measure_val) OVER (
+               PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+               ORDER BY eom
+             ) = 0
+        THEN NULL
+        ELSE (measure_val - LAG(measure_val) OVER (
+                PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+                ORDER BY eom
+             ))
+             / NULLIF(LAG(measure_val) OVER (
+                PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+                ORDER BY eom
+             ), 0)
+      END                                                           AS pct_change,
+
+      AVG( (measure_val - LAG(measure_val) OVER (
+               PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+               ORDER BY eom
+           )) )
+      OVER (
+        PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+        ORDER BY eom
+        ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+      )                                                             AS avg_delta_12,
+
+      STDDEV_SAMP( (measure_val - LAG(measure_val) OVER (
+                      PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+                      ORDER BY eom
+                    )) )
+      OVER (
+        PARTITION BY REVISED_BANK, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4
+        ORDER BY eom
+        ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+      )                                                             AS sd_delta_12
+  FROM base
+),
+
+/* 3) Compute z-score (for latest month only) */
+scored AS (
+  SELECT
+      c.*,
+      CASE
+        WHEN sd_delta_12 IS NULL OR sd_delta_12 = 0 THEN NULL
+        ELSE (delta - avg_delta_12) / sd_delta_12
+      END AS z_score
+  FROM calc c
+  JOIN params p ON 1=1
+  WHERE c.eom = p.asof_eom
+)
+
+/* 4) Flag and rank anomalies for leadership */
+SELECT
+    eom,
+    REVISED_BANK,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_HIER_LEVEL_4,
+
+    prev_val,
+    curr_val,
+    delta,
+    pct_change,
+    avg_delta_12,
+    sd_delta_12,
+    z_score,
+
+    /* Flags */
+    CASE WHEN z_score IS NOT NULL AND ABS(z_score) >= p.z_threshold THEN 1 ELSE 0 END AS flag_z,
+    CASE WHEN ABS(delta)      >= p.abs_threshold                        THEN 1 ELSE 0 END AS flag_abs,
+    CASE WHEN ABS(pct_change) >= p.pct_threshold                         THEN 1 ELSE 0 END AS flag_pct,
+
+    /* Composite ranking: materiality first, then z, then % */
+    ROW_NUMBER() OVER (
+      ORDER BY
+        CASE WHEN ABS(delta) >= p.abs_threshold THEN 1 ELSE 0 END DESC,
+        ABS(z_score) DESC NULLS LAST,
+        ABS(pct_change) DESC NULLS LAST
+    ) AS anomaly_rank
+FROM scored s
+JOIN params p ON 1=1
+WHERE
+      (z_score IS NOT NULL AND ABS(z_score) >= p.z_threshold)
+   OR (ABS(delta)      >= p.abs_threshold)
+   OR (ABS(pct_change) >= p.pct_threshold)
+ORDER BY anomaly_rank
+LIMIT 100;
+
+
+
+
+
 -- Set the anchor month (last month-end you want to analyze)
 -- Example: '2025-08-31'
 WITH params AS (
