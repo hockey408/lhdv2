@@ -1,3 +1,31 @@
+-- Anchor at the latest month-end you want in the dashboard
+WITH params AS (
+  SELECT
+    DATE '2025-08-31'::DATE AS asof_eom,
+    17 AS lookback_months  -- prior 17 + current = 18 months
+),
+
+/* Base: keep only fields we need */
+base AS (
+  SELECT
+    t.END_OF_MONTH_DATE::DATE AS eom,
+    t.BANK_CODE,
+    t.CONTRACT_SOURCE_SYSTEM,
+    t.GL_ACCOUNT_HIER_LEVEL_4,
+    t.LOAN_ID,
+    t.EXPOSURE_AMOUNT,                     -- or your preferred balance
+    t.NON_ACCRUAL_FLAG,                    -- 1/0 (adjust if Y/N or text)
+    t.INDUSTRY_CODE,                       -- optional
+    t.RISK_RATING                          -- optional
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  JOIN params p ON 1=1
+  WHERE t.END_OF_MONTH_DATE BETWEEN ADD_MONTHS(p.asof_eom, -p.lookback_months)
+                                AND p.asof_eom
+)
+
+
+
+
 , lagged AS (
   SELECT
     b.*,
