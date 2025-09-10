@@ -1,6 +1,131 @@
 /* ====== PARAMETERS ====== */
 WITH params AS (
   SELECT
+    DATE '2025-07-31'                 AS curr_eom,  -- set reporting month
+    ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom,
+    100::INT                          AS top_n      -- rows to return
+),
+
+/* ====== BASE POP (apply your filters) ====== */
+pop AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE) AS End_of_Month_Date,
+      Account_Identifier,
+      Account_Name,
+      Bank_Code,
+      Contract_Source_System,
+      Source_System_Balance,
+      Non_Accrual_Flag,
+      GL_ACCOUNT_HIER_LEVEL_4
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+),
+
+/* ====== AGGREGATE per month to avoid duplicate joins ====== */
+curr_agg AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    SUM(Source_System_Balance)::NUMERIC AS Curr_Bal
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+  GROUP BY 1,2,3
+),
+prev_agg AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    SUM(Source_System_Balance)::NUMERIC AS Prev_Bal
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+  GROUP BY 1,2,3
+),
+
+/* ====== MoM join to determine status ====== */
+mom_raw AS (
+  SELECT
+    COALESCE(c.Bank_Code,             p.Bank_Code)              AS Bank_Code,
+    COALESCE(c.Contract_Source_System,p.Contract_Source_System) AS Contract_Source_System,
+    COALESCE(c.Account_Identifier,    p.Account_Identifier)     AS Account_Identifier,
+    COALESCE(c.Account_Name,          p.Account_Name)           AS Account_Name,
+    CASE
+      WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'ADD'
+      WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'REMOVAL'
+      ELSE 'PERSIST'
+    END AS NA_Transition,
+    p.Prev_Bal,
+    c.Curr_Bal
+  FROM curr_agg c
+  FULL OUTER JOIN prev_agg p
+    ON  c.Account_Identifier     = p.Account_Identifier
+    AND c.Bank_Code              = p.Bank_Code
+    AND c.Contract_Source_System = p.Contract_Source_System
+),
+
+/* ====== Assign size metric used for ranking ====== */
+scored AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    Account_Identifier,
+    Account_Name,
+    NA_Transition,
+    Prev_Bal,
+    Curr_Bal,
+    CASE
+      WHEN NA_Transition = 'REMOVAL' THEN COALESCE(Prev_Bal,0)
+      ELSE COALESCE(Curr_Bal,0)
+    END AS size_metric
+  FROM mom_raw
+),
+
+/* ====== Rank and cap to top_n without using LIMIT subquery ====== */
+ranked AS (
+  SELECT
+    s.*,
+    ROW_NUMBER() OVER (
+      ORDER BY size_metric DESC NULLS LAST, Account_Identifier
+    ) AS rnk
+  FROM scored s
+)
+
+/* ====== Final output ====== */
+SELECT
+  Bank_Code,
+  Contract_Source_System,
+  NA_Transition,
+  Account_Identifier,
+  Account_Name,
+  Prev_Bal,
+  Curr_Bal,
+  size_metric
+FROM ranked r
+CROSS JOIN params p
+WHERE r.rnk <= p.top_n
+  AND NA_Transition IN ('ADD','REMOVAL','PERSIST')
+ORDER BY
+  size_metric DESC NULLS LAST,
+  Bank_Code,
+  Contract_Source_System,
+  Account_Identifier;
+
+
+
+
+
+
+/* ====== PARAMETERS ====== */
+WITH params AS (
+  SELECT
     DATE '2025-07-31'                 AS curr_eom,   -- set reporting month
     ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom,
     100::INT                          AS top_n       -- number of accounts to return
