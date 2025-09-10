@@ -1,3 +1,101 @@
+/* ====== PARAMETERS ====== */
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'                 AS curr_eom,   -- set reporting month
+    ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom,
+    100::INT                          AS top_n       -- number of accounts to return
+),
+
+/* ====== BASE POP (apply filters) ====== */
+pop AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Identifier,
+      Account_Name,
+      Bank_Code,
+      Contract_Source_System,
+      Source_System_Balance,
+      Non_Accrual_Flag
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+),
+
+/* ====== Current & Prior NA ====== */
+curr AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+),
+prev AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+),
+
+/* ====== Join to determine status ====== */
+mom_raw AS (
+  SELECT
+    COALESCE(c.Bank_Code, p.Bank_Code)                     AS Bank_Code,
+    COALESCE(c.Contract_Source_System, p.Contract_Source_System) AS Contract_Source_System,
+    COALESCE(c.Account_Identifier, p.Account_Identifier)   AS Account_Identifier,
+    COALESCE(c.Account_Name, p.Account_Name)               AS Account_Name,
+    CASE
+      WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'ADD'
+      WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'REMOVAL'
+      ELSE 'PERSIST'
+    END AS NA_Transition,
+    p.Source_System_Balance AS Prev_Bal,
+    c.Source_System_Balance AS Curr_Bal
+  FROM curr c
+  FULL OUTER JOIN prev p
+    ON c.Account_Identifier     = p.Account_Identifier
+   AND c.Bank_Code              = p.Bank_Code
+   AND c.Contract_Source_System = p.Contract_Source_System
+),
+
+/* ====== Assign size metric ====== */
+scored AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    Account_Identifier,
+    Account_Name,
+    NA_Transition,
+    Prev_Bal,
+    Curr_Bal,
+    CASE
+      WHEN NA_Transition = 'REMOVAL' THEN COALESCE(Prev_Bal,0)
+      ELSE COALESCE(Curr_Bal,0)
+    END AS size_metric
+  FROM mom_raw
+)
+
+/* ====== Final top accounts ====== */
+SELECT
+  Bank_Code,
+  Contract_Source_System,
+  NA_Transition,
+  Account_Identifier,
+  Account_Name,
+  Prev_Bal,
+  Curr_Bal,
+  size_metric
+FROM scored
+WHERE NA_Transition IN ('ADD','REMOVAL','PERSIST')
+ORDER BY size_metric DESC NULLS LAST
+LIMIT (SELECT top_n FROM params);
+
+
+
+
+
+
+
 /* ====== PARAMETERS (edit date) ====== */
 WITH params AS (
   SELECT
