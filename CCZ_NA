@@ -1,3 +1,161 @@
+/* ====== PARAMETERS (edit date) ====== */
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'                 AS curr_eom,
+    ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom
+),
+
+/* ====== BASE POP (apply your filters) ====== */
+pop AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE) AS End_of_Month_Date,
+      Account_Identifier,
+      Account_Name,
+      Bank_Code,
+      Contract_Source_System,
+      Source_System_Balance,
+      Non_Accrual_Flag,
+      GL_ACCOUNT_HIER_LEVEL_4
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+),
+
+/* ====== MONTHLY AGGREGATION to avoid duplicate joins ====== */
+curr_agg AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    SUM(Source_System_Balance)::NUMERIC AS Curr_Bal
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+  GROUP BY 1,2,3
+),
+prev_agg AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    SUM(Source_System_Balance)::NUMERIC AS Prev_Bal
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+  GROUP BY 1,2,3
+),
+
+/* ====== MoM join on BANK + SYSTEM + ACCOUNT (stable keys) ====== */
+mom_raw AS (
+  SELECT
+    COALESCE(c.Bank_Code,             p.Bank_Code)             AS Bank_Code,
+    COALESCE(c.Contract_Source_System,p.Contract_Source_System)AS Contract_Source_System,
+    COALESCE(c.Account_Identifier,    p.Account_Identifier)    AS Account_Identifier,
+    COALESCE(c.Account_Name,          p.Account_Name)          AS Account_Name,
+    CASE
+      WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'ADD'
+      WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'REMOVAL'
+      ELSE 'PERSIST'
+    END AS NA_Transition,
+    p.Prev_Bal,
+    c.Curr_Bal
+  FROM curr_agg c
+  FULL OUTER JOIN prev_agg p
+    ON  c.Account_Identifier     = p.Account_Identifier
+    AND c.Bank_Code              = p.Bank_Code
+    AND c.Contract_Source_System = p.Contract_Source_System
+),
+
+/* ====== KPI (by BANK/SYSTEM) ====== */
+kpi AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    SUM(CASE WHEN NA_Transition IN ('ADD','PERSIST') THEN COALESCE(Curr_Bal,0) ELSE 0 END)::NUMERIC AS na_eom_balance,
+    COUNT(CASE WHEN NA_Transition IN ('ADD','PERSIST') THEN 1 END)::INT                               AS na_eom_count,
+    SUM(CASE WHEN NA_Transition='ADD'     THEN COALESCE(Curr_Bal,0) ELSE 0 END)::NUMERIC              AS adds_balance,
+    COUNT(CASE WHEN NA_Transition='ADD'   THEN 1 END)::INT                                            AS adds_count,
+    SUM(CASE WHEN NA_Transition='REMOVAL' THEN COALESCE(Prev_Bal,0) ELSE 0 END)::NUMERIC              AS removals_balance,
+    COUNT(CASE WHEN NA_Transition='REMOVAL' THEN 1 END)::INT                                          AS removals_count,
+    SUM(CASE WHEN NA_Transition='PERSIST' THEN COALESCE(Curr_Bal,0) ELSE 0 END)::NUMERIC              AS persist_balance,
+    COUNT(CASE WHEN NA_Transition='PERSIST' THEN 1 END)::INT                                          AS persist_count
+  FROM mom_raw
+  GROUP BY 1,2
+),
+
+/* ====== WATERFALL (by BANK/SYSTEM) ====== */
+wf AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    /* Start = prev NA = prev$ of PERSIST + prev$ of REMOVAL */
+    SUM(CASE WHEN NA_Transition='PERSIST'  THEN COALESCE(Prev_Bal,0) ELSE 0 END)
+  + SUM(CASE WHEN NA_Transition='REMOVAL'  THEN COALESCE(Prev_Bal,0) ELSE 0 END) AS start_balance,
+    /* Adds (current $) */
+    SUM(CASE WHEN NA_Transition='ADD'      THEN COALESCE(Curr_Bal,0) ELSE 0 END) AS adds,
+    /* Removals (negative, prior $) */
+    -SUM(CASE WHEN NA_Transition='REMOVAL' THEN COALESCE(Prev_Bal,0) ELSE 0 END) AS removals,
+    /* End = current NA = adds.curr + persist.curr */
+    SUM(CASE WHEN NA_Transition IN ('ADD','PERSIST')
+             THEN COALESCE(Curr_Bal,0) ELSE 0 END) AS end_balance
+  FROM mom_raw
+  GROUP BY 1,2
+),
+
+/* ====== DIRECT TIE-OUT (current NA with same filters) ====== */
+curr_direct AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    SUM(Source_System_Balance)::NUMERIC AS direct_na_eom_balance
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+  GROUP BY 1,2
+),
+
+/* ====== RECON (KPI vs direct current NA) ====== */
+recon AS (
+  SELECT
+    d.Bank_Code,
+    d.Contract_Source_System,
+    d.direct_na_eom_balance,
+    k.na_eom_balance,
+    (COALESCE(k.na_eom_balance,0) - COALESCE(d.direct_na_eom_balance,0)) AS diff
+  FROM curr_direct d
+  LEFT JOIN kpi k
+    ON  k.Bank_Code = d.Bank_Code
+    AND k.Contract_Source_System = d.Contract_Source_System
+)
+
+/* ====== FINAL OUTPUTS (3 result sets if your tool supports it) ====== */
+-- 1) KPI
+SELECT 'KPI' AS section, * FROM kpi
+ORDER BY na_eom_balance DESC NULLS LAST;
+
+-- 2) WATERFALL
+SELECT 'WATERFALL' AS section, Bank_Code, Contract_Source_System,
+       'start_balance' AS metric_name, start_balance::NUMERIC AS metric_value
+FROM wf
+UNION ALL SELECT 'WATERFALL', Bank_Code, Contract_Source_System, 'adds',     adds::NUMERIC     FROM wf
+UNION ALL SELECT 'WATERFALL', Bank_Code, Contract_Source_System, 'removals', removals::NUMERIC FROM wf
+UNION ALL SELECT 'WATERFALL', Bank_Code, Contract_Source_System, 'end_balance', end_balance::NUMERIC FROM wf
+ORDER BY Bank_Code, Contract_Source_System, metric_name;
+
+-- 3) RECONCILIATION (should all be zero diff)
+SELECT 'RECON' AS section, Bank_Code, Contract_Source_System,
+       direct_na_eom_balance, na_eom_balance, diff
+FROM recon
+ORDER BY ABS(diff) DESC, Bank_Code, Contract_Source_System;
+
+
+
+
+
 /* ====== PARAMETERS (edit date / top_n) ====== */
 WITH params AS (
   SELECT
