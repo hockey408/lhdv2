@@ -1,3 +1,36 @@
+WITH mom_raw AS (
+  /* >>> PASTE YOUR WORKING MoM NON-ACCRUAL QUERY HERE <<<
+     It must return these columns (aliases/positions don’t matter):
+       ACCOUNT_IDENTIFIER
+       ACCOUNT_NAME
+       BANK_CODE
+       CONTRACT_SOURCE_SYSTEM
+       NA_STATUS_CHANGE        -- expected values: 'ADD' | 'REMOVAL' | 'PERSIST' (case-insensitive ok)
+       PREV_BAL                -- prior-month GL balance for this account (numeric)
+       CURR_BAL                -- current-month GL balance for this account (numeric)
+       SORT_ORDER              -- any sort/priority you already compute
+  */
+),
+mom AS (
+  SELECT
+    r.BANK_CODE,
+    r.CONTRACT_SOURCE_SYSTEM,
+    r.ACCOUNT_IDENTIFIER,
+    r.ACCOUNT_NAME,
+    UPPER(TRIM(r.NA_STATUS_CHANGE))                       AS NA_TRANSITION,   -- 'ADD' | 'REMOVAL' | 'PERSIST'
+    r.PREV_BAL                                            AS PREV_GL_BALANCE,
+    r.CURR_BAL                                            AS CUR_GL_BALANCE,
+    r.SORT_ORDER
+  FROM mom_raw r
+)
+-- sanity check
+SELECT NA_TRANSITION, COUNT(*) AS rows FROM mom GROUP BY 1;
+
+
+
+
+
+
 ACCOUNT_IDENTIFIER
 ACCOUNT_NAME
 BANK_CODE
