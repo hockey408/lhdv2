@@ -1,3 +1,18 @@
+= Table.AddColumn(
+    PreviousStepName, 
+    "sort_order", 
+    each if [metric_name] = "start_balance" then 1
+         else if [metric_name] = "adds" then 2
+         else if [metric_name] = "removals" then 3
+         else if [metric_name] = "end_balance" then 4
+         else 999
+)
+
+
+
+
+
+
 -- Adjust: TABLE_A, TABLE_B, date, and optional filters
 WITH a AS (
   SELECT
