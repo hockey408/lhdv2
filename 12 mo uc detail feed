@@ -1,3 +1,35 @@
+-- ====== 5) Adds composition (Industry / PD_GRADE) — FIXED GROUP BY ======
+adds_comp_long AS (
+  SELECT
+    'ADDS_COMPOSITION'::VARCHAR(20) AS section,            -- 1
+    (SELECT asof_eom FROM params)   AS eom,                -- 2
+    BANK_CODE,                                              -- 3
+    CONTRACT_SOURCE_SYSTEM,                                 -- 4
+    GL_ACCOUNT_HIER_LEVEL_4,                                -- 5
+    'adds_balance'::VARCHAR(50)     AS metric_name,         -- 6
+    SUM(GL_BALANCE)::NUMERIC        AS metric_value,        -- 7 (aggregate)
+    COALESCE(INDUSTRY_CODE,'(unknown)') AS extra_dim1,      -- 8
+    COALESCE(PD_GRADE,'(unknown)')      AS extra_dim2       -- 9
+  FROM adds
+  GROUP BY 1,2,3,4,5,8,9   -- ✅ exclude column 7 (aggregate)
+
+  UNION ALL
+
+  SELECT
+    'ADDS_COMPOSITION', (SELECT asof_eom FROM params),
+    BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+    'adds_count',
+    COUNT(*)::NUMERIC,                                     -- aggregate
+    COALESCE(INDUSTRY_CODE,'(unknown)'),
+    COALESCE(PD_GRADE,'(unknown)')
+  FROM adds
+  GROUP BY 1,2,3,4,5,8,9   -- ✅ exclude the COUNT(*) column
+)
+
+
+
+
+
 -- ====== PARAMETERS ======
 WITH params AS (
   SELECT
