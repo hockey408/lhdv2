@@ -1,3 +1,25 @@
+-- 1) Drop if exists (safe if it never existed)
+DROP TABLE IF EXISTS WRK_DEMO_TEMP;
+
+-- 2) Create a tiny temp table
+CREATE TEMP TABLE WRK_DEMO_TEMP (id INTEGER, note VARCHAR(20));
+
+-- 3) Insert one row
+INSERT INTO WRK_DEMO_TEMP VALUES (1, 'hello');
+
+-- 4) Read it back
+SELECT * FROM WRK_DEMO_TEMP;
+
+-- 5) Confirm it exists in session temp catalog
+SELECT objname, objtype
+FROM _v_tempobjects
+WHERE UPPER(objname) = 'WRK_DEMO_TEMP';
+
+
+
+
+
+
 -- ========= PARAM =========
 -- Set your month-end once here
 CREATE TEMP TABLE WRK_PARAMS AS
