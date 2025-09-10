@@ -1,3 +1,54 @@
+-- ===== 1) STANDARDIZE YOUR WORKING QUERY OUTPUT =====
+WITH mom_raw AS (
+  /* >>>> PASTE YOUR WORKING MOM NON-ACCRUAL QUERY HERE <<<<
+     It should already return a single month’s MoM view (adds, removals, persisting).
+  */
+),
+mom AS (
+  SELECT
+    /* Dates */
+    COALESCE(q.EOM, q.END_OF_MONTH_DATE, q.CUR_EOM, q.EOM_DATE)                    AS EOM,
+
+    /* Keys */
+    q.BANK_CODE,
+    q.CONTRACT_SOURCE_SYSTEM,
+    q.GL_ACCOUNT_HIER_LEVEL_4,
+
+    /* Identifiers */
+    COALESCE(q.ACCOUNT_IDENTIFIER, q.LOAN_ID, q.ACCOUNT_ID)                        AS ACCOUNT_IDENTIFIER,
+    q.FACILITY_ID,
+
+    /* Balances (current & prior) */
+    COALESCE(q.CUR_GL_BALANCE,  q.CURRENT_GL_BALANCE, q.CURR_GL_BAL, q.GL_BALANCE_CUR, q.CUR_BAL)  AS CUR_GL_BALANCE,
+    COALESCE(q.PREV_GL_BALANCE, q.PRIOR_GL_BALANCE,  q.PREV_GL_BAL, q.GL_BALANCE_PREV, q.PREV_BAL) AS PREV_GL_BALANCE,
+
+    /* Optional dimensions */
+    COALESCE(q.INDUSTRY_CODE, q.INDUSTRY, q.NAICS_CODE)                             AS INDUSTRY_CODE,
+    COALESCE(q.PD_GRADE, q.RISK_RATING, q.PD_GRADE_CODE)                            AS PD_GRADE,
+
+    /* Transition: use existing label if present; otherwise derive from flags */
+    CASE
+      WHEN q.NA_TRANSITION IS NOT NULL THEN q.NA_TRANSITION
+      ELSE
+        CASE
+          WHEN COALESCE(q.CUR_NA_FLAG,  q.CUR_NON_ACCRUAL_FLAG) IN (1,'1','Y','YES','T','TRUE')
+           AND COALESCE(q.PREV_NA_FLAG, q.PREV_NON_ACCRUAL_FLAG,0) IN (0,'0','N','NO','F','FALSE',NULL) THEN 'ADD'
+          WHEN COALESCE(q.CUR_NA_FLAG,  q.CUR_NON_ACCRUAL_FLAG,0) IN (0,'0','N','NO','F','FALSE',NULL)
+           AND COALESCE(q.PREV_NA_FLAG, q.PREV_NON_ACCRUAL_FLAG)   IN (1,'1','Y','YES','T','TRUE')      THEN 'REMOVAL'
+          WHEN COALESCE(q.CUR_NA_FLAG,  q.CUR_NON_ACCRUAL_FLAG) IN (1,'1','Y','YES','T','TRUE')
+           AND COALESCE(q.PREV_NA_FLAG, q.PREV_NON_ACCRUAL_FLAG) IN (1,'1','Y','YES','T','TRUE')        THEN 'PERSIST'
+          ELSE 'OTHER'
+        END
+    END AS NA_TRANSITION
+  FROM mom_raw q
+)
+
+-- Smoke test (optional)
+SELECT NA_TRANSITION, COUNT(*) AS rows FROM mom GROUP BY 1;
+
+
+
+
 -- Replace the body of the mom CTE with YOUR working query.
 -- Keep the output column names as aliased below (or adjust later blocks to match).
 
