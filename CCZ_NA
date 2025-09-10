@@ -1,3 +1,26 @@
+WITH params AS (
+  SELECT DATE '2025-07-31' AS curr_eom, ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom
+),
+/* reuse the same pop/curr/prev/mom_raw/mom CTEs from above, then */
+mom AS ( /* ...same as above... */ )
+SELECT
+  BANK_CODE,
+  CONTRACT_SOURCE_SYSTEM,
+  NA_TRANSITION,
+  ACCOUNT_IDENTIFIER,
+  ACCOUNT_NAME,
+  PREV_SOURCE_SYSTEM_BAL,
+  CURR_SOURCE_SYSTEM_BAL,
+  (COALESCE(CURR_SOURCE_SYSTEM_BAL,0) - COALESCE(PREV_SOURCE_SYSTEM_BAL,0)) AS delta
+FROM mom
+WHERE NA_TRANSITION IN ('ADD','REMOVAL')
+ORDER BY ABS(delta) DESC NULLS LAST, BANK_CODE, CONTRACT_SOURCE_SYSTEM
+LIMIT 200;
+
+
+
+
+
 /* ====== PARAMETERS (edit this date) ====== */
 WITH params AS (
   SELECT
