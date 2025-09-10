@@ -1,3 +1,107 @@
+-- Replace the body of the mom CTE with YOUR working query.
+-- Keep the output column names as aliased below (or adjust later blocks to match).
+
+WITH mom AS (
+  SELECT
+    /* --- keep your original SELECT here --- */
+    EOM,                                 -- current EOM date
+    BANK_CODE,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    ACCOUNT_IDENTIFIER,
+    FACILITY_ID,
+    CUR_GL_BALANCE,                      -- current month NA balance
+    PREV_GL_BALANCE,                     -- prior month NA balance
+    NA_TRANSITION,                       -- 'ADD' | 'REMOVAL' | 'PERSIST'
+    INDUSTRY_CODE,
+    PD_GRADE
+  FROM (
+    /* >>>> PASTE YOUR WORKING MOM NON-ACCRUAL QUERY HERE <<<< */
+  ) q
+)
+
+-- Quick smoke test
+SELECT NA_TRANSITION, COUNT(*) AS rows
+FROM mom
+GROUP BY 1;
+
+
+
+
+
+WITH kpi AS (
+  SELECT
+    BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+
+    /* End-of-month NA balance/count (curr month) */
+    SUM(CASE WHEN NA_TRANSITION IN ('ADD','PERSIST')
+             THEN COALESCE(CUR_GL_BALANCE,0) ELSE 0 END) AS na_eom_balance,
+    COUNT(CASE WHEN NA_TRANSITION IN ('ADD','PERSIST') THEN 1 END)       AS na_eom_count,
+
+    /* Adds: count & $ (use current balances) */
+    SUM(CASE WHEN NA_TRANSITION='ADD' THEN COALESCE(CUR_GL_BALANCE,0) ELSE 0 END) AS adds_balance,
+    COUNT(CASE WHEN NA_TRANSITION='ADD' THEN 1 END)                                AS adds_count,
+
+    /* Removals: count & $ (use prior balances) */
+    SUM(CASE WHEN NA_TRANSITION='REMOVAL' THEN COALESCE(PREV_GL_BALANCE,0) ELSE 0 END) AS removals_balance,
+    COUNT(CASE WHEN NA_TRANSITION='REMOVAL' THEN 1 END)                                 AS removals_count,
+
+    /* Persist: count & $ (use current balances) */
+    SUM(CASE WHEN NA_TRANSITION='PERSIST' THEN COALESCE(CUR_GL_BALANCE,0) ELSE 0 END) AS persist_balance,
+    COUNT(CASE WHEN NA_TRANSITION='PERSIST' THEN 1 END)                                 AS persist_count
+  FROM mom
+  GROUP BY 1,2,3
+)
+
+SELECT *
+FROM kpi
+ORDER BY na_eom_balance DESC NULLS LAST;
+
+
+
+SELECT
+  'ADDS_COMPOSITION'::VARCHAR(20) AS section,
+  NULL::DATE AS eom,                 -- optional
+  BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+  'adds_balance'::VARCHAR(50) AS metric_name,
+  SUM(COALESCE(CUR_GL_BALANCE,0))::NUMERIC AS metric_value,
+  COALESCE(INDUSTRY_CODE,'(unknown)') AS extra_dim1,
+  COALESCE(PD_GRADE,'(unknown)')      AS extra_dim2
+FROM mom
+WHERE NA_TRANSITION='ADD'
+GROUP BY 1,2,3,4,5,7,8
+
+UNION ALL
+SELECT
+  'ADDS_COMPOSITION', NULL::DATE,
+  BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+  'adds_count',
+  COUNT(*)::NUMERIC,
+  COALESCE(INDUSTRY_CODE,'(unknown)'),
+  COALESCE(PD_GRADE,'(unknown)')
+FROM mom
+WHERE NA_TRANSITION='ADD'
+GROUP BY 1,2,3,4,5,7,8
+ORDER BY metric_value DESC NULLS LAST;
+
+
+
+
+
+SELECT
+  BANK_CODE, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_HIER_LEVEL_4,
+  ACCOUNT_IDENTIFIER, FACILITY_ID, NA_TRANSITION,
+  CUR_GL_BALANCE, PREV_GL_BALANCE,
+  (COALESCE(CUR_GL_BALANCE,0) - COALESCE(PREV_GL_BALANCE,0)) AS delta
+FROM mom
+WHERE NA_TRANSITION IN ('ADD','REMOVAL')
+ORDER BY ABS(delta) DESC NULLS LAST
+LIMIT 200;
+
+
+
+
+
 WITH params AS (
   SELECT DATE '2025-07-31' AS as_of_date
 ),
