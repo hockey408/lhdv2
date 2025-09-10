@@ -1,3 +1,38 @@
+-- Adjust: TABLE_A, TABLE_B, date, and optional filters
+WITH a AS (
+  SELECT
+      ACCOUNT_IDENTIFIER,
+      CAST(SOURCE_SYSTEM_BALANCE AS NUMERIC(18,2)) AS bal_a
+  FROM TABLE_A
+  WHERE END_OF_MONTH_DATE = DATE '2025-08-31'
+    -- AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    -- AND SOURCE_SYSTEM_BALANCE > 0
+),
+b AS (
+  SELECT
+      ACCOUNT_IDENTIFIER,
+      CAST(SOURCE_SYSTEM_BALANCE AS NUMERIC(18,2)) AS bal_b
+  FROM TABLE_B
+  WHERE END_OF_MONTH_DATE = DATE '2025-08-31'
+    -- AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    -- AND SOURCE_SYSTEM_BALANCE > 0
+)
+SELECT
+    COALESCE(a.ACCOUNT_IDENTIFIER, b.ACCOUNT_IDENTIFIER) AS ACCOUNT_IDENTIFIER,
+    a.bal_a AS balance_table_a,
+    b.bal_b AS balance_table_b,
+    COALESCE(b.bal_b, 0) - COALESCE(a.bal_a, 0) AS balance_diff
+FROM a
+FULL OUTER JOIN b
+  ON a.ACCOUNT_IDENTIFIER = b.ACCOUNT_IDENTIFIER
+WHERE ABS(COALESCE(b.bal_b, 0) - COALESCE(a.bal_a, 0)) > 0.00   -- set tolerance if needed, e.g. 0.01
+ORDER BY ACCOUNT_IDENTIFIER;
+
+
+
+
+
+
 WITH a AS (
   SELECT
       ACCOUNT_IDENTIFIER,
