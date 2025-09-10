@@ -1,3 +1,146 @@
+/* ====== PARAMETERS (edit these) ====== */
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'                 AS curr_eom,          -- <-- set current EOM
+    ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom,
+    200::INT                          AS top_n,             -- max rows to return
+    0::NUMERIC                        AS min_abs_delta      -- min absolute $ change to include
+),
+
+/* ====== BASE POPULATION (your source) ====== */
+pop AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Identifier,
+      Account_Name,
+      Bank_Code,
+      Contract_Source_System,
+      /* If Source_System_Balance might contain non-numeric noise, uncomment safe cast:
+      CASE WHEN Source_System_Balance ~ '^[0-9.\-]+$'
+           THEN Source_System_Balance::NUMERIC ELSE NULL END AS Source_System_Balance, */
+      Source_System_Balance,
+      Non_Accrual_Flag
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+),
+
+/* ====== CURRENT / PRIOR NA SLICES ====== */
+curr AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+),
+prev AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+),
+
+/* ====== MOM JOIN (your working logic) ====== */
+mom_raw AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+    COALESCE(c.Account_Name,       p.Account_Name)       AS Account_Name,
+    COALESCE(c.Bank_Code,          p.Bank_Code)          AS Bank_Code,
+    COALESCE(c.Contract_Source_System, p.Contract_Source_System) AS Contract_Source_System,
+    CASE
+      WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'Added (New NA)'
+      WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'Removed (Resolved/Out)'
+      ELSE 'Persisting'
+    END AS NA_Status_Change,
+    p.Source_System_Balance AS Prev_Bal,
+    c.Source_System_Balance AS Curr_Bal,
+    CASE
+      WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 0
+      WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 1
+      WHEN c.Account_Identifier IS NOT NULL AND p.Account_Identifier IS NOT NULL THEN 2
+      ELSE 3
+    END AS Sort_Order
+  FROM curr c
+  FULL OUTER JOIN prev p
+    ON c.Account_Identifier = p.Account_Identifier
+),
+
+/* ====== STANDARDIZE + DELTAS ====== */
+mom AS (
+  SELECT
+    (SELECT curr_eom FROM params) AS EOM,
+    r.BANK_CODE,
+    r.CONTRACT_SOURCE_SYSTEM,
+    r.ACCOUNT_IDENTIFIER,
+    r.ACCOUNT_NAME,
+    CASE UPPER(TRIM(r.NA_STATUS_CHANGE))
+      WHEN 'ADDED (NEW NA)'         THEN 'ADD'
+      WHEN 'REMOVED (RESOLVED/OUT)' THEN 'REMOVAL'
+      WHEN 'PERSISTING'             THEN 'PERSIST'
+      ELSE 'OTHER'
+    END AS NA_TRANSITION,
+    r.PREV_BAL  AS PREV_SOURCE_SYSTEM_BAL,
+    r.CURR_BAL  AS CURR_SOURCE_SYSTEM_BAL,
+    (COALESCE(r.CURR_BAL,0) - COALESCE(r.PREV_BAL,0)) AS DELTA,
+    ABS(COALESCE(r.CURR_BAL,0) - COALESCE(r.PREV_BAL,0)) AS DELTA_ABS,
+    CASE
+      WHEN COALESCE(r.PREV_BAL,0) = 0 THEN NULL
+      ELSE (COALESCE(r.CURR_BAL,0) - COALESCE(r.PREV_BAL,0)) / NULLIF(r.PREV_BAL,0)
+    END AS PCT_CHANGE,
+    r.SORT_ORDER
+  FROM mom_raw r
+),
+
+/* ====== FILTER TO ADDS/REMOVALS & APPLY MIN THRESHOLD ====== */
+ranked AS (
+  SELECT
+    BANK_CODE,
+    CONTRACT_SOURCE_SYSTEM,
+    NA_TRANSITION,
+    ACCOUNT_IDENTIFIER,
+    ACCOUNT_NAME,
+    PREV_SOURCE_SYSTEM_BAL,
+    CURR_SOURCE_SYSTEM_BAL,
+    DELTA,
+    DELTA_ABS,
+    PCT_CHANGE,
+    SORT_ORDER,
+    ROW_NUMBER() OVER (
+      PARTITION BY BANK_CODE, CONTRACT_SOURCE_SYSTEM, NA_TRANSITION
+      ORDER BY DELTA_ABS DESC NULLS LAST, ACCOUNT_IDENTIFIER
+    ) AS rnk
+  FROM mom
+  WHERE NA_TRANSITION IN ('ADD','REMOVAL')
+    AND DELTA_ABS >= (SELECT min_abs_delta FROM params)
+)
+
+/* ====== FINAL OUTPUT ====== */
+SELECT
+  BANK_CODE,
+  CONTRACT_SOURCE_SYSTEM,
+  NA_TRANSITION,
+  ACCOUNT_IDENTIFIER,
+  ACCOUNT_NAME,
+  PREV_SOURCE_SYSTEM_BAL,
+  CURR_SOURCE_SYSTEM_BAL,
+  DELTA,
+  DELTA_ABS,
+  PCT_CHANGE,
+  SORT_ORDER
+FROM ranked
+WHERE rnk <= (SELECT top_n FROM params)
+ORDER BY
+  BANK_CODE,
+  CONTRACT_SOURCE_SYSTEM,
+  NA_TRANSITION,
+  DELTA_ABS DESC NULLS LAST,
+  ACCOUNT_IDENTIFIER;
+
+
+
+
+
 WITH params AS (
   SELECT DATE '2025-07-31' AS curr_eom, ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom
 ),
