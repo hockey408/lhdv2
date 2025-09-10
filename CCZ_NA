@@ -1,3 +1,144 @@
+/* ====== PARAMETERS (edit date / top_n) ====== */
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'                 AS curr_eom,
+    ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom,
+    200::INT                          AS top_n          -- rows per BANK/SYSTEM/STATUS bucket
+),
+
+/* ====== Base pop (your source) ====== */
+pop AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Identifier,
+      Account_Name,
+      Bank_Code,
+      Contract_Source_System,
+      Source_System_Balance,
+      Non_Accrual_Flag
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+),
+
+/* ====== Current / Prior NA slices ====== */
+curr AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+),
+prev AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+),
+
+/* ====== MoM join (your working logic) ====== */
+mom_raw AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+    COALESCE(c.Account_Name,       p.Account_Name)       AS Account_Name,
+    COALESCE(c.Bank_Code,          p.Bank_Code)          AS Bank_Code,
+    COALESCE(c.Contract_Source_System, p.Contract_Source_System) AS Contract_Source_System,
+    CASE
+      WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'Added (New NA)'
+      WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'Removed (Resolved/Out)'
+      ELSE 'Persisting'
+    END AS NA_Status_Change,
+    p.Source_System_Balance AS Prev_Bal,   -- prior month SOURCE_SYSTEM_BALANCE (when NA)
+    c.Source_System_Balance AS Curr_Bal,   -- current month SOURCE_SYSTEM_BALANCE (when NA)
+    CASE
+      WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 0
+      WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 1
+      WHEN c.Account_Identifier IS NOT NULL AND p.Account_Identifier IS NOT NULL THEN 2
+      ELSE 3
+    END AS Sort_Order
+  FROM curr c
+  FULL OUTER JOIN prev p
+    ON c.Account_Identifier = p.Account_Identifier
+),
+
+/* ====== Standardize + pick size metric by status ====== */
+mom AS (
+  SELECT
+    (SELECT curr_eom FROM params) AS EOM,
+    r.Bank_Code,
+    r.Contract_Source_System,
+    r.Account_Identifier,
+    r.Account_Name,
+    CASE UPPER(TRIM(r.NA_Status_Change))
+      WHEN 'ADDED (NEW NA)'         THEN 'ADD'
+      WHEN 'REMOVED (RESOLVED/OUT)' THEN 'REMOVAL'
+      WHEN 'PERSISTING'             THEN 'PERSIST'
+      ELSE 'OTHER'
+    END AS NA_Transition,
+    r.Prev_Bal  AS Prev_Source_System_Bal,
+    r.Curr_Bal  AS Curr_Source_System_Bal,
+
+    /* Size metric to rank by:
+       - ADD & PERSIST → current balance
+       - REMOVAL      → prior balance
+    */
+    CASE
+      WHEN UPPER(TRIM(r.NA_Status_Change)) = 'REMOVED (RESOLVED/OUT)'
+        THEN COALESCE(r.Prev_Bal,0)
+      ELSE COALESCE(r.Curr_Bal,0)
+    END AS metric_value
+  FROM mom_raw r
+),
+
+/* ====== Rank within each BANK/SYSTEM/STATUS by size ====== */
+ranked AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    NA_Transition,
+    Account_Identifier,
+    Account_Name,
+    Prev_Source_System_Bal,
+    Curr_Source_System_Bal,
+    metric_value,
+    ROW_NUMBER() OVER (
+      PARTITION BY Bank_Code, Contract_Source_System, NA_Transition
+      ORDER BY metric_value DESC NULLS LAST, Account_Identifier
+    ) AS rnk
+  FROM mom
+  WHERE NA_Transition IN ('ADD','REMOVAL','PERSIST')
+)
+
+/* ====== Final list ====== */
+SELECT
+  Bank_Code,
+  Contract_Source_System,
+  NA_Transition,
+  Account_Identifier,
+  Account_Name,
+  Prev_Source_System_Bal,
+  Curr_Source_System_Bal,
+  metric_value
+FROM ranked
+WHERE rnk <= (SELECT top_n FROM params)
+ORDER BY
+  Bank_Code,
+  Contract_Source_System,
+  CASE NA_Transition
+    WHEN 'ADD' THEN 0
+    WHEN 'REMOVAL' THEN 1
+    WHEN 'PERSIST' THEN 2
+    ELSE 3
+  END,
+  metric_value DESC NULLS LAST,
+  Account_Identifier;
+
+
+
+
+
+
 /* ====== PARAMETERS (edit these) ====== */
 WITH params AS (
   SELECT
