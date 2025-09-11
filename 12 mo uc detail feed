@@ -45,6 +45,134 @@ sys_metrics AS (
   FROM sys_monthly s
 ),
 
+/* ===================== CALCULATIONS (Z, % CHANGE) ===================== */
+sys_calc AS (
+  SELECT
+    m.*,
+    CASE
+      WHEN m.std_12_prior IS NULL OR m.std_12_prior = 0 THEN NULL
+      ELSE (m.sys_bal - m.mean_12_prior) / m.std_12_prior
+    END AS sys_z_score,
+
+    CASE
+      WHEN m.prev_sys_bal IS NULL OR m.prev_sys_bal = 0 THEN NULL
+      ELSE (m.sys_bal - m.prev_sys_bal) / NULLIF(m.prev_sys_bal,0)
+    END AS sys_pct_change
+  FROM sys_metrics m
+)
+
+/* ===================== FINAL OUTPUTS ===================== */
+
+/* ---- 1) CURRENT MONTH ANOMALY INBOX ---- */
+SELECT
+  'SYSTEM_ANOMALY_INBOX'::VARCHAR(30) AS section,
+  a.eom,
+  a.Bank_Code,
+  a.Contract_Source_System,
+  a.sys_bal           AS curr_sys_balance,
+  a.prev_sys_bal      AS prev_sys_balance,
+  a.mean_12_prior,
+  a.std_12_prior,
+  a.sys_z_score,
+  a.sys_pct_change,
+
+  /* flag rules */
+  CASE 
+    WHEN a.sys_z_score IS NOT NULL 
+     AND ABS(a.sys_z_score) >= (SELECT z_threshold FROM params)
+    THEN 1 ELSE 0 END AS flag_sys_z,
+
+  CASE 
+    WHEN a.sys_pct_change IS NOT NULL
+     AND ABS(a.sys_pct_change) >= (SELECT crit_pct FROM params)
+    THEN 2  -- Critical
+    WHEN a.sys_pct_change IS NOT NULL
+     AND ABS(a.sys_pct_change) >= (SELECT warn_pct FROM params)
+    THEN 1  -- Warning
+    ELSE 0
+  END AS flag_sys_pct,
+
+  /* severity: Critical > Warning > OK */
+  CASE
+    WHEN (a.sys_z_score IS NOT NULL AND ABS(a.sys_z_score) >= (SELECT z_threshold FROM params))
+      OR (a.sys_pct_change IS NOT NULL AND ABS(a.sys_pct_change) >= (SELECT crit_pct FROM params))
+    THEN 'Critical'
+    WHEN (a.sys_pct_change IS NOT NULL AND ABS(a.sys_pct_change) >= (SELECT warn_pct FROM params))
+    THEN 'Warning'
+    ELSE 'OK'
+  END AS severity
+
+FROM sys_calc a
+WHERE a.eom = (SELECT curr_eom FROM params)
+ORDER BY severity DESC, ABS(COALESCE(sys_z_score,0)) DESC, ABS(COALESCE(sys_pct_change,0)) DESC;
+
+/* ---- 2) 13-MONTH TREND ---- */
+SELECT
+  'SYSTEM_TREND'::VARCHAR(30) AS section,
+  t.eom,
+  t.Bank_Code,
+  t.Contract_Source_System,
+  t.sys_bal           AS curr_sys_balance,
+  t.prev_sys_bal,
+  t.mean_12_prior,
+  t.std_12_prior,
+  t.sys_z_score,
+  t.sys_pct_change
+FROM sys_calc t
+ORDER BY Bank_Code, Contract_Source_System, eom;
+
+
+
+
+
+
+/* ===================== PARAMETERS ===================== */
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'   AS curr_eom,     -- << set current EOM here
+    13                  AS months_back,  -- current + 12 prior
+    2.5::NUMERIC        AS z_threshold,  -- threshold for z-score flag
+    0.15::NUMERIC       AS warn_pct,     -- 15% = Warning threshold
+    0.25::NUMERIC       AS crit_pct      -- 25% = Critical threshold
+),
+
+/* ===================== SYSTEM-LEVEL MONTHLY BALANCES ===================== */
+sys_monthly AS (
+  SELECT
+    CAST(End_of_Month_Date AS DATE) AS eom,
+    Bank_Code,
+    Contract_Source_System,
+    SUM(Source_System_Balance)::NUMERIC AS sys_bal
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+    AND End_of_Month_Date BETWEEN
+        ADD_MONTHS((SELECT curr_eom FROM params), -(SELECT months_back FROM params) + 1)
+        AND (SELECT curr_eom FROM params)
+  GROUP BY 1,2,3
+),
+
+/* ===================== ROLLING METRICS ===================== */
+sys_metrics AS (
+  SELECT
+    s.*,
+    LAG(sys_bal) OVER (
+      PARTITION BY Bank_Code, Contract_Source_System ORDER BY eom
+    ) AS prev_sys_bal,
+
+    AVG(sys_bal) OVER (
+      PARTITION BY Bank_Code, Contract_Source_System ORDER BY eom
+      ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+    ) AS mean_12_prior,
+
+    STDDEV_SAMP(sys_bal) OVER (
+      PARTITION BY Bank_Code, Contract_Source_System ORDER BY eom
+      ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+    ) AS std_12_prior
+  FROM sys_monthly s
+),
+
 /* ===================== ANOMALY CALCULATIONS ===================== */
 sys_anomalies AS (
   SELECT
