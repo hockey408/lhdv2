@@ -1,3 +1,81 @@
+/* ====== PARAMETERS ====== */
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'   AS curr_eom,     -- set reporting month
+    13                  AS months_back,  -- current + 12 prior
+    2.5::NUMERIC        AS z_threshold,
+    0.20::NUMERIC       AS pct_threshold
+),
+
+/* ====== NA totals by system, monthly (filters applied) ====== */
+sys_monthly AS (
+  SELECT
+    CAST(End_of_Month_Date AS DATE) AS eom,
+    Bank_Code,
+    Contract_Source_System,
+    SUM(Source_System_Balance)::NUMERIC AS sys_bal
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+    AND End_of_Month_Date BETWEEN
+        ADD_MONTHS((SELECT curr_eom FROM params), -(SELECT months_back FROM params) + 1)
+        AND (SELECT curr_eom FROM params)
+  GROUP BY 1,2,3
+),
+
+/* ====== Add prior, rolling mean/std (exclude current row) ====== */
+sys_metrics AS (
+  SELECT
+    s.*,
+    LAG(sys_bal) OVER (PARTITION BY Bank_Code, Contract_Source_System ORDER BY eom) AS prev_sys_bal,
+    AVG(sys_bal) OVER (PARTITION BY Bank_Code, Contract_Source_System ORDER BY eom
+                       ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS mean_12_prior,
+    STDDEV_SAMP(sys_bal) OVER (PARTITION BY Bank_Code, Contract_Source_System ORDER BY eom
+                               ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS std_12_prior
+  FROM sys_monthly s
+),
+
+/* ====== Current-month anomaly flags (tiny result set) ====== */
+sys_anomalies AS (
+  SELECT
+    m.eom,
+    m.Bank_Code,
+    m.Contract_Source_System,
+    m.sys_bal           AS curr_sys_balance,
+    m.prev_sys_bal      AS prev_sys_balance,
+    m.mean_12_prior,
+    m.std_12_prior,
+    CASE WHEN m.std_12_prior IS NULL OR m.std_12_prior = 0 THEN NULL
+         ELSE (m.sys_bal - m.mean_12_prior) / m.std_12_prior END AS sys_z_score,
+    CASE WHEN m.prev_sys_bal IS NULL OR m.prev_sys_bal = 0 THEN NULL
+         ELSE (m.sys_bal - m.prev_sys_bal) / NULLIF(m.prev_sys_bal,0) END AS sys_pct_change,
+    /* flags */
+    CASE WHEN (CASE WHEN m.std_12_prior = 0 THEN NULL
+                    ELSE (m.sys_bal - m.mean_12_prior) / m.std_12_prior END)
+              IS NOT NULL
+          AND ABS((m.sys_bal - m.mean_12_prior) / m.std_12_prior) >= (SELECT z_threshold FROM params)
+         THEN 1 ELSE 0 END AS flag_sys_z,
+    CASE WHEN (CASE WHEN m.prev_sys_bal = 0 THEN NULL
+                    ELSE (m.sys_bal - m.prev_sys_bal) / NULLIF(m.prev_sys_bal,0) END)
+              IS NOT NULL
+          AND ABS((m.sys_bal - m.prev_sys_bal) / NULLIF(m.prev_sys_bal,0)) >= (SELECT pct_threshold FROM params)
+         THEN 1 ELSE 0 END AS flag_sys_pct
+  FROM sys_metrics m
+  WHERE m.eom = (SELECT curr_eom FROM params)
+)
+SELECT *
+FROM sys_anomalies
+ORDER BY
+  (CASE WHEN flag_sys_z  = 1 THEN ABS(sys_z_score)    ELSE 0 END) DESC,
+  (CASE WHEN flag_sys_pct= 1 THEN ABS(sys_pct_change) ELSE 0 END) DESC,
+  Bank_Code, Contract_Source_System;
+
+
+
+
+
+
 /* ====== PARAMETERS: set your reporting month ====== */
 WITH params AS (
   SELECT
