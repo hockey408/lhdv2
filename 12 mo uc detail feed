@@ -1,6 +1,148 @@
 /* ===================== PARAMETERS ===================== */
 WITH params AS (
   SELECT
+    DATE '2025-07-31'                 AS curr_eom,
+    ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom,
+    50::INT                           AS top_n,            -- rows per (Bank,System,Status)
+    0::NUMERIC                        AS min_size,         -- minimum size_metric to include
+    NULL::VARCHAR(50)                 AS bank_code,        -- e.g. '123'; NULL = all
+    NULL::VARCHAR(100)                AS contract_source_system  -- e.g. 'ACBS'; NULL = all
+),
+
+/* ===================== BASE POPULATION (filters applied) ===================== */
+pop AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE) AS eom,
+      Bank_Code,
+      Contract_Source_System,
+      Account_Identifier,
+      MAX(Account_Name) AS Account_Name,
+      SUM(Source_System_Balance)::NUMERIC AS Source_System_Balance,
+      MAX(UPPER(TRIM(Non_Accrual_Flag))) AS Non_Accrual_Flag
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+  GROUP BY 1,2,3,4
+),
+
+/* ===================== CURRENT / PRIOR NA AGGREGATES ===================== */
+curr_agg AS (
+  SELECT
+    Bank_Code, Contract_Source_System, Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    SUM(Source_System_Balance)::NUMERIC AS Curr_Bal
+  FROM pop
+  WHERE eom = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+  GROUP BY 1,2,3
+),
+prev_agg AS (
+  SELECT
+    Bank_Code, Contract_Source_System, Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    SUM(Source_System_Balance)::NUMERIC AS Prev_Bal
+  FROM pop
+  WHERE eom = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+  GROUP BY 1,2,3
+),
+
+/* ===================== MOM STATUS ===================== */
+mom AS (
+  SELECT
+    COALESCE(c.Bank_Code,             p.Bank_Code)              AS Bank_Code,
+    COALESCE(c.Contract_Source_System,p.Contract_Source_System) AS Contract_Source_System,
+    COALESCE(c.Account_Identifier,    p.Account_Identifier)     AS Account_Identifier,
+    COALESCE(c.Account_Name,          p.Account_Name)           AS Account_Name,
+    CASE
+      WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'ADD'
+      WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'REMOVAL'
+      ELSE 'PERSIST'
+    END AS NA_Transition,
+    p.Prev_Bal,
+    c.Curr_Bal
+  FROM curr_agg c
+  FULL OUTER JOIN prev_agg p
+    ON  c.Account_Identifier     = p.Account_Identifier
+    AND c.Bank_Code              = p.Bank_Code
+    AND c.Contract_Source_System = p.Contract_Source_System
+),
+
+/* ===================== SIZE METRIC + SYSTEM TOTALS ===================== */
+scored AS (
+  SELECT
+    m.Bank_Code,
+    m.Contract_Source_System,
+    m.Account_Identifier,
+    m.Account_Name,
+    m.NA_Transition,
+    m.Prev_Bal,
+    m.Curr_Bal,
+    CASE
+      WHEN m.NA_Transition = 'REMOVAL' THEN COALESCE(m.Prev_Bal,0)
+      ELSE COALESCE(m.Curr_Bal,0)
+    END AS size_metric,
+    /* system totals used for % of system */
+    SUM(CASE WHEN m.NA_Transition IN ('ADD','PERSIST') THEN COALESCE(m.Curr_Bal,0) ELSE 0 END)
+      OVER (PARTITION BY m.Bank_Code, m.Contract_Source_System) AS sys_curr_total,
+    SUM(CASE WHEN m.NA_Transition IN ('PERSIST','REMOVAL') THEN COALESCE(m.Prev_Bal,0) ELSE 0 END)
+      OVER (PARTITION BY m.Bank_Code, m.Contract_Source_System) AS sys_prev_total
+  FROM mom m
+  WHERE ( (SELECT bank_code FROM params) IS NULL
+          OR m.Bank_Code = (SELECT bank_code FROM params) )
+    AND ( (SELECT contract_source_system FROM params) IS NULL
+          OR m.Contract_Source_System = (SELECT contract_source_system FROM params) )
+),
+
+/* ===================== RANK PER (Bank,System,Status) ===================== */
+ranked AS (
+  SELECT
+    s.*,
+    CASE
+      WHEN s.NA_Transition = 'REMOVAL' AND COALESCE(s.sys_prev_total,0) > 0
+        THEN s.size_metric / NULLIF(s.sys_prev_total,0)
+      WHEN COALESCE(s.sys_curr_total,0) > 0
+        THEN s.size_metric / NULLIF(s.sys_curr_total,0)
+      ELSE NULL
+    END AS pct_of_system,
+    ROW_NUMBER() OVER (
+      PARTITION BY s.Bank_Code, s.Contract_Source_System, s.NA_Transition
+      ORDER BY s.size_metric DESC NULLS LAST, s.Account_Identifier
+    ) AS rnk
+  FROM scored s
+  WHERE s.size_metric >= (SELECT min_size FROM params)
+)
+
+/* ===================== FINAL OUTPUT ===================== */
+SELECT
+  r.Bank_Code,
+  r.Contract_Source_System,
+  r.NA_Transition,                     -- 'ADD' | 'REMOVAL' | 'PERSIST'
+  r.Account_Identifier,
+  r.Account_Name,
+  r.Prev_Bal,
+  r.Curr_Bal,
+  r.size_metric,                       -- ranking metric (curr for ADD/PERSIST, prev for REMOVAL)
+  r.pct_of_system                      -- share of system total (curr share for ADD/PERSIST, prev share for REMOVAL)
+FROM ranked r
+WHERE r.rnk <= (SELECT top_n FROM params)
+  AND r.NA_Transition IN ('ADD','REMOVAL','PERSIST')
+ORDER BY
+  r.Bank_Code,
+  r.Contract_Source_System,
+  CASE r.NA_Transition WHEN 'ADD' THEN 0 WHEN 'REMOVAL' THEN 1 WHEN 'PERSIST' THEN 2 ELSE 3 END,
+  r.size_metric DESC NULLS LAST,
+  r.Account_Identifier;
+
+
+
+
+
+/* ===================== PARAMETERS ===================== */
+WITH params AS (
+  SELECT
     DATE '2025-07-31'                 AS curr_eom,         -- << set current EOM
     ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom,
     50::INT                           AS top_n,            -- rows per (Bank,System,Status)
