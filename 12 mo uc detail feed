@@ -1,3 +1,167 @@
+/* ===================== PARAMETERS ===================== */
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'                 AS curr_eom,         -- << set current EOM here
+    ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom,
+    100::INT                          AS top_n,            -- max rows to return
+    0::NUMERIC                        AS min_abs_delta,    -- minimum absolute $ move
+    NULL::VARCHAR(50)                 AS bank_code,        -- e.g., '123'; NULL = all
+    NULL::VARCHAR(100)                AS contract_source_system -- e.g., 'ACBS'; NULL = all
+),
+
+/* ===================== BASE POPULATION (filters applied) ===================== */
+pop AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE)            AS eom,
+      Bank_Code,
+      Contract_Source_System,
+      Account_Identifier,
+      MAX(Account_Name)                          AS Account_Name,
+      SUM(Source_System_Balance)::NUMERIC        AS Source_System_Balance,
+      MAX(UPPER(TRIM(Non_Accrual_Flag)))         AS Non_Accrual_Flag,
+      MAX(GL_ACCOUNT_HIER_LEVEL_4)               AS GL_L4,
+      /* If PD_GRADE exists in this table, keep the MAX; if not, remove the next line */
+      MAX(PD_GRADE)                              AS PD_GRADE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+  GROUP BY 1,2,3,4
+),
+
+/* ===================== CURRENT / PRIOR NA AGGREGATES ===================== */
+curr_agg AS (
+  SELECT
+    Bank_Code, Contract_Source_System, Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    SUM(Source_System_Balance)::NUMERIC AS Curr_Bal,
+    /* passthrough dims */
+    MAX(GL_L4) AS GL_L4,
+    MAX(PD_GRADE) AS PD_GRADE
+  FROM pop
+  WHERE eom = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+  GROUP BY 1,2,3
+),
+prev_agg AS (
+  SELECT
+    Bank_Code, Contract_Source_System, Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    SUM(Source_System_Balance)::NUMERIC AS Prev_Bal,
+    /* passthrough dims */
+    MAX(GL_L4) AS GL_L4,
+    MAX(PD_GRADE) AS PD_GRADE
+  FROM pop
+  WHERE eom = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+  GROUP BY 1,2,3
+),
+
+/* ===================== PERSISTING ONLY (inner join) ===================== */
+persist AS (
+  SELECT
+    c.Bank_Code,
+    c.Contract_Source_System,
+    c.Account_Identifier,
+    COALESCE(c.Account_Name, p.Account_Name) AS Account_Name,
+    /* balances */
+    p.Prev_Bal,
+    c.Curr_Bal,
+    /* delta & % change */
+    (COALESCE(c.Curr_Bal,0) - COALESCE(p.Prev_Bal,0)) AS delta,
+    CASE
+      WHEN COALESCE(p.Prev_Bal,0) = 0 THEN NULL
+      ELSE (COALESCE(c.Curr_Bal,0) - COALESCE(p.Prev_Bal,0)) / NULLIF(p.Prev_Bal,0)
+    END AS pct_change,
+    /* dims */
+    COALESCE(c.GL_L4, p.GL_L4) AS GL_L4,
+    COALESCE(c.PD_GRADE, p.PD_GRADE) AS PD_GRADE
+  FROM curr_agg c
+  INNER JOIN prev_agg p
+    ON  c.Account_Identifier     = p.Account_Identifier
+    AND c.Bank_Code              = p.Bank_Code
+    AND c.Contract_Source_System = p.Contract_Source_System
+  /* optional scope filters from params */
+  WHERE ( (SELECT bank_code FROM params) IS NULL
+          OR c.Bank_Code = (SELECT bank_code FROM params) )
+    AND ( (SELECT contract_source_system FROM params) IS NULL
+          OR c.Contract_Source_System = (SELECT contract_source_system FROM params) )
+),
+
+/* ===================== RANK BIGGEST MOVERS (by |delta|) ===================== */
+ranked AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    Account_Identifier,
+    Account_Name,
+    GL_L4,
+    PD_GRADE,
+    Prev_Bal,
+    Curr_Bal,
+    delta,
+    ABS(delta) AS delta_abs,
+    pct_change,
+    /* rank within each (Bank, System) by absolute delta */
+    ROW_NUMBER() OVER (
+      PARTITION BY Bank_Code, Contract_Source_System
+      ORDER BY ABS(delta) DESC NULLS LAST, Account_Identifier
+    ) AS rnk_abs,
+    /* separate directional ranks if you want top ups / top downs */
+    ROW_NUMBER() OVER (
+      PARTITION BY Bank_Code, Contract_Source_System
+      ORDER BY CASE WHEN delta IS NULL THEN -1e99 ELSE delta END DESC, Account_Identifier
+    ) AS rnk_up,
+    ROW_NUMBER() OVER (
+      PARTITION BY Bank_Code, Contract_Source_System
+      ORDER BY CASE WHEN delta IS NULL THEN  1e99 ELSE delta END ASC, Account_Identifier
+    ) AS rnk_down
+  FROM persist
+  WHERE ABS(COALESCE(delta,0)) >= (SELECT min_abs_delta FROM params)
+)
+
+/* ===================== 1) TOP MOVERS OUTPUT ===================== */
+SELECT
+  'PERSISTING_TOP_MOVERS'::VARCHAR(30) AS section,
+  (SELECT curr_eom FROM params)        AS eom,
+  r.Bank_Code,
+  r.Contract_Source_System,
+  r.Account_Identifier,
+  r.Account_Name,
+  r.GL_L4,
+  r.PD_GRADE,
+  r.Prev_Bal,
+  r.Curr_Bal,
+  r.delta,
+  r.delta_abs,
+  r.pct_change,
+  CASE WHEN r.delta >= 0 THEN 'UP' ELSE 'DOWN' END AS direction
+FROM ranked r
+WHERE r.rnk_abs <= (SELECT top_n FROM params)
+ORDER BY
+  r.Bank_Code, r.Contract_Source_System,
+  r.delta_abs DESC NULLS LAST, r.Account_Identifier;
+
+/* ===================== 2) TIE-OUT SUMMARY (matches Waterfall Persisting Δ) ===================== */
+SELECT
+  'PERSISTING_DELTA_SUMMARY'::VARCHAR(30) AS section,
+  (SELECT curr_eom FROM params)           AS eom,
+  Bank_Code,
+  Contract_Source_System,
+  SUM(delta)::NUMERIC AS persisting_delta_sum,
+  SUM(Prev_Bal)::NUMERIC AS total_prev_persist_bal,
+  SUM(Curr_Bal)::NUMERIC AS total_curr_persist_bal,
+  (SUM(Curr_Bal) - SUM(Prev_Bal))::NUMERIC AS check_delta
+FROM persist
+GROUP BY 2,3,4
+ORDER BY Bank_Code, Contract_Source_System;
+
+
+
+
+
+
 let
   Src = Merge1,
 
