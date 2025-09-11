@@ -1,3 +1,25 @@
+let
+  Src = Merge1,
+
+  // Keep only columns needed for sums (speeds everything up)
+  Keep = Table.SelectColumns(Src, {"Old_SOURCE_SYSTEM_BALANCE","New_SOURCE_SYSTEM_BALANCE"}),
+
+  // Robust numeric conversion without changing table types
+  OldList = List.Transform(Table.Column(Keep, "Old_SOURCE_SYSTEM_BALANCE"), each try Number.From(_) otherwise 0),
+  NewList = List.Transform(Table.Column(Keep, "New_SOURCE_SYSTEM_BALANCE"), each try Number.From(_) otherwise 0),
+
+  OldSum = List.Sum(OldList),
+  NewSum = List.Sum(NewList),
+  RecalcVar = NewSum - OldSum,
+
+  Out = #table({"Old_Sum","New_Sum","Recalc_Variance_(New-Old)"}, {{OldSum, NewSum, RecalcVar}})
+in
+  Out
+
+
+
+
+
 /* ===================== PARAMETERS ===================== */
 WITH params AS (
   SELECT
