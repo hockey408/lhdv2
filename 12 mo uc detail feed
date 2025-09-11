@@ -1,3 +1,126 @@
+/* ====== PARAMETERS: set your reporting month ====== */
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'                 AS curr_eom,
+    ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom
+),
+
+/* ====== Base population with your filters ====== */
+pop AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE) AS End_of_Month_Date,
+      Account_Identifier,
+      Account_Name,
+      Bank_Code,
+      Contract_Source_System,
+      Source_System_Balance,
+      Non_Accrual_Flag,
+      GL_ACCOUNT_HIER_LEVEL_4
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+),
+
+/* ====== Aggregate to 1 row per account per month to avoid dupes ====== */
+curr_agg AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    SUM(Source_System_Balance)::NUMERIC AS Curr_Bal
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+  GROUP BY 1,2,3
+),
+prev_agg AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    SUM(Source_System_Balance)::NUMERIC AS Prev_Bal
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+  GROUP BY 1,2,3
+),
+
+/* ====== MoM status per account (Add / Removal / Persist) ====== */
+mom AS (
+  SELECT
+    COALESCE(c.Bank_Code,             p.Bank_Code)              AS Bank_Code,
+    COALESCE(c.Contract_Source_System,p.Contract_Source_System) AS Contract_Source_System,
+    COALESCE(c.Account_Identifier,    p.Account_Identifier)     AS Account_Identifier,
+    COALESCE(c.Account_Name,          p.Account_Name)           AS Account_Name,
+    CASE
+      WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'ADD'
+      WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'REMOVAL'
+      ELSE 'PERSIST'
+    END AS NA_Transition,
+    p.Prev_Bal,
+    c.Curr_Bal
+  FROM curr_agg c
+  FULL OUTER JOIN prev_agg p
+    ON  c.Account_Identifier     = p.Account_Identifier
+    AND c.Bank_Code              = p.Bank_Code
+    AND c.Contract_Source_System = p.Contract_Source_System
+),
+
+/* ====== Roll up to the five-step bridge per bank/system ====== */
+wf AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+
+    /* 1) Start = prior NA (persist.prev + removal.prev) */
+    SUM(CASE WHEN NA_Transition IN ('PERSIST','REMOVAL')
+             THEN COALESCE(Prev_Bal,0) ELSE 0 END) AS start_balance,
+
+    /* 2) Adds = current $ of new NA */
+    SUM(CASE WHEN NA_Transition = 'ADD'
+             THEN COALESCE(Curr_Bal,0) ELSE 0 END) AS adds,
+
+    /* 3) Removals = negative prior $ of exits */
+    -SUM(CASE WHEN NA_Transition = 'REMOVAL'
+              THEN COALESCE(Prev_Bal,0) ELSE 0 END) AS removals,
+
+    /* 4) Persisting Δ = (persist.curr - persist.prev) */
+    SUM(CASE WHEN NA_Transition = 'PERSIST'
+             THEN COALESCE(Curr_Bal,0) - COALESCE(Prev_Bal,0) ELSE 0 END) AS persisting_delta,
+
+    /* 5) End = current NA (adds.curr + persist.curr) */
+    SUM(CASE WHEN NA_Transition IN ('ADD','PERSIST')
+             THEN COALESCE(Curr_Bal,0) ELSE 0 END) AS end_balance
+  FROM mom
+  GROUP BY 1,2
+)
+
+/* ====== Final long-form output for Power BI Waterfall ====== */
+SELECT
+  Bank_Code,
+  Contract_Source_System,
+  1 AS metric_order,
+  'start_balance'::VARCHAR(30) AS metric_name,
+  start_balance::NUMERIC       AS metric_value
+FROM wf
+UNION ALL
+SELECT Bank_Code, Contract_Source_System, 2, 'adds',            adds            FROM wf
+UNION ALL
+SELECT Bank_Code, Contract_Source_System, 3, 'removals',        removals        FROM wf
+UNION ALL
+SELECT Bank_Code, Contract_Source_System, 4, 'persisting_delta', persisting_delta FROM wf
+UNION ALL
+SELECT Bank_Code, Contract_Source_System, 5, 'end_balance',     end_balance     FROM wf
+ORDER BY Bank_Code, Contract_Source_System, metric_order;
+
+
+
+
+
 WITH params AS (
   SELECT
     DATE '2025-08-31'                 AS curr_eom,
