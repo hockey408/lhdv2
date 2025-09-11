@@ -1,4 +1,52 @@
 let
+  Src = Merge1,
+
+  // Force types & null-safe numbers
+  Typed = Table.TransformColumnTypes(
+            Src,
+            {
+              {"Old_SOURCE_SYSTEM_BALANCE", type number},
+              {"New_SOURCE_SYSTEM_BALANCE", type number},
+              {"Variance", type number}
+            },
+            "en-US"
+          ),
+  Safe = Table.TransformColumns(
+           Typed,
+           {
+             {"Old_SOURCE_SYSTEM_BALANCE", each if _ = null then 0 else _, type number},
+             {"New_SOURCE_SYSTEM_BALANCE", each if _ = null then 0 else _, type number},
+             {"Variance", each if _ = null then 0 else _, type number}
+           }
+         ),
+
+  // Totals from the row-level columns
+  OldSum   = List.Sum( Safe[Old_SOURCE_SYSTEM_BALANCE] ),
+  NewSum   = List.Sum( Safe[New_SOURCE_SYSTEM_BALANCE] ),
+  VarSum   = List.Sum( Safe[Variance] ),
+  RecalcVar = NewSum - OldSum,
+
+  // Counts & distincts for diagnostics
+  RowCount = Table.RowCount(Safe),
+  DistAcct = List.Count(List.Distinct(Safe[ACCOUNT_IDENTIFIER])),
+
+  // Compare the two ways of computing variance
+  Diff_Check = VarSum - RecalcVar,
+
+  // Output one neat row
+  Out = #table(
+          {"Old_Sum","New_Sum","Sum_of_Variance_Column","Recalc_Variance_(New-Old)","Difference_(SumVariance - Recalc)","Rows","Distinct_Accounts"},
+          {{OldSum, NewSum, VarSum, RecalcVar, Diff_Check, RowCount, DistAcct}}
+        )
+in
+  Out
+
+
+
+
+
+
+let
   Source = Merge1,
 
   // Ensure numeric types & null-safe math
