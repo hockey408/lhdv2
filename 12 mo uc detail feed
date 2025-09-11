@@ -1,3 +1,83 @@
+let
+  Source = Merge1,
+
+  // Ensure numeric types & null-safe math
+  Typed = Table.TransformColumnTypes(
+           Source,
+           {
+             {"Old_SOURCE_SYSTEM_BALANCE", type number},
+             {"New_SOURCE_SYSTEM_BALANCE", type number},
+             {"Variance", type number}
+           },
+           "en-US"
+         ),
+  Safe = Table.TransformColumns(
+           Typed,
+           {
+             {"Old_SOURCE_SYSTEM_BALANCE", each if _ = null then 0 else _, type number},
+             {"New_SOURCE_SYSTEM_BALANCE", each if _ = null then 0 else _, type number},
+             {"Variance", each if _ = null then 0 else _, type number}
+           }
+         ),
+
+  // Add a helper for change type (in case you want counts)
+  WithChangeType = Table.AddColumn(
+                     Safe, "Change_Type",
+                     each
+                       if [Old_SOURCE_SYSTEM_BALANCE] <> 0 and [New_SOURCE_SYSTEM_BALANCE] = 0 then "Dropped"
+                       else if [Old_SOURCE_SYSTEM_BALANCE] = 0 and [New_SOURCE_SYSTEM_BALANCE] <> 0 then "Added"
+                       else "Balance Change",
+                     type text
+                   ),
+
+  // Aggregate strictly by ACCOUNT_IDENTIFIER
+  Grouped = Table.Group(
+    WithChangeType,
+    {"ACCOUNT_IDENTIFIER"},
+    {
+      {"Old_Total", each List.Sum([Old_SOURCE_SYSTEM_BALANCE]), type number},
+      {"New_Total", each List.Sum([New_SOURCE_SYSTEM_BALANCE]), type number},
+      {"Variance_Total", each List.Sum([Variance]), type number},
+
+      // optional context (multi-row accounts handled via distinct concatenation)
+      {"Systems", each Text.Combine(List.Distinct(List.Transform(Table.Column(_, "CONTRACT_SOURCE_SYSTEM"), each Text.From(_))), ", "), type text},
+      {"Bank_Codes", each Text.Combine(List.Distinct(List.Transform(Table.Column(_, "BANK_CODE"), each Text.From(_))), ", "), type text},
+      {"Non_Accrual_Flags", each Text.Combine(List.Distinct(List.Transform(Table.Column(_, "NON_ACCRUAL_FLAG"), each Text.From(_))), ", "), type text},
+      {"Account_Names", each Text.Combine(List.Distinct(List.Transform(Table.Column(_, "ACCOUNT_NAME"), each Text.From(_))), " | "), type text},
+
+      // quick diagnostics
+      {"Added_Count", each Table.RowCount(Table.SelectRows(_, each [Change_Type] = "Added")), Int64.Type},
+      {"Dropped_Count", each Table.RowCount(Table.SelectRows(_, each [Change_Type] = "Dropped")), Int64.Type},
+      {"BalanceChange_Count", each Table.RowCount(Table.SelectRows(_, each [Change_Type] = "Balance Change")), Int64.Type}
+    }
+  ),
+
+  // Keep only non-zero variances (adjust/remove this filter if you want all)
+  NonZero = Table.SelectRows(Grouped, each [Variance_Total] <> 0),
+
+  // Add AbsVariance for sorting
+  WithAbs = Table.AddColumn(NonZero, "AbsVariance", each Number.Abs([Variance_Total]), type number),
+
+  // Nice column order
+  Reordered = Table.ReorderColumns(
+                WithAbs,
+                {
+                  "ACCOUNT_IDENTIFIER", "Old_Total", "New_Total", "Variance_Total", "AbsVariance",
+                  "Systems", "Bank_Codes", "Non_Accrual_Flags", "Account_Names",
+                  "Added_Count", "Dropped_Count", "BalanceChange_Count"
+                }
+              ),
+
+  // Sort by biggest dollar impact
+  Sorted = Table.Sort(Reordered, {{"AbsVariance", Order.Descending}})
+in
+  Sorted
+
+
+
+
+
+
 BANK_CODE
 ACCOUNT_NAME
 CONTRACT_SOURCE_SYSTEM
