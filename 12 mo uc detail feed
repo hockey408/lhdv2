@@ -1,3 +1,228 @@
+/* ============= PARAMETERS: set the month ============= */
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'                 AS curr_eom,   -- << set current EOM here
+    ADD_MONTHS(DATE '2025-07-31', -1) AS prev_eom
+),
+
+/* ============= Base pop with filters (aggregate to 1 row per acct/month) ============= */
+pop AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE)             AS eom,
+      Bank_Code,
+      Contract_Source_System,
+      Account_Identifier,
+      MAX(Account_Name)                           AS Account_Name,
+      SUM(Source_System_Balance)::NUMERIC         AS Source_System_Balance,
+      MAX(UPPER(TRIM(Non_Accrual_Flag)))          AS Non_Accrual_Flag,
+      /* If PD_GRADE exists in your table, keep it; else drop the next line */
+      MAX(PD_GRADE)                               AS PD_GRADE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+  GROUP BY 1,2,3,4
+),
+
+/* ============= Current / Prior NA slices ============= */
+curr_agg AS (
+  SELECT
+    Bank_Code, Contract_Source_System, Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    COALESCE(MAX(PD_GRADE),'UNKNOWN') AS PD_GRADE,
+    SUM(Source_System_Balance)::NUMERIC AS Curr_Bal
+  FROM pop
+  WHERE eom = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+  GROUP BY 1,2,3
+),
+prev_agg AS (
+  SELECT
+    Bank_Code, Contract_Source_System, Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    COALESCE(MAX(PD_GRADE),'UNKNOWN') AS PD_GRADE,
+    SUM(Source_System_Balance)::NUMERIC AS Prev_Bal
+  FROM pop
+  WHERE eom = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+  GROUP BY 1,2,3
+),
+
+/* ============= MoM status per account (ADD / REMOVAL / PERSIST) ============= */
+mom AS (
+  SELECT
+    COALESCE(c.Bank_Code,             p.Bank_Code)              AS Bank_Code,
+    COALESCE(c.Contract_Source_System,p.Contract_Source_System) AS Contract_Source_System,
+    COALESCE(c.Account_Identifier,    p.Account_Identifier)     AS Account_Identifier,
+    COALESCE(c.Account_Name,          p.Account_Name)           AS Account_Name,
+    COALESCE(c.PD_GRADE,              p.PD_GRADE)               AS PD_GRADE,
+    CASE
+      WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'ADD'
+      WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'REMOVAL'
+      ELSE 'PERSIST'
+    END AS NA_Transition,
+    p.Prev_Bal,
+    c.Curr_Bal
+  FROM curr_agg c
+  FULL OUTER JOIN prev_agg p
+    ON  c.Account_Identifier     = p.Account_Identifier
+    AND c.Bank_Code              = p.Bank_Code
+    AND c.Contract_Source_System = p.Contract_Source_System
+),
+
+/* ============= 1) PD mix of current NA (Adds + Persist) ============= */
+na_pd AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    PD_GRADE,
+    SUM(CASE WHEN NA_Transition IN ('ADD','PERSIST') THEN COALESCE(Curr_Bal,0) ELSE 0 END)::NUMERIC AS pd_eom_bal
+  FROM mom
+  GROUP BY 1,2,3
+),
+na_pd_with_share AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    PD_GRADE,
+    pd_eom_bal,
+    SUM(pd_eom_bal) OVER (PARTITION BY Bank_Code, Contract_Source_System) AS sys_eom_total,
+    CASE
+      WHEN SUM(pd_eom_bal) OVER (PARTITION BY Bank_Code, Contract_Source_System) = 0 THEN NULL
+      ELSE pd_eom_bal / NULLIF(SUM(pd_eom_bal) OVER (PARTITION BY Bank_Code, Contract_Source_System),0)
+    END AS pd_share_of_eom
+  FROM na_pd
+),
+
+/* ============= 2) PD mix of ADDs (new NA this month) ============= */
+adds_pd AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    PD_GRADE,
+    SUM(CASE WHEN NA_Transition='ADD' THEN COALESCE(Curr_Bal,0) ELSE 0 END)::NUMERIC AS adds_bal
+  FROM mom
+  GROUP BY 1,2,3
+),
+adds_pd_with_share AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    PD_GRADE,
+    adds_bal,
+    SUM(adds_bal) OVER (PARTITION BY Bank_Code, Contract_Source_System) AS sys_adds_total,
+    CASE
+      WHEN SUM(adds_bal) OVER (PARTITION BY Bank_Code, Contract_Source_System) = 0 THEN NULL
+      ELSE adds_bal / NULLIF(SUM(adds_bal) OVER (PARTITION BY Bank_Code, Contract_Source_System),0)
+    END AS adds_pd_share
+  FROM adds_pd
+),
+
+/* ============= 3) Concentration of current NA (Top-1/5/10 share) ============= */
+curr_accounts AS (
+  SELECT
+    Bank_Code, Contract_Source_System, Account_Identifier, Account_Name, PD_GRADE, Curr_Bal
+  FROM curr_agg
+),
+ranked_curr AS (
+  SELECT
+    Bank_Code, Contract_Source_System, Account_Identifier, Account_Name, PD_GRADE, Curr_Bal,
+    ROW_NUMBER() OVER (
+      PARTITION BY Bank_Code, Contract_Source_System
+      ORDER BY Curr_Bal DESC NULLS LAST, Account_Identifier
+    ) AS rnk,
+    SUM(Curr_Bal) OVER (PARTITION BY Bank_Code, Contract_Source_System) AS sys_total
+  FROM curr_accounts
+),
+concentration AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    /* sums for top N */
+    SUM(CASE WHEN rnk = 1  THEN Curr_Bal ELSE 0 END)::NUMERIC AS top1_bal,
+    SUM(CASE WHEN rnk <= 5 THEN Curr_Bal ELSE 0 END)::NUMERIC AS top5_bal,
+    SUM(CASE WHEN rnk <= 10 THEN Curr_Bal ELSE 0 END)::NUMERIC AS top10_bal,
+    MAX(sys_total)::NUMERIC AS sys_total
+  FROM ranked_curr
+  GROUP BY 1,2
+)
+
+/* ============= FINAL OUTPUT: 3 sections ============= */
+-- 1) PD mix of current NA (Adds + Persist)
+SELECT
+  'NA_PD_MIX_EOM'::VARCHAR(30) AS section,
+  (SELECT curr_eom FROM params) AS eom,
+  Bank_Code,
+  Contract_Source_System,
+  PD_GRADE,
+  pd_eom_bal        AS metric_value,
+  pd_share_of_eom   AS metric_pct
+FROM na_pd_with_share
+
+UNION ALL
+-- 2) PD mix of Adds
+SELECT
+  'ADDS_PD_MIX'::VARCHAR(30) AS section,
+  (SELECT curr_eom FROM params) AS eom,
+  Bank_Code,
+  Contract_Source_System,
+  PD_GRADE,
+  adds_bal        AS metric_value,
+  adds_pd_share   AS metric_pct
+FROM adds_pd_with_share
+
+UNION ALL
+-- 3) Concentration (Top 1 / Top 5 / Top 10 share)
+SELECT
+  'CONCENTRATION'::VARCHAR(30) AS section,
+  (SELECT curr_eom FROM params) AS eom,
+  Bank_Code,
+  Contract_Source_System,
+  'ALL_PD'::VARCHAR(100)       AS PD_GRADE,  -- placeholder; not used for this section
+  sys_total                    AS metric_value,
+  NULL                         AS metric_pct
+FROM concentration
+
+UNION ALL
+SELECT
+  'CONCENTRATION_TOP1_SHARE'::VARCHAR(30) AS section,
+  (SELECT curr_eom FROM params) AS eom,
+  Bank_Code,
+  Contract_Source_System,
+  'ALL_PD'::VARCHAR(100)       AS PD_GRADE,
+  CASE WHEN sys_total = 0 THEN NULL ELSE top1_bal  / NULLIF(sys_total,0) END AS metric_value,
+  NULL AS metric_pct
+FROM concentration
+
+UNION ALL
+SELECT
+  'CONCENTRATION_TOP5_SHARE'::VARCHAR(30) AS section,
+  (SELECT curr_eom FROM params) AS eom,
+  Bank_Code,
+  Contract_Source_System,
+  'ALL_PD'::VARCHAR(100)       AS PD_GRADE,
+  CASE WHEN sys_total = 0 THEN NULL ELSE top5_bal  / NULLIF(sys_total,0) END AS metric_value,
+  NULL AS metric_pct
+FROM concentration
+
+UNION ALL
+SELECT
+  'CONCENTRATION_TOP10_SHARE'::VARCHAR(30) AS section,
+  (SELECT curr_eom FROM params) AS eom,
+  Bank_Code,
+  Contract_Source_System,
+  'ALL_PD'::VARCHAR(100)       AS PD_GRADE,
+  CASE WHEN sys_total = 0 THEN NULL ELSE top10_bal / NULLIF(sys_total,0) END AS metric_value,
+  NULL AS metric_pct
+FROM concentration
+
+ORDER BY section, Bank_Code, Contract_Source_System, PD_GRADE;
+
+
+
+
+
 let
   Src = Merge1,
 
