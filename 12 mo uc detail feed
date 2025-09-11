@@ -1,3 +1,128 @@
+/* =============== PARAMETERS =============== */
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'                 AS curr_eom,   -- << set current EOM here
+    'Y'::CHAR(1)                      AS na_only     -- 'Y' to keep Non-Accruals only; 'N' for all
+),
+
+/* =============== Base (one row per account @ EOM) =============== */
+pop AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE)                  AS eom,
+      Bank_Code,
+      Contract_Source_System,
+      Account_Identifier,
+      MAX(Account_Name)                                AS Account_Name,
+      /* If PD_GRADE exists here; if not, drop it. */
+      MAX(PD_GRADE)                                    AS PD_GRADE,
+      MAX(GL_ACCOUNT_HIER_LEVEL_4)                     AS GL_L4,
+      MAX(UPPER(TRIM(Non_Accrual_Flag)))              AS Non_Accrual_Flag,
+      /* If your DPD column name differs, change DAYS_PAST_DUE below */
+      MAX(COALESCE(DAYS_PAST_DUE,0))                   AS days_past_due,
+      SUM(Source_System_Balance)::NUMERIC              AS Source_System_Balance
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND (
+          (SELECT na_only FROM params) = 'N'
+          OR UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+        )
+  GROUP BY 1,2,3,4
+),
+
+/* =============== DPD bucketization =============== */
+bucketed AS (
+  SELECT
+    p.eom,
+    p.Bank_Code,
+    p.Contract_Source_System,
+    p.Account_Identifier,
+    p.Account_Name,
+    p.PD_GRADE,
+    p.GL_L4,
+    p.Non_Accrual_Flag,
+    p.days_past_due,
+    CASE
+      WHEN p.days_past_due IS NULL OR p.days_past_due <= 0 THEN 'Zero Days'
+      WHEN p.days_past_due BETWEEN 1   AND 30  THEN '1-30 Days'
+      WHEN p.days_past_due BETWEEN 31  AND 90  THEN '31-90 Days'
+      WHEN p.days_past_due BETWEEN 91  AND 179 THEN '91-180 Days'
+      ELSE '180+ Days'
+    END AS dpd_bucket,
+    p.Source_System_Balance
+  FROM pop p
+),
+
+/* =============== Summary by System × DPD bucket =============== */
+sys_summary AS (
+  SELECT
+    b.Bank_Code,
+    b.Contract_Source_System,
+    b.dpd_bucket,
+    SUM(b.Source_System_Balance)::NUMERIC AS bucket_balance,
+    COUNT(*)::INT                         AS bucket_accounts,
+    SUM(SUM(b.Source_System_Balance)) OVER (
+      PARTITION BY b.Bank_Code, b.Contract_Source_System
+    ) AS sys_total_balance
+  FROM bucketed b
+  GROUP BY 1,2,3
+)
+
+/* =============== FINAL OUTPUTS (2 sections) =============== */
+-- 1) Account-level detail (for drill/slicing)
+SELECT
+  'DPD_DETAIL'::VARCHAR(20)           AS section,
+  eom,
+  Bank_Code,
+  Contract_Source_System,
+  Account_Identifier,
+  Account_Name,
+  PD_GRADE,
+  GL_L4,
+  Non_Accrual_Flag,
+  days_past_due,
+  dpd_bucket,
+  Source_System_Balance              AS metric_value,
+  NULL::NUMERIC                      AS metric_pct,
+  NULL::INT                          AS account_count
+FROM bucketed
+
+UNION ALL
+
+-- 2) System-level summary by DPD bucket
+SELECT
+  'DPD_SUMMARY'::VARCHAR(20)          AS section,
+  (SELECT curr_eom FROM params)       AS eom,
+  Bank_Code,
+  Contract_Source_System,
+  NULL::VARCHAR(200)                  AS Account_Identifier,
+  NULL::VARCHAR(200)                  AS Account_Name,
+  NULL::VARCHAR(50)                   AS PD_GRADE,
+  NULL::VARCHAR(100)                  AS GL_L4,
+  NULL::VARCHAR(2)                    AS Non_Accrual_Flag,
+  NULL::INTEGER                       AS days_past_due,
+  dpd_bucket,
+  bucket_balance                      AS metric_value,
+  CASE WHEN sys_total_balance = 0 THEN NULL
+       ELSE bucket_balance / NULLIF(sys_total_balance,0) END AS metric_pct,
+  bucket_accounts                     AS account_count
+FROM sys_summary
+ORDER BY section, Bank_Code, Contract_Source_System,
+         CASE dpd_bucket
+           WHEN 'Zero Days' THEN 0
+           WHEN '1-30 Days' THEN 1
+           WHEN '31-90 Days' THEN 2
+           WHEN '91-180 Days' THEN 3
+           WHEN '180+ Days' THEN 4
+           ELSE 9 END;
+
+
+
+
+
+
+
 /* ===================== PARAMETERS ===================== */
 WITH params AS (
   SELECT
