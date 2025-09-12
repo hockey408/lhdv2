@@ -17,6 +17,46 @@ base AS (
       (SELECT prev_eom FROM params)
     )
   GROUP BY CAST(End_of_Month_Date AS DATE)
+)
+SELECT
+  (SELECT curr_eom FROM params) AS eom_curr,
+  (SELECT prev_eom FROM params) AS eom_prev,
+  MAX(CASE WHEN eom = (SELECT curr_eom FROM params) THEN total_bal END)::NUMERIC AS curr_total,
+  MAX(CASE WHEN eom = (SELECT prev_eom FROM params) THEN total_bal END)::NUMERIC AS prev_total,
+  (MAX(CASE WHEN eom = (SELECT curr_eom FROM params) THEN total_bal END)
+   - MAX(CASE WHEN eom = (SELECT prev_eom FROM params) THEN total_bal END))::NUMERIC AS delta,
+  CASE 
+    WHEN MAX(CASE WHEN eom = (SELECT prev_eom FROM params) THEN total_bal END) = 0 
+         OR MAX(CASE WHEN eom = (SELECT prev_eom FROM params) THEN total_bal END) IS NULL
+    THEN NULL
+    ELSE (MAX(CASE WHEN eom = (SELECT curr_eom FROM params) THEN total_bal END)
+         - MAX(CASE WHEN eom = (SELECT prev_eom FROM params) THEN total_bal END))
+         / NULLIF(MAX(CASE WHEN eom = (SELECT prev_eom FROM params) THEN total_bal END),0)
+  END AS pct_change
+FROM base;
+
+
+
+
+/* === Portfolio MoM % Change (single row) === */
+WITH params AS (
+  SELECT
+    DATE '2025-08-31'                 AS curr_eom,      -- set current EOM here
+    ADD_MONTHS(DATE '2025-08-31', -1) AS prev_eom
+),
+base AS (
+  SELECT
+    CAST(End_of_Month_Date AS DATE) AS eom,
+    SUM(Source_System_Balance)::NUMERIC AS total_bal
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+    AND End_of_Month_Date IN (
+      (SELECT curr_eom FROM params),
+      (SELECT prev_eom FROM params)
+    )
+  GROUP BY CAST(End_of_Month_Date AS DATE)
 ),
 totals AS (
   SELECT
