@@ -1,3 +1,152 @@
+/* ===================== PARAMETERS ===================== */
+WITH params AS (
+  SELECT
+    DATE '2025-07-31'   AS curr_eom,     -- << set anchor EOM (e.g., use 2025-08-31 when you switch)
+    24                  AS months_back,  -- how many months to pull (curr + prior N-1)
+    2.5::NUMERIC        AS z_threshold,  -- z-score flag threshold
+    0.15::NUMERIC       AS warn_pct,     -- 15% = Warning threshold
+    0.25::NUMERIC       AS crit_pct,     -- 25% = Critical threshold
+    NULL::VARCHAR(50)   AS bank_code,    -- optional: filter to one BANK_CODE; NULL = all
+    NULL::VARCHAR(100)  AS contract_source_system  -- optional: filter to one system; NULL = all
+),
+
+/* ===================== SYSTEM-LEVEL MONTHLY BALANCES ===================== */
+sys_monthly AS (
+  SELECT
+    CAST(End_of_Month_Date AS DATE) AS eom,
+    Bank_Code,
+    Contract_Source_System,
+    SUM(Source_System_Balance)::NUMERIC AS sys_bal
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+    AND End_of_Month_Date BETWEEN
+        ADD_MONTHS((SELECT curr_eom FROM params), -(SELECT months_back FROM params) + 1)
+        AND (SELECT curr_eom FROM params)
+    AND ( (SELECT bank_code FROM params) IS NULL
+          OR Bank_Code = (SELECT bank_code FROM params) )
+    AND ( (SELECT contract_source_system FROM params) IS NULL
+          OR Contract_Source_System = (SELECT contract_source_system FROM params) )
+  GROUP BY 1,2,3
+),
+
+/* ===================== ROLLING METRICS (exclude current row from stats) ===================== */
+sys_calc AS (
+  SELECT
+    s.*,
+    LAG(sys_bal) OVER (
+      PARTITION BY Bank_Code, Contract_Source_System ORDER BY eom
+    ) AS prev_sys_bal,
+
+    AVG(sys_bal) OVER (
+      PARTITION BY Bank_Code, Contract_Source_System ORDER BY eom
+      ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+    ) AS mean_12_prior,
+
+    STDDEV_SAMP(sys_bal) OVER (
+      PARTITION BY Bank_Code, Contract_Source_System ORDER BY eom
+      ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+    ) AS std_12_prior
+  FROM sys_monthly s
+),
+
+/* ===================== SCORES & FLAGS PER MONTH ===================== */
+scored AS (
+  SELECT
+    c.eom,
+    c.Bank_Code,
+    c.Contract_Source_System,
+    c.sys_bal           AS curr_sys_balance,
+    c.prev_sys_bal      AS prev_sys_balance,
+    c.mean_12_prior,
+    c.std_12_prior,
+
+    CASE
+      WHEN c.std_12_prior IS NULL OR c.std_12_prior = 0 THEN NULL
+      ELSE (c.sys_bal - c.mean_12_prior) / c.std_12_prior
+    END AS sys_z_score,
+
+    CASE
+      WHEN c.prev_sys_bal IS NULL OR c.prev_sys_bal = 0 THEN NULL
+      ELSE (c.sys_bal - c.prev_sys_bal) / NULLIF(c.prev_sys_bal,0)
+    END AS sys_pct_change,
+
+    /* flag columns */
+    CASE 
+      WHEN (c.std_12_prior IS NOT NULL AND c.std_12_prior <> 0)
+       AND ABS((c.sys_bal - c.mean_12_prior) / c.std_12_prior) >= (SELECT z_threshold FROM params)
+      THEN 1 ELSE 0 END AS flag_sys_z,
+
+    CASE 
+      WHEN c.prev_sys_bal IS NOT NULL AND c.prev_sys_bal <> 0
+       AND ABS((c.sys_bal - c.prev_sys_bal) / NULLIF(c.prev_sys_bal,0)) >= (SELECT crit_pct FROM params)
+      THEN 2  -- Critical
+      WHEN c.prev_sys_bal IS NOT NULL AND c.prev_sys_bal <> 0
+       AND ABS((c.sys_bal - c.prev_sys_bal) / NULLIF(c.prev_sys_bal,0)) >= (SELECT warn_pct FROM params)
+      THEN 1  -- Warning
+      ELSE 0
+    END AS flag_sys_pct
+  FROM sys_calc c
+),
+
+labeled AS (
+  SELECT
+    s.*,
+    CASE
+      WHEN s.flag_sys_z = 1
+        OR s.flag_sys_pct = 2
+      THEN 'Critical'
+      WHEN s.flag_sys_pct = 1
+      THEN 'Warning'
+      ELSE 'OK'
+    END AS severity
+  FROM scored s
+)
+
+/* ===================== FINAL OUTPUTS ===================== */
+
+-- 1) Monthly counts of flags (Critical / Warning / OK)
+SELECT
+  'FLAG_COUNTS_BY_MONTH'::VARCHAR(40) AS section,
+  eom,
+  COUNT(*)::INT                                           AS systems_total,
+  SUM(CASE WHEN severity = 'Critical' THEN 1 ELSE 0 END)::INT AS critical_cnt,
+  SUM(CASE WHEN severity = 'Warning'  THEN 1 ELSE 0 END)::INT AS warning_cnt,
+  SUM(CASE WHEN severity = 'OK'       THEN 1 ELSE 0 END)::INT AS ok_cnt
+FROM labeled
+GROUP BY eom
+ORDER BY eom
+
+UNION ALL
+
+-- 2) Flagged systems history with metrics & severity
+SELECT
+  'FLAGGED_SYSTEMS_HISTORY'::VARCHAR(40) AS section,
+  eom,
+  Bank_Code,
+  Contract_Source_System,
+  curr_sys_balance,
+  prev_sys_balance,
+  mean_12_prior,
+  std_12_prior,
+  sys_z_score,
+  sys_pct_change,
+  flag_sys_z,
+  flag_sys_pct,
+  severity
+FROM labeled
+-- keep all rows; filter to only Critical/Warning in Power BI if desired
+ORDER BY eom, 
+         CASE severity WHEN 'Critical' THEN 0 WHEN 'Warning' THEN 1 ELSE 2 END,
+         ABS(COALESCE(sys_z_score,0)) DESC,
+         ABS(COALESCE(sys_pct_change,0)) DESC,
+         Bank_Code, Contract_Source_System;
+
+
+
+
+
 /* =============== PARAMETERS =============== */
 WITH params AS (
   SELECT
