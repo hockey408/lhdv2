@@ -1,3 +1,59 @@
+/* ===================== FINAL UNION (aligned columns) ===================== */
+SELECT
+  'FLAG_COUNTS_BY_MONTH'::VARCHAR(40) AS section,   -- col 1
+  c.eom,                                            -- col 2
+  NULL::VARCHAR(50)   AS Bank_Code,                 -- col 3
+  NULL::VARCHAR(100)  AS Contract_Source_System,    -- col 4
+  NULL::NUMERIC       AS curr_sys_balance,          -- col 5
+  NULL::NUMERIC       AS prev_sys_balance,          -- col 6
+  NULL::NUMERIC       AS mean_12_prior,             -- col 7
+  NULL::NUMERIC       AS std_12_prior,              -- col 8
+  NULL::NUMERIC       AS sys_z_score,               -- col 9
+  NULL::NUMERIC       AS sys_pct_change,            -- col10
+  NULL::INTEGER       AS flag_sys_z,                -- col11
+  NULL::INTEGER       AS flag_sys_pct,              -- col12
+  NULL::VARCHAR(10)   AS severity,                  -- col13
+  c.systems_total,                                  -- col14
+  c.critical_cnt,                                   -- col15
+  c.warning_cnt,                                    -- col16
+  c.ok_cnt                                          -- col17
+FROM counts c
+
+UNION ALL
+
+SELECT
+  'FLAGGED_SYSTEMS_HISTORY'::VARCHAR(40) AS section, -- col 1
+  l.eom,                                            -- col 2
+  l.Bank_Code,                                      -- col 3
+  l.Contract_Source_System,                         -- col 4
+  l.curr_sys_balance,                               -- col 5
+  l.prev_sys_balance,                               -- col 6
+  l.mean_12_prior,                                  -- col 7
+  l.std_12_prior,                                   -- col 8
+  l.sys_z_score,                                    -- col 9
+  l.sys_pct_change,                                 -- col10
+  l.flag_sys_z,                                     -- col11
+  l.flag_sys_pct,                                   -- col12
+  l.severity,                                       -- col13
+  NULL::INT  AS systems_total,                      -- col14
+  NULL::INT  AS critical_cnt,                       -- col15
+  NULL::INT  AS warning_cnt,                        -- col16
+  NULL::INT  AS ok_cnt                              -- col17
+FROM labeled l
+
+/* Order strictly by output columns (no expressions) */
+ORDER BY
+  1,          -- section
+  2,          -- eom
+  13 DESC NULLS LAST,  -- severity (puts Critical/Warning above OK within history rows; NULLs for counts)
+  9  DESC NULLS LAST,  -- sys_z_score
+  10 DESC NULLS LAST,  -- sys_pct_change
+  3, 4;                -- Bank_Code, Contract_Source_System
+
+
+
+
+
 /* ===================== PARAMETERS ===================== */
 WITH params AS (
   SELECT
