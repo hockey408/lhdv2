@@ -1,3 +1,32 @@
+WITH params AS (
+  SELECT
+    DATE '2025-08-31' AS curr_eom
+),
+pop AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE) AS eom,
+      Bank_Code,
+      Contract_Source_System,
+      Account_Identifier,
+      MAX(COALESCE(Days_Past_Due,0)) AS days_past_due,
+      SUM(Source_System_Balance)::NUMERIC AS bal
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+  GROUP BY 1,2,3,4
+)
+SELECT
+  SUM(days_past_due * bal) / NULLIF(SUM(bal),0) AS weighted_avg_dpd,
+  SUM(bal) AS total_balance,
+  COUNT(DISTINCT Account_Identifier) AS account_count
+FROM pop;
+
+
+
+
+
 /* ===== Params ===== */
 WITH params AS (
   SELECT
