@@ -3,6 +3,226 @@ WITH params AS (
   SELECT
     DATE '2025-08-31'                 AS curr_eom,         -- << set current EOM
     ADD_MONTHS(DATE '2025-08-31', -1) AS prev_eom,
+    25::INT                           AS top_n_persist,    -- only for persisting movers (set NULL to return all)
+    0::NUMERIC                        AS min_size,         -- min $ for Adds/Removals (filter noise)
+    0::NUMERIC                        AS min_abs_delta,    -- min |$| for persisting movers
+    NULL::VARCHAR(50)                 AS bank_code,        -- optional filter; NULL = all
+    NULL::VARCHAR(100)                AS contract_source_system  -- optional filter; NULL = all
+),
+
+/* ===================== BASE POPULATION (one row per acct/month) ===================== */
+pop AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE)       AS eom,
+      Bank_Code,
+      Contract_Source_System,
+      Account_Identifier,
+      MAX(Account_Name)                     AS Account_Name,
+      /* Drop if not in your table */
+      MAX(PD_GRADE)                         AS PD_GRADE,
+      MAX(COALESCE(Days_Past_Due,0))        AS Days_Past_Due,
+      MAX(UPPER(TRIM(Non_Accrual_Flag)))    AS Non_Accrual_Flag,
+      SUM(Source_System_Balance)::NUMERIC   AS Source_System_Balance
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+  GROUP BY 1,2,3,4
+),
+
+/* ===================== CURRENT / PRIOR NA (aggregated) ===================== */
+curr_agg AS (
+  SELECT
+    Bank_Code, Contract_Source_System, Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    MAX(PD_GRADE)     AS PD_GRADE,
+    MAX(Days_Past_Due) AS Days_Past_Due,
+    SUM(Source_System_Balance)::NUMERIC AS Curr_Bal
+  FROM pop
+  WHERE eom = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+  GROUP BY 1,2,3
+),
+prev_agg AS (
+  SELECT
+    Bank_Code, Contract_Source_System, Account_Identifier,
+    MAX(Account_Name) AS Account_Name,
+    MAX(PD_GRADE)     AS PD_GRADE,
+    MAX(Days_Past_Due) AS Days_Past_Due,
+    SUM(Source_System_Balance)::NUMERIC AS Prev_Bal
+  FROM pop
+  WHERE eom = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+  GROUP BY 1,2,3
+),
+
+/* ===================== CLASSIFY MOM STATUS ===================== */
+mom AS (
+  SELECT
+    COALESCE(c.Bank_Code,             p.Bank_Code)              AS Bank_Code,
+    COALESCE(c.Contract_Source_System,p.Contract_Source_System) AS Contract_Source_System,
+    COALESCE(c.Account_Identifier,    p.Account_Identifier)     AS Account_Identifier,
+    COALESCE(c.Account_Name,          p.Account_Name)           AS Account_Name,
+    COALESCE(c.PD_GRADE,              p.PD_GRADE)               AS PD_GRADE,
+    COALESCE(c.Days_Past_Due,         p.Days_Past_Due)          AS Days_Past_Due,
+    p.Prev_Bal,
+    c.Curr_Bal,
+    CASE
+      WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'ADD'
+      WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'REMOVAL'
+      ELSE 'PERSIST'
+    END AS NA_Transition
+  FROM curr_agg c
+  FULL OUTER JOIN prev_agg p
+    ON  c.Account_Identifier     = p.Account_Identifier
+    AND c.Bank_Code              = p.Bank_Code
+    AND c.Contract_Source_System = p.Contract_Source_System
+  WHERE ( (SELECT bank_code FROM params) IS NULL
+          OR COALESCE(c.Bank_Code,p.Bank_Code) = (SELECT bank_code FROM params) )
+    AND ( (SELECT contract_source_system FROM params) IS NULL
+          OR COALESCE(c.Contract_Source_System,p.Contract_Source_System) = (SELECT contract_source_system FROM params) )
+),
+
+/* ===================== DATASETS ===================== */
+/* All Adds (no Top-N) */
+adds_all AS (
+  SELECT
+    m.Bank_Code,
+    m.Contract_Source_System,
+    m.Account_Identifier,
+    m.Account_Name,
+    m.PD_GRADE,
+    m.Days_Past_Due,
+    m.Prev_Bal,
+    m.Curr_Bal,
+    COALESCE(m.Curr_Bal,0) AS size_metric
+  FROM mom m
+  WHERE m.NA_Transition = 'ADD'
+    AND COALESCE(m.Curr_Bal,0) >= (SELECT min_size FROM params)
+),
+
+/* All Removals (no Top-N) */
+rem_all AS (
+  SELECT
+    m.Bank_Code,
+    m.Contract_Source_System,
+    m.Account_Identifier,
+    m.Account_Name,
+    m.PD_GRADE,
+    m.Days_Past_Due,
+    m.Prev_Bal,
+    m.Curr_Bal,
+    COALESCE(m.Prev_Bal,0) AS size_metric
+  FROM mom m
+  WHERE m.NA_Transition = 'REMOVAL'
+    AND COALESCE(m.Prev_Bal,0) >= (SELECT min_size FROM params)
+),
+
+/* Persisting Movers (keep optional Top-N by |delta|) */
+persist_ranked AS (
+  SELECT
+    c.Bank_Code,
+    c.Contract_Source_System,
+    c.Account_Identifier,
+    COALESCE(c.Account_Name, p.Account_Name) AS Account_Name,
+    COALESCE(c.PD_GRADE, p.PD_GRADE)         AS PD_GRADE,
+    COALESCE(c.Days_Past_Due, p.Days_Past_Due) AS Days_Past_Due,
+    p.Prev_Bal,
+    c.Curr_Bal,
+    (COALESCE(c.Curr_Bal,0) - COALESCE(p.Prev_Bal,0)) AS delta,
+    ABS(COALESCE(c.Curr_Bal,0) - COALESCE(p.Prev_Bal,0)) AS size_metric,
+    CASE WHEN (COALESCE(c.Curr_Bal,0) - COALESCE(p.Prev_Bal,0)) >= 0 THEN 'UP' ELSE 'DOWN' END AS direction,
+    ROW_NUMBER() OVER (
+      PARTITION BY c.Bank_Code, c.Contract_Source_System
+      ORDER BY ABS(COALESCE(c.Curr_Bal,0) - COALESCE(p.Prev_Bal,0)) DESC NULLS LAST, c.Account_Identifier
+    ) AS rnk_sys
+  FROM curr_agg c
+  INNER JOIN prev_agg p
+    ON  c.Account_Identifier     = p.Account_Identifier
+    AND c.Bank_Code              = p.Bank_Code
+    AND c.Contract_Source_System = p.Contract_Source_System
+  WHERE ABS(COALESCE(c.Curr_Bal,0) - COALESCE(p.Prev_Bal,0)) >= (SELECT min_abs_delta FROM params)
+)
+
+/* ===================== FINAL OUTPUT (3 sections) ===================== */
+-- ADDS TABLE (all)
+SELECT
+  'ADDS_TABLE'::VARCHAR(30) AS section,
+  (SELECT curr_eom FROM params) AS eom,
+  a.Bank_Code,
+  a.Contract_Source_System,
+  a.Account_Identifier,
+  a.Account_Name,
+  a.PD_GRADE,
+  a.Days_Past_Due,
+  a.Prev_Bal,
+  a.Curr_Bal,
+  NULL::NUMERIC AS delta,
+  NULL::VARCHAR(5) AS direction,
+  a.size_metric,
+  NULL::INT AS rnk_sys
+FROM adds_all a
+
+UNION ALL
+
+-- REMOVALS TABLE (all)
+SELECT
+  'REMOVALS_TABLE'::VARCHAR(30) AS section,
+  (SELECT curr_eom FROM params) AS eom,
+  r.Bank_Code,
+  r.Contract_Source_System,
+  r.Account_Identifier,
+  r.Account_Name,
+  r.PD_GRADE,
+  r.Days_Past_Due,
+  r.Prev_Bal,
+  r.Curr_Bal,
+  NULL::NUMERIC AS delta,
+  NULL::VARCHAR(5) AS direction,
+  r.size_metric,
+  NULL::INT AS rnk_sys
+FROM rem_all r
+
+UNION ALL
+
+-- PERSISTING MOVERS (Top-N optional; send all by setting top_n_persist = NULL)
+SELECT
+  'PERSISTING_MOVERS'::VARCHAR(30) AS section,
+  (SELECT curr_eom FROM params) AS eom,
+  p.Bank_Code,
+  p.Contract_Source_System,
+  p.Account_Identifier,
+  p.Account_Name,
+  p.PD_GRADE,
+  p.Days_Past_Due,
+  p.Prev_Bal,
+  p.Curr_Bal,
+  p.delta,
+  p.direction,
+  p.size_metric,
+  p.rnk_sys
+FROM persist_ranked p
+WHERE (SELECT top_n_persist FROM params) IS NULL
+   OR p.rnk_sys <= (SELECT top_n_persist FROM params)
+
+ORDER BY
+  1,            -- section
+  3, 4,         -- Bank, System
+  12 DESC NULLS LAST,  -- direction not used for Adds/Removals; keeps movers UP before DOWN when using delta as value
+  13 DESC NULLS LAST;  -- size_metric
+
+
+
+
+
+
+
+/* ===================== PARAMETERS ===================== */
+WITH params AS (
+  SELECT
+    DATE '2025-08-31'                 AS curr_eom,         -- << set current EOM
+    ADD_MONTHS(DATE '2025-08-31', -1) AS prev_eom,
     25::INT                           AS top_n,            -- Top N per Bank×System for each section
     0::NUMERIC                        AS min_size,         -- min $ for Adds/Removals
     0::NUMERIC                        AS min_abs_delta,    -- min |$| for persisting movers
