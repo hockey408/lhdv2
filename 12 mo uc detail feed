@@ -1,4 +1,114 @@
 /*
+Tab 6: Trend & History — Adds / Removals / Persisting Delta (NON-ACCRUAL ONLY)
+Source: dbo.V_DPRT_CREDIT_INSTRUMENTS
+
+Definitions:
+- Adds:        Curr-only non-accruals (balance counted positive)
+- Removals:    Prev-only non-accruals (balance counted NEGATIVE)
+- Persisting:  Non-accrual in both months; amount = CurrBal - PrevBal
+
+All three sum to the net MoM change within the NON-ACCRUAL population.
+
+Assumptions/Filters:
+- GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+- Latest month-end available = '2025-08-31'
+- If date is already month-end, EOMONTH() is harmless.
+*/
+
+DECLARE @MaxMonthEnd DATE = '2025-08-31';
+-- Optional: limit the window (comment out to use all history up to @MaxMonthEnd)
+-- DECLARE @StartMonth DATE = '2024-01-01';
+
+WITH SnapshotsRaw AS (
+    SELECT
+        EOMONTH(CAST(s.LOAD_DATE AS date)) AS MonthEnd,
+        s.ACCOUNT_IDENTIFIER,
+        s.CONTRACT_SOURCE_SYSTEM,
+        CAST(s.GL_BALANCE AS DECIMAL(38,2)) AS GL_BALANCE,
+        CASE
+            WHEN TRY_CAST(s.NON_ACCRUAL_FLAG AS INT) = 1 THEN 1
+            WHEN TRY_CAST(s.NON_ACCRUAL_FLAG AS BIT) = 1 THEN 1
+            WHEN UPPER(CONVERT(NVARCHAR(10), s.NON_ACCRUAL_FLAG)) IN ('Y','YES','TRUE') THEN 1
+            ELSE 0
+        END AS IsNonAccrual
+    FROM dbo.V_DPRT_CREDIT_INSTRUMENTS s
+    WHERE s.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+      AND EOMONTH(CAST(s.LOAD_DATE AS date)) <= @MaxMonthEnd
+      -- AND EOMONTH(CAST(s.LOAD_DATE AS date)) >= @StartMonth  -- (optional)
+),
+-- Reduce to one row per MonthEnd × Account × System within NON-ACCRUAL population
+Snapshots AS (
+    SELECT
+        MonthEnd,
+        ACCOUNT_IDENTIFIER,
+        CONTRACT_SOURCE_SYSTEM,
+        SUM(GL_BALANCE) AS GL_BALANCE
+    FROM SnapshotsRaw
+    WHERE IsNonAccrual = 1
+    GROUP BY MonthEnd, ACCOUNT_IDENTIFIER, CONTRACT_SOURCE_SYSTEM
+),
+Months AS (
+    SELECT DISTINCT MonthEnd FROM Snapshots
+),
+MonthPairs AS (
+    SELECT
+        m.MonthEnd AS CurrMonth,
+        EOMONTH(DATEADD(MONTH, -1, m.MonthEnd)) AS PrevMonth
+    FROM Months m
+),
+Paired AS (
+    -- FULL OUTER JOIN prev vs curr to capture adds/removals/persisting
+    SELECT
+        mp.CurrMonth,
+        mp.PrevMonth,
+        COALESCE(c.ACCOUNT_IDENTIFIER, p.ACCOUNT_IDENTIFIER) AS ACCOUNT_IDENTIFIER,
+        COALESCE(c.CONTRACT_SOURCE_SYSTEM, p.CONTRACT_SOURCE_SYSTEM) AS CONTRACT_SOURCE_SYSTEM,
+        c.GL_BALANCE AS CurrBal,
+        p.GL_BALANCE AS PrevBal
+    FROM MonthPairs mp
+    LEFT JOIN Snapshots c
+        ON c.MonthEnd = mp.CurrMonth
+    FULL OUTER JOIN Snapshots p
+        ON p.MonthEnd = mp.PrevMonth
+       AND p.ACCOUNT_IDENTIFIER = c.ACCOUNT_IDENTIFIER
+       AND p.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
+),
+ComponentsWide AS (
+    SELECT
+        CurrMonth AS MonthEnd,
+        -- Uncomment next line to break the series out by system (and add to GROUP BY)
+        -- CONTRACT_SOURCE_SYSTEM,
+
+        SUM(CASE WHEN PrevBal IS NULL AND CurrBal IS NOT NULL THEN CurrBal ELSE 0 END)                         AS Adds,
+        SUM(CASE WHEN PrevBal IS NOT NULL AND CurrBal IS NULL THEN -PrevBal ELSE 0 END)                         AS Removals,
+        SUM(CASE WHEN PrevBal IS NOT NULL AND CurrBal IS NOT NULL THEN (CurrBal - PrevBal) ELSE 0 END)          AS PersistingDelta
+    FROM Paired
+    WHERE CurrMonth IS NOT NULL
+    GROUP BY CurrMonth
+    -- , CONTRACT_SOURCE_SYSTEM
+),
+ComponentsLong AS (
+    SELECT MonthEnd, 'Adds' AS Component, Adds AS AmountSigned, ABS(Adds) AS AmountAbsolute FROM ComponentsWide
+    UNION ALL
+    SELECT MonthEnd, 'Removals', Removals, ABS(Removals) FROM ComponentsWide
+    UNION ALL
+    SELECT MonthEnd, 'Persisting Delta', PersistingDelta, ABS(PersistingDelta) FROM ComponentsWide
+)
+SELECT
+    MonthEnd,
+    Component,
+    AmountSigned,    -- Use for algebraic stacking (sums to MoM net change within non-accruals)
+    AmountAbsolute   -- Use if you prefer all-positive stacking
+FROM ComponentsLong
+ORDER BY
+    MonthEnd,
+    CASE Component WHEN 'Adds' THEN 1 WHEN 'Removals' THEN 2 WHEN 'Persisting Delta' THEN 3 ELSE 4 END;
+
+
+
+
+
+/*
 Tab 6: Trend & History — Stacked Area: Adds, Removals, Persisting Delta
 - Adds: balance of accounts that appear this month but not last month
 - Removals: negative balance of accounts that were in last month but not this month
