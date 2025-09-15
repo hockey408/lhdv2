@@ -1,3 +1,23 @@
+-- Tab 3: Portfolio Composition — Stacked Column (Balance by GL Level) — NETEZZA
+SELECT
+    CAST(END_OF_MONTH_DATE AS DATE)            AS MonthEnd,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    SUM(CAST(SOURCE_SYSTEM_BALANCE AS NUMERIC(38,2))) AS TotalBalance
+FROM V_DPRT_CREDIT_INSTRUMENTS
+WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+  AND SOURCE_SYSTEM_BALANCE > 0
+GROUP BY
+    CAST(END_OF_MONTH_DATE AS DATE),
+    GL_ACCOUNT_HIER_LEVEL_4
+ORDER BY
+    MonthEnd,
+    CASE WHEN GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans' THEN 1 ELSE 2 END;
+
+
+
+
+
+
 -- Weighted Avg PD_Grade (enterprise, NON-ACCRUAL ONLY) for the latest month — NETEZZA
 
 WITH LatestMonth AS (
