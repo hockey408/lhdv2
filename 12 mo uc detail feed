@@ -1,4 +1,132 @@
 -- Tab 6: Trend & History — Adds / Removals / Persisting Delta (NON-ACCRUAL ONLY) — NETEZZA
+
+WITH SnapshotsRaw AS (
+    SELECT
+        CAST(s.END_OF_MONTH_DATE AS DATE) AS MonthEnd,
+        s.ACCOUNT_IDENTIFIER,
+        s.CONTRACT_SOURCE_SYSTEM,
+        CAST(s.SOURCE_SYSTEM_BALANCE AS NUMERIC(38,2)) AS SOURCE_SYSTEM_BALANCE,
+        CASE
+            WHEN UPPER(TRIM(CAST(s.NON_ACCRUAL_FLAG AS VARCHAR(10)))) IN ('1','Y','YES','TRUE','T') THEN 1
+            ELSE 0
+        END AS IsNonAccrual
+    FROM V_DPRT_CREDIT_INSTRUMENTS s
+    WHERE s.GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+      AND CAST(s.END_OF_MONTH_DATE AS DATE) <= DATE '2025-08-31'
+      AND s.SOURCE_SYSTEM_BALANCE > 0
+),
+-- One row per MonthEnd × Account × System within NON-ACCRUAL population
+Snapshots AS (
+    SELECT
+        MonthEnd,
+        ACCOUNT_IDENTIFIER,
+        CONTRACT_SOURCE_SYSTEM,
+        SUM(SOURCE_SYSTEM_BALANCE) AS Balance
+    FROM SnapshotsRaw
+    WHERE IsNonAccrual = 1
+    GROUP BY MonthEnd, ACCOUNT_IDENTIFIER, CONTRACT_SOURCE_SYSTEM
+),
+Months AS (
+    SELECT DISTINCT MonthEnd FROM Snapshots
+),
+MonthPairs AS (
+    SELECT
+        m.MonthEnd AS CurrMonth,
+        ADD_MONTHS(m.MonthEnd, -1) AS PrevMonth
+    FROM Months m
+),
+
+-- Pass 1: Current vs Prev (drives Adds + Persisting)
+CurrVsPrev AS (
+    SELECT
+        mp.CurrMonth,
+        mp.PrevMonth,
+        c.ACCOUNT_IDENTIFIER,
+        c.CONTRACT_SOURCE_SYSTEM,
+        c.Balance AS CurrBal,
+        p.Balance AS PrevBal
+    FROM MonthPairs mp
+    JOIN Snapshots c
+      ON c.MonthEnd = mp.CurrMonth
+    LEFT JOIN Snapshots p
+      ON p.MonthEnd = mp.PrevMonth
+     AND p.ACCOUNT_IDENTIFIER = c.ACCOUNT_IDENTIFIER
+     AND p.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
+),
+
+-- Pass 2: Prev not in Curr (drives Removals)
+PrevNotCurr AS (
+    SELECT
+        mp.CurrMonth,
+        mp.PrevMonth,
+        p.ACCOUNT_IDENTIFIER,
+        p.CONTRACT_SOURCE_SYSTEM,
+        p.Balance AS PrevBal
+    FROM MonthPairs mp
+    JOIN Snapshots p
+      ON p.MonthEnd = mp.PrevMonth
+    LEFT JOIN Snapshots c
+      ON c.MonthEnd = mp.CurrMonth
+     AND c.ACCOUNT_IDENTIFIER = p.ACCOUNT_IDENTIFIER
+     AND c.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
+    WHERE c.ACCOUNT_IDENTIFIER IS NULL
+),
+
+ComponentsWide AS (
+    -- From CurrVsPrev: Adds (prev missing), Persisting (both sides)
+    SELECT
+        CurrMonth AS MonthEnd,
+        SUM(CASE WHEN PrevBal IS NULL THEN CurrBal ELSE 0 END)                  AS Adds,
+        SUM(CASE WHEN PrevBal IS NOT NULL THEN (CurrBal - PrevBal) ELSE 0 END)  AS PersistingDelta,
+        CAST(0 AS NUMERIC(38,2))                                                AS Removals
+    FROM CurrVsPrev
+    GROUP BY CurrMonth
+
+    UNION ALL
+
+    -- From PrevNotCurr: Removals (curr missing; record as negative)
+    SELECT
+        CurrMonth AS MonthEnd,
+        CAST(0 AS NUMERIC(38,2))                                                AS Adds,
+        CAST(0 AS NUMERIC(38,2))                                                AS PersistingDelta,
+        SUM(-PrevBal)                                                           AS Removals
+    FROM PrevNotCurr
+    GROUP BY CurrMonth
+),
+
+Collapsed AS (
+    SELECT
+        MonthEnd,
+        SUM(Adds)            AS Adds,
+        SUM(Removals)        AS Removals,
+        SUM(PersistingDelta) AS PersistingDelta
+    FROM ComponentsWide
+    GROUP BY MonthEnd
+),
+
+ComponentsLong AS (
+    SELECT MonthEnd, 'Adds'             AS Component, Adds            AS AmountSigned, ABS(Adds)            AS AmountAbsolute FROM Collapsed
+    UNION ALL
+    SELECT MonthEnd, 'Removals'         AS Component, Removals        AS AmountSigned, ABS(Removals)        AS AmountAbsolute FROM Collapsed
+    UNION ALL
+    SELECT MonthEnd, 'Persisting Delta' AS Component, PersistingDelta AS AmountSigned, ABS(PersistingDelta) AS AmountAbsolute FROM Collapsed
+)
+
+SELECT
+    MonthEnd,
+    Component,
+    AmountSigned,     -- Use for algebraic stacking (sums to MoM net change within non-accruals)
+    AmountAbsolute    -- Use if you prefer all-positive stacking
+FROM ComponentsLong
+ORDER BY
+    MonthEnd,
+    CASE Component WHEN 'Adds' THEN 1 WHEN 'Removals' THEN 2 WHEN 'Persisting Delta' THEN 3 ELSE 4 END;
+
+
+
+
+
+-- Tab 6: Trend & History — Adds / Removals / Persisting Delta (NON-ACCRUAL ONLY) — NETEZZA
 -- Latest cap: 2025-08-31
 
 WITH SnapshotsRaw AS (
