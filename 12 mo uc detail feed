@@ -1,3 +1,93 @@
+/* === PD_GRADE over time (avg & weighted) — REGEX-FREE for Netezza === */
+WITH params AS (
+  SELECT
+    DATE '2025-08-31' AS curr_eom,
+    24                AS months_back
+),
+
+/* 1) Base: one row per account per month */
+raw AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE)     AS eom,
+      Bank_Code,
+      Contract_Source_System,
+      Account_Identifier,
+      /* keep raw PD and balance */
+      MAX(UPPER(TRIM(PD_GRADE)))          AS pd_raw,
+      SUM(Source_System_Balance)::NUMERIC AS bal
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+    AND End_of_Month_Date BETWEEN
+        ADD_MONTHS((SELECT curr_eom FROM params), -(SELECT months_back FROM params) + 1)
+        AND (SELECT curr_eom FROM params)
+  GROUP BY 1,2,3,4
+),
+
+/* 2) Clean PD: try numeric by stripping letters/spaces/punct; else map letters A..H */
+pd_clean AS (
+  SELECT
+    r.eom,
+    r.Bank_Code,
+    r.Contract_Source_System,
+    r.Account_Identifier,
+    r.bal,
+    r.pd_raw,
+    /* remove letters and common separators to isolate digits/decimal */
+    TRANSLATE(
+      r.pd_raw,
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz _-()/\[]{}|=+*,',
+      ''
+    ) AS pd_digits_only
+  FROM raw r
+),
+
+/* 3) Safe numeric mapping without regex or risky casts */
+pd_mapped AS (
+  SELECT
+    p.eom,
+    p.Bank_Code,
+    p.Contract_Source_System,
+    p.Account_Identifier,
+    p.bal,
+    /* If pd_digits_only contains only digits/dot, cast it; else try letter mapping; else NULL */
+    CASE
+      WHEN LENGTH(TRANSLATE(p.pd_digits_only, '0123456789.', '')) = 0
+           AND p.pd_digits_only <> ''  -- non-empty after stripping
+        THEN CAST(p.pd_digits_only AS NUMERIC)
+      WHEN p.pd_raw = 'A' THEN 1
+      WHEN p.pd_raw = 'B' THEN 2
+      WHEN p.pd_raw = 'C' THEN 3
+      WHEN p.pd_raw = 'D' THEN 4
+      WHEN p.pd_raw = 'E' THEN 5
+      WHEN p.pd_raw = 'F' THEN 6
+      WHEN p.pd_raw = 'G' THEN 7
+      WHEN p.pd_raw = 'H' THEN 8
+      ELSE NULL
+    END::NUMERIC AS pd_num
+  FROM pd_clean p
+)
+
+/* 4) Output monthly metrics (use as line chart source) */
+SELECT
+  m.eom,
+  m.Bank_Code,
+  m.Contract_Source_System,
+  AVG(m.pd_num)::NUMERIC                                   AS avg_pd_accounts,   -- simple average across accounts
+  (SUM(m.pd_num * m.bal) / NULLIF(SUM(m.bal),0))::NUMERIC  AS wavg_pd_balance,   -- balance-weighted average
+  SUM(m.bal)::NUMERIC                                      AS total_balance,
+  COUNT(DISTINCT m.Account_Identifier)::INT                AS account_count
+FROM pd_mapped m
+GROUP BY m.eom, m.Bank_Code, m.Contract_Source_System
+ORDER BY m.eom, m.Bank_Code, m.Contract_Source_System;
+
+
+
+
+
+
+
 /* === DPD over time === */
 WITH params AS (
   SELECT
