@@ -38,6 +38,78 @@ ORDER BY p.eom, p.Bank_Code, p.Contract_Source_System;
 
 
 
+/* === PD_GRADE over time (avg & weighted) === */
+WITH params AS (
+  SELECT
+    DATE '2025-08-31' AS curr_eom,
+    24                AS months_back
+),
+raw AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE)    AS eom,
+      Bank_Code,
+      Contract_Source_System,
+      Account_Identifier,
+      MAX(UPPER(TRIM(PD_GRADE)))         AS pd_raw,
+      SUM(Source_System_Balance)::NUMERIC AS bal
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+    AND End_of_Month_Date BETWEEN
+        ADD_MONTHS((SELECT curr_eom FROM params), -(SELECT months_back FROM params) + 1)
+        AND (SELECT curr_eom FROM params)
+  GROUP BY 1,2,3,4
+),
+/* Try to coerce PD_GRADE to numeric */
+pd_mapped AS (
+  SELECT
+    r.eom,
+    r.Bank_Code,
+    r.Contract_Source_System,
+    r.Account_Identifier,
+    r.bal,
+    /* 1) direct numeric */
+    CASE
+      WHEN r.pd_raw ~ '^[0-9]+(\.[0-9]+)?$'
+        THEN CAST(r.pd_raw AS NUMERIC)
+      /* 2) extract digits from things like 'PD3', 'GRADE-4' */
+      WHEN REGEXP_REPLACE(r.pd_raw, '[^0-9\.]', '') ~ '^[0-9]+(\.[0-9]+)?$'
+        THEN CAST(REGEXP_REPLACE(r.pd_raw, '[^0-9\.]', '') AS NUMERIC)
+      /* 3) letter fallback (tweak mapping if your scale differs) */
+      WHEN r.pd_raw IN ('A') THEN 1
+      WHEN r.pd_raw IN ('B') THEN 2
+      WHEN r.pd_raw IN ('C') THEN 3
+      WHEN r.pd_raw IN ('D') THEN 4
+      WHEN r.pd_raw IN ('E') THEN 5
+      WHEN r.pd_raw IN ('F') THEN 6
+      WHEN r.pd_raw IN ('G') THEN 7
+      WHEN r.pd_raw IN ('H') THEN 8
+      ELSE NULL
+    END::NUMERIC AS pd_num
+  FROM raw r
+)
+/* Portfolio + (optionally) Bank/System */
+SELECT
+  p.eom,
+  p.Bank_Code,
+  p.Contract_Source_System,
+  AVG(p.pd_num)::NUMERIC                                         AS avg_pd_accounts,          -- simple avg across accts
+  (SUM(p.pd_num * p.bal) / NULLIF(SUM(p.bal),0))::NUMERIC        AS wavg_pd_balance,          -- balance-weighted
+  SUM(p.bal)::NUMERIC                                            AS total_balance,
+  COUNT(DISTINCT p.Account_Identifier)::INT                      AS account_count,
+  COUNT(*)::INT                                                  AS rows_used_for_avg         -- helps spot NULL mapping cases
+FROM pd_mapped p
+GROUP BY p.eom, p.Bank_Code, p.Contract_Source_System
+ORDER BY p.eom, p.Bank_Code, p.Contract_Source_System;
+
+
+
+
+
+
+
+
 /* ===================== PARAMETERS ===================== */
 WITH params AS (
   SELECT
