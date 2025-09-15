@@ -1,3 +1,92 @@
+WITH params AS (
+  SELECT DATE '2025-08-31' AS curr_eom, 24 AS months_back
+),
+pop AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE) AS eom,
+      Account_Identifier,
+      MAX(COALESCE(Days_Past_Due,0))  AS dpd,
+      SUM(Source_System_Balance)::NUMERIC AS bal
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+    AND End_of_Month_Date BETWEEN
+        ADD_MONTHS((SELECT curr_eom FROM params), -(SELECT months_back FROM params) + 1)
+        AND (SELECT curr_eom FROM params)
+  GROUP BY 1,2
+)
+SELECT
+  eom,
+  AVG(dpd)::NUMERIC                                    AS avg_dpd_accounts,
+  (SUM(dpd * bal) / NULLIF(SUM(bal),0))::NUMERIC       AS wavg_dpd_balance,
+  SUM(bal)::NUMERIC                                    AS total_balance,
+  COUNT(DISTINCT Account_Identifier)::INT              AS account_count
+FROM pop
+GROUP BY eom
+ORDER BY eom;
+
+
+
+
+
+WITH params AS (
+  SELECT DATE '2025-08-31' AS curr_eom, 24 AS months_back
+),
+raw AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE) AS eom,
+      Account_Identifier,
+      MAX(UPPER(TRIM(PD_GRADE)))          AS pd_raw,
+      SUM(Source_System_Balance)::NUMERIC AS bal
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+    AND End_of_Month_Date BETWEEN
+        ADD_MONTHS((SELECT curr_eom FROM params), -(SELECT months_back FROM params) + 1)
+        AND (SELECT curr_eom FROM params)
+  GROUP BY 1,2
+),
+pd_clean AS (
+  SELECT
+    eom, Account_Identifier, bal, pd_raw,
+    TRANSLATE(pd_raw,'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz _-()/\[]{}|=+*,','') AS pd_digits_only
+  FROM raw
+),
+pd_mapped AS (
+  SELECT
+    eom, Account_Identifier, bal,
+    CASE
+      WHEN LENGTH(TRANSLATE(pd_digits_only,'0123456789.','')) = 0 AND pd_digits_only <> '' THEN CAST(pd_digits_only AS NUMERIC)
+      WHEN pd_raw='A' THEN 1 WHEN pd_raw='B' THEN 2 WHEN pd_raw='C' THEN 3 WHEN pd_raw='D' THEN 4
+      WHEN pd_raw='E' THEN 5 WHEN pd_raw='F' THEN 6 WHEN pd_raw='G' THEN 7 WHEN pd_raw='H' THEN 8
+      ELSE NULL
+    END::NUMERIC AS pd_num
+  FROM pd_clean
+)
+SELECT
+  eom,
+  AVG(pd_num)::NUMERIC                                      AS avg_pd_accounts,
+  (SUM(pd_num * bal) / NULLIF(SUM(bal),0))::NUMERIC         AS wavg_pd_balance,
+  SUM(bal)::NUMERIC                                         AS total_balance,
+  COUNT(DISTINCT Account_Identifier)::INT                   AS account_count
+FROM pd_mapped
+GROUP BY eom
+ORDER BY eom;
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* === PD_GRADE over time (avg & weighted) — REGEX-FREE for Netezza === */
 WITH params AS (
   SELECT
