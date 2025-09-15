@@ -1,3 +1,43 @@
+/* === DPD over time === */
+WITH params AS (
+  SELECT
+    DATE '2025-08-31' AS curr_eom,       -- set current EOM
+    24                AS months_back     -- pull this many months including curr
+),
+pop AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE)    AS eom,
+      Bank_Code,
+      Contract_Source_System,
+      Account_Identifier,
+      MAX(COALESCE(Days_Past_Due,0))     AS days_past_due,
+      SUM(Source_System_Balance)::NUMERIC AS bal
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+    AND End_of_Month_Date BETWEEN
+        ADD_MONTHS((SELECT curr_eom FROM params), -(SELECT months_back FROM params) + 1)
+        AND (SELECT curr_eom FROM params)
+  GROUP BY 1,2,3,4
+)
+/* Portfolio + (optionally) Bank/System */
+SELECT
+  p.eom,
+  p.Bank_Code,
+  p.Contract_Source_System,
+  AVG(p.days_past_due)::NUMERIC                    AS avg_dpd_accounts,        -- simple avg across accounts
+  (SUM(p.days_past_due * p.bal) / NULLIF(SUM(p.bal),0))::NUMERIC AS wavg_dpd_balance, -- balance-weighted
+  SUM(p.bal)::NUMERIC                              AS total_balance,
+  COUNT(DISTINCT p.Account_Identifier)::INT        AS account_count
+FROM pop p
+GROUP BY p.eom, p.Bank_Code, p.Contract_Source_System
+ORDER BY p.eom, p.Bank_Code, p.Contract_Source_System;
+
+
+
+
+
 /* ===================== PARAMETERS ===================== */
 WITH params AS (
   SELECT
