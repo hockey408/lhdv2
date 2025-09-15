@@ -1,3 +1,98 @@
+/*
+Tab 6: Trend & History — Stacked Area: Adds, Removals, Persisting Delta
+- Adds: balance of accounts that appear this month but not last month
+- Removals: negative balance of accounts that were in last month but not this month
+- Persisting Delta: change for accounts present in both months
+All three components sum to the net month-over-month change.
+
+PARAMS to adjust:
+  @StartMonth / @EndMonth   -- inclusive bounds for trend window
+  Table: dbo.MonthlyPortfolio   -- replace with your table/view
+  Filters: GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans' (keep / adjust)
+           CONTRACT_SOURCE_SYSTEM filter (optional)
+*/
+
+DECLARE @StartMonth DATE = '2024-01-01';
+DECLARE @EndMonth   DATE = '2025-09-30';
+DECLARE @SystemFilter NVARCHAR(100) = NULL; -- e.g. 'ACBS' or NULL for all
+
+WITH Snapshots AS (
+    SELECT
+        EOMONTH(CAST(AsOfDate AS date))        AS MonthEnd,
+        ACCOUNT_IDENTIFIER,
+        CONTRACT_SOURCE_SYSTEM,
+        CAST(GL_BALANCE AS DECIMAL(38,2))      AS GL_BALANCE
+    FROM dbo.MonthlyPortfolio   -- TODO: replace with your table/view name
+    WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+      AND EOMONTH(CAST(AsOfDate AS date)) BETWEEN @StartMonth AND @EndMonth
+      AND (@SystemFilter IS NULL OR CONTRACT_SOURCE_SYSTEM = @SystemFilter)
+),
+Months AS (
+    SELECT DISTINCT MonthEnd
+    FROM Snapshots
+),
+MonthPairs AS (
+    -- Pair each month with its previous month (only where we have data for the current month)
+    SELECT
+        m.MonthEnd                 AS CurrMonth,
+        EOMONTH(DATEADD(MONTH,-1,m.MonthEnd)) AS PrevMonth
+    FROM Months m
+),
+PairedSnapshots AS (
+    -- FULL OUTER JOIN to capture adds (only curr), removals (only prev), and persisting (both)
+    SELECT
+        mp.CurrMonth,
+        mp.PrevMonth,
+        COALESCE(c.ACCOUNT_IDENTIFIER, p.ACCOUNT_IDENTIFIER) AS ACCOUNT_IDENTIFIER,
+        COALESCE(c.CONTRACT_SOURCE_SYSTEM, p.CONTRACT_SOURCE_SYSTEM) AS CONTRACT_SOURCE_SYSTEM,
+        c.GL_BALANCE AS CurrBal,
+        p.GL_BALANCE AS PrevBal
+    FROM MonthPairs mp
+    LEFT JOIN Snapshots c
+        ON c.MonthEnd = mp.CurrMonth
+    FULL OUTER JOIN Snapshots p
+        ON p.MonthEnd = mp.PrevMonth
+       AND p.ACCOUNT_IDENTIFIER = c.ACCOUNT_IDENTIFIER
+       AND p.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
+),
+ComponentsWide AS (
+    SELECT
+        CurrMonth AS MonthEnd,
+        -- Signed components that sum to total MoM change
+        SUM(CASE WHEN PrevBal IS NULL AND CurrBal IS NOT NULL THEN CurrBal ELSE 0 END)                          AS Adds,
+        SUM(CASE WHEN PrevBal IS NOT NULL AND CurrBal IS NULL THEN -PrevBal ELSE 0 END)                          AS Removals,
+        SUM(CASE WHEN PrevBal IS NOT NULL AND CurrBal IS NOT NULL THEN (CurrBal - PrevBal) ELSE 0 END)           AS PersistingDelta
+    FROM PairedSnapshots
+    -- Only months where we have a "current" (CurrMonth) snapshot are meaningful for the chart
+    WHERE CurrMonth IS NOT NULL
+    GROUP BY CurrMonth
+),
+-- Long form (tidy) for Power BI stacked area chart
+ComponentsLong AS (
+    SELECT MonthEnd, 'Adds' AS Component, Adds AS AmountSigned, ABS(Adds) AS AmountAbsolute FROM ComponentsWide
+    UNION ALL
+    SELECT MonthEnd, 'Removals', Removals, ABS(Removals) FROM ComponentsWide
+    UNION ALL
+    SELECT MonthEnd, 'Persisting Delta', PersistingDelta, ABS(PersistingDelta) FROM ComponentsWide
+)
+SELECT
+    MonthEnd,
+    Component,
+    AmountSigned,     -- use this if you want components to algebraically sum to MoM net change
+    AmountAbsolute    -- use this if you want all-positive stacking for area charts
+FROM ComponentsLong
+ORDER BY MonthEnd, CASE Component
+    WHEN 'Adds' THEN 1
+    WHEN 'Removals' THEN 2
+    WHEN 'Persisting Delta' THEN 3
+    ELSE 4 END;
+
+
+
+
+
+
+
 WITH params AS (
   SELECT DATE '2025-08-31' AS curr_eom, 24 AS months_back
 ),
