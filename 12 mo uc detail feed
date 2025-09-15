@@ -1,6 +1,119 @@
 /* ===================== PARAMETERS ===================== */
 WITH params AS (
   SELECT
+    DATE '2025-08-31' AS curr_eom,              -- set current EOM
+    NULL::VARCHAR(50)  AS bank_code_filter,     -- optional: e.g. '123'; NULL = all
+    NULL::VARCHAR(100) AS system_filter         -- optional: e.g. 'ACBS'; NULL = all
+),
+
+/* ===== Base at account level (current EOM, NA only) ===== */
+curr_accts AS (
+  SELECT
+      CAST(End_of_Month_Date AS DATE)         AS eom,
+      Bank_Code,
+      Contract_Source_System,
+      Account_Identifier,
+      MAX(Account_Name)                       AS Account_Name,
+      SUM(Source_System_Balance)::NUMERIC     AS Curr_Bal
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND UPPER(TRIM(Non_Accrual_Flag)) = 'Y'
+    AND ( (SELECT bank_code_filter  FROM params) IS NULL
+          OR Bank_Code = (SELECT bank_code_filter  FROM params) )
+    AND ( (SELECT system_filter FROM params) IS NULL
+          OR Contract_Source_System = (SELECT system_filter FROM params) )
+  GROUP BY 1,2,3,4
+),
+
+/* ===== Per-system ranking & totals ===== */
+ranked_sys AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    Account_Identifier,
+    Account_Name,
+    Curr_Bal,
+    ROW_NUMBER() OVER (
+      PARTITION BY Bank_Code, Contract_Source_System
+      ORDER BY Curr_Bal DESC NULLS LAST, Account_Identifier
+    ) AS rnk_sys,
+    SUM(Curr_Bal) OVER (
+      PARTITION BY Bank_Code, Contract_Source_System
+    ) AS sys_total
+  FROM curr_accts
+),
+
+concentration_sys AS (
+  SELECT
+    Bank_Code,
+    Contract_Source_System,
+    SUM(CASE WHEN rnk_sys <= 5 THEN Curr_Bal ELSE 0 END)::NUMERIC AS top5_bal,
+    MAX(sys_total)::NUMERIC AS sys_total
+  FROM ranked_sys
+  GROUP BY 1,2
+),
+
+/* ===== Portfolio-wide ranking & totals (across all accounts) ===== */
+ranked_portfolio AS (
+  SELECT
+    Account_Identifier,
+    Account_Name,
+    Curr_Bal,
+    ROW_NUMBER() OVER (
+      ORDER BY Curr_Bal DESC NULLS LAST, Account_Identifier
+    ) AS rnk_all,
+    SUM(Curr_Bal) OVER () AS portfolio_total
+  FROM curr_accts
+),
+
+concentration_portfolio AS (
+  SELECT
+    SUM(CASE WHEN rnk_all <= 5 THEN Curr_Bal ELSE 0 END)::NUMERIC AS top5_bal_portfolio,
+    MAX(portfolio_total)::NUMERIC AS portfolio_total
+  FROM ranked_portfolio
+)
+
+/* ===================== FINAL OUTPUT ===================== */
+-- A) Portfolio (single row)
+SELECT
+  'PORTFOLIO_TOP5_SHARE'::VARCHAR(30) AS section,
+  (SELECT curr_eom FROM params)       AS eom,
+  NULL::VARCHAR(50)                   AS Bank_Code,
+  NULL::VARCHAR(100)                  AS Contract_Source_System,
+  p.top5_bal_portfolio                AS top5_balance,
+  p.portfolio_total                   AS total_balance,
+  CASE WHEN p.portfolio_total = 0 THEN NULL
+       ELSE p.top5_bal_portfolio / NULLIF(p.portfolio_total,0) END AS top5_share_pct
+FROM concentration_portfolio p
+
+UNION ALL
+
+-- B) By Bank × System (one row per system)
+SELECT
+  'SYSTEM_TOP5_SHARE'::VARCHAR(30)    AS section,
+  (SELECT curr_eom FROM params)       AS eom,
+  s.Bank_Code,
+  s.Contract_Source_System,
+  s.top5_bal                          AS top5_balance,
+  s.sys_total                         AS total_balance,
+  CASE WHEN s.sys_total = 0 THEN NULL
+       ELSE s.top5_bal / NULLIF(s.sys_total,0) END AS top5_share_pct
+FROM concentration_sys s
+
+ORDER BY section, Bank_Code, Contract_Source_System;
+
+
+
+
+
+
+
+
+/* ===================== PARAMETERS ===================== */
+WITH params AS (
+  SELECT
     DATE '2025-08-31'                 AS curr_eom,         -- << set current EOM
     ADD_MONTHS(DATE '2025-08-31', -1) AS prev_eom,
     25::INT                           AS top_n_persist,    -- only for persisting movers (set NULL to return all)
