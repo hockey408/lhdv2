@@ -1,4 +1,366 @@
 /* ============================================================================================
+   Non-Accrual Project — ONE OUTPUT (Tall Table) — NETEZZA (SAFE NUMERIC CASTS)
+   Output columns:
+     Dataset (VARCHAR), MonthEnd (DATE), Dim1 (VARCHAR), Dim2 (VARCHAR),
+     Metric (VARCHAR), Value (NUMERIC)
+   Use Dataset to filter each Power BI visual to its slice.
+   ============================================================================================ */
+
+WITH Base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE)                           AS MonthEnd,
+    ACCOUNT_IDENTIFIER,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    CAST(SOURCE_SYSTEM_BALANCE AS NUMERIC(38,2))              AS Balance,
+    UPPER(TRIM(CAST(NON_ACCRUAL_FLAG AS VARCHAR(10))))        AS NA_Flag,
+    /* SAFE NUMERIC PARSE: only cast PD_GRADE if it looks numeric */
+    CASE
+      WHEN PD_GRADE IS NULL THEN NULL
+      WHEN REGEXP_LIKE(TRIM(CAST(PD_GRADE AS VARCHAR(50))), '^[+-]?[0-9]+(\.[0-9]+)?$')
+        THEN CAST(TRIM(CAST(PD_GRADE AS VARCHAR(50))) AS NUMERIC(18,6))
+      WHEN UPPER(TRIM(CAST(PD_GRADE AS VARCHAR(50)))) IN ('NULL','N/A','NA','INF','-INF','NAN')
+        THEN NULL
+      ELSE NULL
+    END AS PD_GRADE_NUM
+  FROM V_DPRT_CREDIT_INSTRUMENTS
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND SOURCE_SYSTEM_BALANCE > 0
+),
+All_Enterprise_Summary AS (  -- for % calculations
+  SELECT MonthEnd, SUM(Balance) AS EntBalance
+  FROM Base
+  GROUP BY MonthEnd
+),
+NonAccrual AS (
+  SELECT *
+  FROM Base
+  WHERE NA_Flag IN ('1','Y','YES','TRUE','T')
+),
+LatestMonth AS (
+  SELECT MAX(MonthEnd) AS MonthEnd FROM Base
+),
+
+/* ===================== TAB 1 – KPIs (Latest Month, Non-Accrual) ===================== */
+Tab1_KPIs AS (
+  -- Total Balance
+  SELECT 'Tab1_KPI_Latest' AS Dataset, lm.MonthEnd AS MonthEnd,
+         'NonAccrual' AS Dim1, CAST(NULL AS VARCHAR(100)) AS Dim2, 'TotalBalance' AS Metric,
+         SUM(n.Balance) AS Value
+  FROM NonAccrual n
+  JOIN LatestMonth lm ON n.MonthEnd = lm.MonthEnd
+  GROUP BY lm.MonthEnd
+
+  UNION ALL
+
+  -- Account Count
+  SELECT 'Tab1_KPI_Latest', lm.MonthEnd,
+         'NonAccrual', CAST(NULL AS VARCHAR(100)), 'AccountCount',
+         CAST(COUNT(DISTINCT n.ACCOUNT_IDENTIFIER) AS NUMERIC(38,2))
+  FROM NonAccrual n
+  JOIN LatestMonth lm ON n.MonthEnd = lm.MonthEnd
+  GROUP BY lm.MonthEnd
+
+  UNION ALL
+
+  -- % of Enterprise
+  SELECT 'Tab1_KPI_Latest', lm.MonthEnd,
+         'NonAccrual', CAST(NULL AS VARCHAR(100)), 'PctOfEnterprise',
+         (SUM(n.Balance) / NULLIF(e.EntBalance, 0)) * 100.0
+  FROM NonAccrual n
+  JOIN LatestMonth lm ON n.MonthEnd = lm.MonthEnd
+  JOIN All_Enterprise_Summary e ON e.MonthEnd = lm.MonthEnd
+  GROUP BY lm.MonthEnd, e.EntBalance
+
+  UNION ALL
+
+  -- Weighted Avg PD_Grade (non-accrual)
+  SELECT 'Tab1_KPI_Latest', lm.MonthEnd,
+         'NonAccrual', CAST(NULL AS VARCHAR(100)), 'WeightedAvg_PD_Grade',
+         SUM(n.Balance * n.PD_GRADE_NUM) / NULLIF(SUM(n.Balance), 0)
+  FROM NonAccrual n
+  JOIN LatestMonth lm ON n.MonthEnd = lm.MonthEnd
+  WHERE n.PD_GRADE_NUM IS NOT NULL
+  GROUP BY lm.MonthEnd
+),
+
+/* ===================== TAB 3 – Composition (Stacks) ===================== */
+Tab3_GLStack_All AS (
+  -- Enterprise ALL by GL level (trend)
+  SELECT 'Tab3_GL_Stack_All' AS Dataset, b.MonthEnd AS MonthEnd,
+         b.GL_ACCOUNT_HIER_LEVEL_4 AS Dim1, CAST(NULL AS VARCHAR(100)) AS Dim2, 'Balance' AS Metric,
+         SUM(b.Balance) AS Value
+  FROM Base b
+  GROUP BY b.MonthEnd, b.GL_ACCOUNT_HIER_LEVEL_4
+),
+Tab3_GLStack_NA AS (
+  -- Non-Accrual ONLY by GL level (trend)
+  SELECT 'Tab3_GL_Stack_NA' AS Dataset, n.MonthEnd AS MonthEnd,
+         n.GL_ACCOUNT_HIER_LEVEL_4 AS Dim1, CAST(NULL AS VARCHAR(100)) AS Dim2, 'Balance' AS Metric,
+         SUM(n.Balance) AS Value
+  FROM NonAccrual n
+  GROUP BY n.MonthEnd, n.GL_ACCOUNT_HIER_LEVEL_4
+),
+
+/* ===================== TAB 6 – Adds / Removals / Persisting Delta (Non-Accrual) ===================== */
+Months AS (
+  SELECT DISTINCT MonthEnd FROM NonAccrual
+),
+MonthPairs AS (
+  SELECT m.MonthEnd AS CurrMonth, ADD_MONTHS(m.MonthEnd, -1) AS PrevMonth
+  FROM Months m
+),
+CurrVsPrev AS (  -- adds + persisting
+  SELECT
+    mp.CurrMonth,
+    mp.PrevMonth,
+    c.ACCOUNT_IDENTIFIER,
+    c.CONTRACT_SOURCE_SYSTEM,
+    SUM(c.Balance) AS CurrBal,
+    SUM(p.Balance) AS PrevBal
+  FROM MonthPairs mp
+  JOIN NonAccrual c
+    ON c.MonthEnd = mp.CurrMonth
+  LEFT JOIN NonAccrual p
+    ON p.MonthEnd = mp.PrevMonth
+   AND p.ACCOUNT_IDENTIFIER = c.ACCOUNT_IDENTIFIER
+   AND p.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
+  GROUP BY mp.CurrMonth, mp.PrevMonth, c.ACCOUNT_IDENTIFIER, c.CONTRACT_SOURCE_SYSTEM
+),
+PrevNotCurr AS (  -- removals
+  SELECT
+    mp.CurrMonth,
+    mp.PrevMonth,
+    p.ACCOUNT_IDENTIFIER,
+    p.CONTRACT_SOURCE_SYSTEM,
+    SUM(p.Balance) AS PrevBal
+  FROM MonthPairs mp
+  JOIN NonAccrual p
+    ON p.MonthEnd = mp.PrevMonth
+  LEFT JOIN NonAccrual c
+    ON c.MonthEnd = mp.CurrMonth
+   AND c.ACCOUNT_IDENTIFIER = p.ACCOUNT_IDENTIFIER
+   AND c.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
+  WHERE c.ACCOUNT_IDENTIFIER IS NULL
+  GROUP BY mp.CurrMonth, mp.PrevMonth, p.ACCOUNT_IDENTIFIER, p.CONTRACT_SOURCE_SYSTEM
+),
+Tab6_Wide AS (  -- month-level sums
+  SELECT
+    CurrMonth AS MonthEnd,
+    SUM(CASE WHEN PrevBal IS NULL THEN CurrBal ELSE 0 END)                         AS Adds,
+    SUM(CASE WHEN PrevBal IS NOT NULL THEN (CurrBal - PrevBal) ELSE 0 END)         AS PersistingDelta,
+    CAST(0 AS NUMERIC(38,2))                                                       AS Removals
+  FROM CurrVsPrev
+  GROUP BY CurrMonth
+
+  UNION ALL
+
+  SELECT
+    CurrMonth AS MonthEnd,
+    CAST(0 AS NUMERIC(38,2))                                                       AS Adds,
+    CAST(0 AS NUMERIC(38,2))                                                       AS PersistingDelta,
+    SUM(-PrevBal)                                                                  AS Removals
+  FROM PrevNotCurr
+  GROUP BY CurrMonth
+),
+Tab6_Collapsed AS (
+  SELECT
+    MonthEnd,
+    SUM(Adds)             AS Adds,
+    SUM(PersistingDelta)  AS PersistingDelta,
+    SUM(Removals)         AS Removals
+  FROM Tab6_Wide
+  GROUP BY MonthEnd
+),
+Tab6_Long AS (
+  SELECT 'Tab6_AddsRemovalsDelta' AS Dataset, MonthEnd, 'Adds' AS Dim1, CAST(NULL AS VARCHAR(100)) AS Dim2,
+         'AmountSigned' AS Metric, Adds AS Value
+  FROM Tab6_Collapsed
+  UNION ALL
+  SELECT 'Tab6_AddsRemovalsDelta', MonthEnd, 'Removals', CAST(NULL AS VARCHAR(100)), 'AmountSigned', Removals
+  FROM Tab6_Collapsed
+  UNION ALL
+  SELECT 'Tab6_AddsRemovalsDelta', MonthEnd, 'Persisting Delta', CAST(NULL AS VARCHAR(100)), 'AmountSigned', PersistingDelta
+  FROM Tab6_Collapsed
+),
+
+/* ===================== TAB 7 – Non-Accrual Drilldown ===================== */
+Tab7_BySystem AS (
+  -- Trend by system
+  SELECT 'Tab7_NA_BySystem' AS Dataset, n.MonthEnd AS MonthEnd,
+         n.CONTRACT_SOURCE_SYSTEM AS Dim1, CAST(NULL AS VARCHAR(100)) AS Dim2, 'Balance' AS Metric,
+         SUM(n.Balance) AS Value
+  FROM NonAccrual n
+  GROUP BY n.MonthEnd, n.CONTRACT_SOURCE_SYSTEM
+),
+Tab7_PD_Trend AS (
+  -- Weighted Avg PD_Grade trend (Non-Accrual)
+  SELECT 'Tab7_PD_WtAvg_Trend' AS Dataset, n.MonthEnd AS MonthEnd,
+         CAST(NULL AS VARCHAR(100)) AS Dim1, CAST(NULL AS VARCHAR(100)) AS Dim2, 'WeightedAvg_PD_Grade' AS Metric,
+         SUM(n.Balance * n.PD_GRADE_NUM) / NULLIF(SUM(n.Balance),0) AS Value
+  FROM NonAccrual n
+  WHERE n.PD_GRADE_NUM IS NOT NULL
+  GROUP BY n.MonthEnd
+),
+Tab7_LatestDetail AS (
+  -- Latest-month account detail (for a table)
+  SELECT 'Tab7_Latest_Detail' AS Dataset, lm.MonthEnd AS MonthEnd,
+         n.ACCOUNT_IDENTIFIER AS Dim1, n.CONTRACT_SOURCE_SYSTEM AS Dim2,
+         'Account_Balance' AS Metric, SUM(n.Balance) AS Value
+  FROM NonAccrual n
+  JOIN LatestMonth lm ON n.MonthEnd = lm.MonthEnd
+  GROUP BY lm.MonthEnd, n.ACCOUNT_IDENTIFIER, n.CONTRACT_SOURCE_SYSTEM
+),
+
+/* ===================== TAB 2 – MoM Change Analysis (Non-Accrual) ===================== */
+Tab2_AddsRemovals_BySystem AS (
+  -- Adds / Removals by system (month-level)
+  SELECT 'Tab2_AddsRemovals_BySystem' AS Dataset, a.CurrMonth AS MonthEnd,
+         a.CONTRACT_SOURCE_SYSTEM AS Dim1, CAST(NULL AS VARCHAR(100)) AS Dim2, 'Adds' AS Metric,
+         SUM(CASE WHEN a.PrevBal IS NULL THEN a.CurrBal ELSE 0 END) AS Value
+  FROM CurrVsPrev a
+  GROUP BY a.CurrMonth, a.CONTRACT_SOURCE_SYSTEM
+
+  UNION ALL
+
+  SELECT 'Tab2_AddsRemovals_BySystem', r.CurrMonth, r.CONTRACT_SOURCE_SYSTEM, CAST(NULL AS VARCHAR(100)), 'Removals',
+         SUM(-r.PrevBal)
+  FROM PrevNotCurr r
+  GROUP BY r.CurrMonth, r.CONTRACT_SOURCE_SYSTEM
+),
+Tab2_PersistingMovers_TopN AS (
+  SELECT a.CurrMonth AS MonthEnd,
+         a.ACCOUNT_IDENTIFIER AS AccountId,
+         a.CONTRACT_SOURCE_SYSTEM AS SystemName,
+         SUM(a.CurrBal - a.PrevBal) AS Delta
+  FROM CurrVsPrev a
+  WHERE a.PrevBal IS NOT NULL
+  GROUP BY a.CurrMonth, a.ACCOUNT_IDENTIFIER, a.CONTRACT_SOURCE_SYSTEM
+),
+Tab2_PersistingMovers_Ranked AS (
+  SELECT MonthEnd, AccountId, SystemName, Delta,
+         ROW_NUMBER() OVER (PARTITION BY MonthEnd ORDER BY ABS(Delta) DESC) AS rn
+  FROM Tab2_PersistingMovers_TopN
+),
+Tab2_PersistingMovers_Long AS (
+  SELECT 'Tab2_PersistingMovers' AS Dataset, MonthEnd,
+         AccountId AS Dim1, SystemName AS Dim2, 'DeltaSigned' AS Metric, Delta AS Value
+  FROM Tab2_PersistingMovers_Ranked
+  WHERE rn <= 25
+),
+Tab2_AddsDetail AS (
+  SELECT 'Tab2_AddsDetail' AS Dataset, a.CurrMonth AS MonthEnd,
+         a.ACCOUNT_IDENTIFIER AS Dim1, a.CONTRACT_SOURCE_SYSTEM AS Dim2,
+         'Add_Balance' AS Metric, SUM(a.CurrBal) AS Value
+  FROM CurrVsPrev a
+  WHERE a.PrevBal IS NULL
+  GROUP BY a.CurrMonth, a.ACCOUNT_IDENTIFIER, a.CONTRACT_SOURCE_SYSTEM
+),
+Tab2_RemovalsDetail AS (
+  SELECT 'Tab2_RemovalsDetail' AS Dataset, r.CurrMonth AS MonthEnd,
+         r.ACCOUNT_IDENTIFIER AS Dim1, r.CONTRACT_SOURCE_SYSTEM AS Dim2,
+         'Removal_Balance' AS Metric, SUM(r.PrevBal) AS Value
+  FROM PrevNotCurr r
+  GROUP BY r.CurrMonth, r.ACCOUNT_IDENTIFIER, r.CONTRACT_SOURCE_SYSTEM
+),
+
+/* ===================== TAB 4 – Risk & Concentration (Non-Accrual) ===================== */
+Tab4_PD_Buckets AS (
+  SELECT n.MonthEnd AS MonthEnd,
+         CASE
+           WHEN n.PD_GRADE_NUM IS NULL THEN 'Missing'
+           WHEN n.PD_GRADE_NUM < 3      THEN 'PD 1–2'
+           WHEN n.PD_GRADE_NUM < 6      THEN 'PD 3–5'
+           WHEN n.PD_GRADE_NUM < 9      THEN 'PD 6–8'
+           ELSE 'PD 9+'
+         END AS PDBand,
+         n.Balance AS Balance,
+         n.ACCOUNT_IDENTIFIER AS AccountId,
+         n.CONTRACT_SOURCE_SYSTEM AS SystemName
+  FROM NonAccrual n
+),
+Tab4_PD_Distribution AS (
+  SELECT 'Tab4_PD_Distribution' AS Dataset, MonthEnd,
+         PDBand AS Dim1, CAST(NULL AS VARCHAR(100)) AS Dim2, 'Balance' AS Metric, SUM(Balance) AS Value
+  FROM Tab4_PD_Buckets
+  GROUP BY MonthEnd, PDBand
+),
+Tab4_TopAccounts AS (
+  SELECT n.MonthEnd AS MonthEnd,
+         n.ACCOUNT_IDENTIFIER AS AccountId,
+         n.CONTRACT_SOURCE_SYSTEM AS SystemName,
+         SUM(n.Balance) AS Bal,
+         ROW_NUMBER() OVER (PARTITION BY n.MonthEnd ORDER BY SUM(n.Balance) DESC) AS rn
+  FROM NonAccrual n
+  GROUP BY n.MonthEnd, n.ACCOUNT_IDENTIFIER, n.CONTRACT_SOURCE_SYSTEM
+),
+Tab4_Top10_Accounts AS (
+  SELECT 'Tab4_Top10_Accounts' AS Dataset, MonthEnd,
+         AccountId AS Dim1, SystemName AS Dim2, 'Balance' AS Metric, Bal AS Value
+  FROM Tab4_TopAccounts
+  WHERE rn <= 10
+),
+Tab4_Top5Conc_Base AS (
+  SELECT n.MonthEnd AS MonthEnd, SUM(n.Balance) AS TotalNA
+  FROM NonAccrual n
+  GROUP BY n.MonthEnd
+),
+Tab4_Top5Conc_Top AS (
+  SELECT t.MonthEnd AS MonthEnd, SUM(t.Bal) AS Top5Bal
+  FROM (
+    SELECT n.MonthEnd AS MonthEnd,
+           n.ACCOUNT_IDENTIFIER AS AccountId,
+           SUM(n.Balance) AS Bal,
+           ROW_NUMBER() OVER (PARTITION BY n.MonthEnd ORDER BY SUM(n.Balance) DESC) AS rn
+    FROM NonAccrual n
+    GROUP BY n.MonthEnd, n.ACCOUNT_IDENTIFIER
+  ) t
+  WHERE t.rn <= 5
+  GROUP BY t.MonthEnd
+),
+Tab4_Top5_Concentration AS (
+  SELECT 'Tab4_Top5_Concentration' AS Dataset, c.MonthEnd AS MonthEnd,
+         'Top5Pct' AS Dim1, CAST(NULL AS VARCHAR(100)) AS Dim2, 'Percent' AS Metric,
+         (tc.Top5Bal / NULLIF(c.TotalNA,0)) * 100.0 AS Value
+  FROM Tab4_Top5Conc_Base c
+  JOIN Tab4_Top5Conc_Top tc ON tc.MonthEnd = c.MonthEnd
+)
+
+/* ===================== FINAL UNION: one tall table ===================== */
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab1_KPIs
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab3_GLStack_All
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab3_GLStack_NA
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab6_Long
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab7_BySystem
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab7_PD_Trend
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab7_LatestDetail
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab2_AddsRemovals_BySystem
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab2_PersistingMovers_Long
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab2_AddsDetail
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab2_RemovalsDetail
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab4_PD_Distribution
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab4_Top10_Accounts
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab4_Top5_Concentration
+ORDER BY Dataset, MonthEnd, Dim1, Metric;
+
+
+
+
+
+/* ============================================================================================
    Non-Accrual Project — ONE OUTPUT (Tall Table) — NETEZZA
    Output columns:
      Dataset (VARCHAR), MonthEnd (DATE), Dim1 (VARCHAR), Dim2 (VARCHAR),
