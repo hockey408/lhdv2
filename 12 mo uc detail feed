@@ -1,3 +1,67 @@
+-- === RC_CODE monthly trend + MoM variance + anomaly flags (last 12 months) ===
+WITH base AS (
+    SELECT
+        CAST(END_OF_MONTH_DATE AS DATE)                   AS EOM,
+        RC_CODE,
+        RV_DESCRIPTION,
+        SUM(GL_BALANCE)                                   AS GL_BALANCE
+    FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+    WHERE GL_BALANCE > 0
+      AND END_OF_MONTH_DATE >= ADD_MONTHS(DATE_TRUNC('month', CURRENT_DATE), -12)
+    GROUP BY 1,2,3
+),
+calc AS (
+    SELECT
+        EOM,
+        RC_CODE,
+        RV_DESCRIPTION,
+        GL_BALANCE,
+        LAG(GL_BALANCE) OVER (PARTITION BY RC_CODE ORDER BY EOM)             AS PREV_GL_BALANCE,
+        (GL_BALANCE - LAG(GL_BALANCE) OVER (PARTITION BY RC_CODE ORDER BY EOM)) AS MOM_ABS_CHANGE,
+        CASE
+            WHEN LAG(GL_BALANCE) OVER (PARTITION BY RC_CODE ORDER BY EOM) = 0 THEN NULL
+            ELSE (GL_BALANCE - LAG(GL_BALANCE) OVER (PARTITION BY RC_CODE ORDER BY EOM))
+                 / NULLIF(LAG(GL_BALANCE) OVER (PARTITION BY RC_CODE ORDER BY EOM),0)
+        END                                                                  AS MOM_PCT_CHANGE,
+        -- rolling stats over the *prior* 12 months (exclude current row)
+        AVG(GL_BALANCE) OVER (
+            PARTITION BY RC_CODE
+            ORDER BY EOM
+            ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+        )                                                                    AS ROLL_MEAN_12_EXCL,
+        STDDEV_SAMP(GL_BALANCE) OVER (
+            PARTITION BY RC_CODE
+            ORDER BY EOM
+            ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+        )                                                                    AS ROLL_STD_12_EXCL
+    FROM base
+)
+SELECT
+    EOM AS END_OF_MONTH_DATE,
+    RC_CODE,
+    RV_DESCRIPTION,
+    GL_BALANCE,
+    PREV_GL_BALANCE,
+    MOM_ABS_CHANGE,
+    MOM_PCT_CHANGE,
+    ROLL_MEAN_12_EXCL,
+    ROLL_STD_12_EXCL,
+    CASE
+        WHEN ROLL_STD_12_EXCL IS NULL OR ROLL_STD_12_EXCL = 0 THEN NULL
+        ELSE (GL_BALANCE - ROLL_MEAN_12_EXCL) / ROLL_STD_12_EXCL
+    END AS Z_SCORE_12_EXCL,
+    CASE
+        WHEN (ROLL_STD_12_EXCL IS NOT NULL AND ROLL_STD_12_EXCL > 0
+              AND ABS((GL_BALANCE - ROLL_MEAN_12_EXCL) / ROLL_STD_12_EXCL) >= 2.0)
+          OR (COALESCE(ABS(MOM_PCT_CHANGE),0) >= 0.25 AND COALESCE(ABS(MOM_ABS_CHANGE),0) >= 100000)
+        THEN 1 ELSE 0
+    END AS IS_ANOMALY
+FROM calc
+ORDER BY END_OF_MONTH_DATE, RC_CODE;
+
+
+
+
 /* ============================================================================================
    Non-Accrual Project — ONE OUTPUT (Tall Table) — NETEZZA (SAFE NUMERIC CASTS)
    Output columns:
