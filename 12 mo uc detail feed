@@ -1,3 +1,221 @@
+-- =====================================================================
+-- MASTER RC_CODE VARIANCE + ANOMALY + SEVERITY (Run as a single query)
+-- =====================================================================
+
+WITH
+/* ========================== 1) PARAMETERS =========================== */
+params AS (
+    SELECT
+        12::INTEGER  AS lookback_months,   -- months of history (e.g., 12)
+        /* Severity weighting (roughly sum to 1.0) */
+        0.40::FLOAT  AS w_zscore,          -- weight for Z-score
+        0.30::FLOAT  AS w_pct,             -- weight for MoM % change
+        0.20::FLOAT  AS w_abs,             -- weight for MoM $ change
+        0.10::FLOAT  AS w_share,           -- weight for portfolio share shift
+        /* Normalization caps for 0..1 scaling */
+        2.00::FLOAT  AS z_cap,             -- cap for |Z| (e.g., 2σ)
+        0.25::FLOAT  AS pct_cap,           -- cap for |MoM %| (e.g., 25%)
+        100000::FLOAT AS abs_cap,          -- cap for |MoM $| (materiality)
+        0.02::FLOAT  AS share_cap,         -- cap for |share delta| (2% of total)
+        /* Anomaly trip wires for IS_ANOMALY */
+        2.00::FLOAT  AS z_thresh,          -- flag if |Z| >= 2.0
+        0.25::FLOAT  AS pct_thresh,        -- with $ threshold
+        100000::FLOAT AS abs_thresh        -- with % threshold
+),
+
+/* ====== 2) BASE RC_CODE MONTHLY AGGREGATE (GL_BALANCE > 0) ========= */
+base AS (
+    SELECT
+        CAST(END_OF_MONTH_DATE AS DATE)          AS EOM,
+        RC_CODE,
+        RV_DESCRIPTION,
+        SUM(GL_BALANCE)                          AS GL_BALANCE
+    FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+    WHERE GL_BALANCE > 0
+      AND END_OF_MONTH_DATE >= ADD_MONTHS(DATE_TRUNC('month', CURRENT_DATE),
+                                          - (SELECT lookback_months FROM params))
+    GROUP BY 1,2,3
+),
+
+/* ========== 3) PORTFOLIO TOTALS BY MONTH (for share calculations) ========= */
+tot AS (
+    SELECT EOM, SUM(GL_BALANCE) AS TOT_GL
+    FROM base
+    GROUP BY 1
+),
+
+/* ====== 4) MOM DELTAS + ROLLING STATS (excluding current month) ========== */
+calc AS (
+    SELECT
+        b.EOM,
+        b.RC_CODE,
+        b.RV_DESCRIPTION,
+        b.GL_BALANCE,
+        LAG(b.GL_BALANCE) OVER (PARTITION BY b.RC_CODE ORDER BY b.EOM) AS PREV_GL_BALANCE,
+
+        /* absolute change */
+        b.GL_BALANCE - LAG(b.GL_BALANCE) OVER (PARTITION BY b.RC_CODE ORDER BY b.EOM)
+            AS MOM_ABS_CHANGE,
+
+        /* percent change (NULL if prev = 0) */
+        CASE
+            WHEN NULLIF(LAG(b.GL_BALANCE) OVER (PARTITION BY b.RC_CODE ORDER BY b.EOM),0) IS NULL
+                THEN NULL
+            ELSE (b.GL_BALANCE - LAG(b.GL_BALANCE) OVER (PARTITION BY b.RC_CODE ORDER BY b.EOM))
+                 / NULLIF(LAG(b.GL_BALANCE) OVER (PARTITION BY b.RC_CODE ORDER BY b.EOM),0)
+        END AS MOM_PCT_CHANGE,
+
+        /* rolling mean/std over prior 12 rows (exclude current) */
+        AVG(b.GL_BALANCE) OVER (
+            PARTITION BY b.RC_CODE
+            ORDER BY b.EOM
+            ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+        ) AS ROLL_MEAN_12_EXCL,
+
+        /* If STDDEV_SAMP isn't available in your Netezza version, use STDDEV */
+        STDDEV_SAMP(b.GL_BALANCE) OVER (
+            PARTITION BY b.RC_CODE
+            ORDER BY b.EOM
+            ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+        ) AS ROLL_STD_12_EXCL,
+
+        t.TOT_GL AS CURR_TOT_GL,
+        LAG(t.TOT_GL) OVER (ORDER BY b.EOM) AS PREV_TOT_GL
+    FROM base b
+    JOIN tot  t ON t.EOM = b.EOM
+),
+
+/* ====== 5) ENRICH WITH Z-SCORE & PORTFOLIO SHARE / SHARE DELTA ========== */
+enriched AS (
+    SELECT
+        c.*,
+        CASE
+            WHEN c.ROLL_STD_12_EXCL IS NULL OR c.ROLL_STD_12_EXCL = 0 THEN NULL
+            ELSE (c.GL_BALANCE - c.ROLL_MEAN_12_EXCL) / c.ROLL_STD_12_EXCL
+        END AS Z_SCORE_12_EXCL,
+        CASE WHEN c.CURR_TOT_GL > 0 THEN c.GL_BALANCE / c.CURR_TOT_GL ELSE NULL END AS CURR_SHARE,
+        CASE WHEN c.PREV_TOT_GL > 0 THEN COALESCE(c.PREV_GL_BALANCE,0) / c.PREV_TOT_GL ELSE NULL END AS PREV_SHARE,
+        CASE
+            WHEN c.CURR_TOT_GL > 0 AND c.PREV_TOT_GL > 0 THEN
+                (c.GL_BALANCE / c.CURR_TOT_GL) - (COALESCE(c.PREV_GL_BALANCE,0) / c.PREV_TOT_GL)
+            ELSE NULL
+        END AS SHARE_DELTA
+    FROM calc c
+),
+
+/* ====== 6) ANOMALY FLAG (trip rules) ===================================== */
+flagged AS (
+    SELECT
+        e.*,
+        CASE
+            WHEN (e.ROLL_STD_12_EXCL IS NOT NULL AND e.ROLL_STD_12_EXCL > 0
+                  AND ABS(e.Z_SCORE_12_EXCL) >= (SELECT z_thresh FROM params))
+              OR (COALESCE(ABS(e.MOM_PCT_CHANGE),0) >= (SELECT pct_thresh FROM params)
+                  AND COALESCE(ABS(e.MOM_ABS_CHANGE),0) >= (SELECT abs_thresh FROM params))
+            THEN 1 ELSE 0
+        END AS IS_ANOMALY
+    FROM enriched e
+),
+
+/* ====== 7) SEVERITY SCORE (0..100), RANKS, TIERS ========================= */
+scored AS (
+    SELECT
+        f.*,
+        p.w_zscore, p.w_pct, p.w_abs, p.w_share,
+        p.z_cap, p.pct_cap, p.abs_cap, p.share_cap
+    FROM flagged f
+    CROSS JOIN params p
+),
+assembled AS (
+    SELECT
+        EOM                               AS END_OF_MONTH_DATE,
+        RC_CODE,
+        RV_DESCRIPTION,
+        GL_BALANCE,
+        PREV_GL_BALANCE,
+        MOM_ABS_CHANGE,
+        MOM_PCT_CHANGE,
+        ROLL_MEAN_12_EXCL,
+        ROLL_STD_12_EXCL,
+        Z_SCORE_12_EXCL,
+        CURR_TOT_GL,
+        PREV_TOT_GL,
+        CURR_SHARE,
+        PREV_SHARE,
+        SHARE_DELTA,
+        IS_ANOMALY,
+
+        /* Normalized components 0..1 (capped) */
+        CASE
+            WHEN Z_SCORE_12_EXCL IS NULL THEN 0
+            ELSE LEAST(ABS(Z_SCORE_12_EXCL) / NULLIF(z_cap,0), 1)
+        END AS z_norm,
+        CASE
+            WHEN MOM_PCT_CHANGE IS NULL THEN 0
+            ELSE LEAST(ABS(MOM_PCT_CHANGE) / NULLIF(pct_cap,0), 1)
+        END AS pct_norm,
+        LEAST(ABS(COALESCE(MOM_ABS_CHANGE,0)) / NULLIF(abs_cap,0), 1) AS abs_norm,
+        CASE
+            WHEN SHARE_DELTA IS NULL THEN 0
+            ELSE LEAST(ABS(SHARE_DELTA) / NULLIF(share_cap,0), 1)
+        END AS share_norm,
+
+        w_zscore, w_pct, w_abs, w_share
+    FROM scored
+),
+final AS (
+    SELECT
+        *,
+        100 * (w_zscore * z_norm
+             + w_pct    * pct_norm
+             + w_abs    * abs_norm
+             + w_share  * share_norm)     AS SEVERITY_SCORE_RAW
+    FROM assembled
+)
+
+SELECT
+    END_OF_MONTH_DATE,
+    RC_CODE,
+    RV_DESCRIPTION,
+    GL_BALANCE,
+    PREV_GL_BALANCE,
+    MOM_ABS_CHANGE,
+    MOM_PCT_CHANGE,
+    ROLL_MEAN_12_EXCL,
+    ROLL_STD_12_EXCL,
+    Z_SCORE_12_EXCL,
+    CURR_TOT_GL,
+    PREV_TOT_GL,
+    CURR_SHARE,
+    PREV_SHARE,
+    SHARE_DELTA,
+    IS_ANOMALY,
+
+    /* Rounded/clipped severity for presentation */
+    GREATEST(0, LEAST(100, ROUND(SEVERITY_SCORE_RAW,1))) AS SEVERITY_SCORE,
+
+    /* Rank within each month (highest score = rank 1) */
+    DENSE_RANK() OVER (PARTITION BY END_OF_MONTH_DATE
+                       ORDER BY SEVERITY_SCORE_RAW DESC) AS MONTHLY_RANK,
+
+    /* Tiering */
+    CASE
+        WHEN SEVERITY_SCORE_RAW >= 85 THEN 'CRITICAL'
+        WHEN SEVERITY_SCORE_RAW >= 70 THEN 'HIGH'
+        WHEN SEVERITY_SCORE_RAW >= 50 THEN 'MEDIUM'
+        WHEN SEVERITY_SCORE_RAW >= 30 THEN 'LOW'
+        ELSE 'INFO'
+    END AS SEVERITY_TIER
+
+FROM final
+ORDER BY END_OF_MONTH_DATE, MONTHLY_RANK, RC_CODE;
+
+
+
+
+
+
+
 /* ===================== TAB 2 – MoM Change Analysis (Non-Accrual) ===================== */
 /* Reuses NonAccrual, Months, MonthPairs already defined earlier. If not present,
    copy those CTEs from your existing query. */
