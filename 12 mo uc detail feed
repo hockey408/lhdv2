@@ -258,6 +258,268 @@ Tab5_AnomalyTable AS (
 
 
 
+
+
+/* ===================== TAB 2 – MoM Change Analysis (Non-Accrual) ===================== */
+/* Reuses NonAccrual, Months, MonthPairs already defined earlier. If not present,
+   copy those CTEs from your existing query. */
+
+-- Detailed current-vs-prev for accounts (drives adds & persisting deltas)
+Tab2_CurrVsPrev_Account AS (
+  SELECT
+    mp.CurrMonth,
+    mp.PrevMonth,
+    c.ACCOUNT_IDENTIFIER,
+    c.CONTRACT_SOURCE_SYSTEM,
+    SUM(c.Balance) AS CurrBal,
+    SUM(p.Balance) AS PrevBal
+  FROM MonthPairs mp
+  JOIN NonAccrual c
+    ON c.MonthEnd = mp.CurrMonth
+  LEFT JOIN NonAccrual p
+    ON p.MonthEnd = mp.PrevMonth
+   AND p.ACCOUNT_IDENTIFIER = c.ACCOUNT_IDENTIFIER
+   AND p.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
+  GROUP BY mp.CurrMonth, mp.PrevMonth, c.ACCOUNT_IDENTIFIER, c.CONTRACT_SOURCE_SYSTEM
+),
+
+-- Accounts present in prev but missing in current (drives removals)
+Tab2_PrevNotCurr_Account AS (
+  SELECT
+    mp.CurrMonth,
+    mp.PrevMonth,
+    p.ACCOUNT_IDENTIFIER,
+    p.CONTRACT_SOURCE_SYSTEM,
+    SUM(p.Balance) AS PrevBal
+  FROM MonthPairs mp
+  JOIN NonAccrual p
+    ON p.MonthEnd = mp.PrevMonth
+  LEFT JOIN NonAccrual c
+    ON c.MonthEnd = mp.CurrMonth
+   AND c.ACCOUNT_IDENTIFIER = p.ACCOUNT_IDENTIFIER
+   AND c.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
+  WHERE c.ACCOUNT_IDENTIFIER IS NULL
+  GROUP BY mp.CurrMonth, mp.PrevMonth, p.ACCOUNT_IDENTIFIER, p.CONTRACT_SOURCE_SYSTEM
+),
+
+-- Adds / Removals by system (month-level) for a clustered bar in Tab 2
+Tab2_AddsRemovals_BySystem AS (
+  SELECT
+    'Tab2_AddsRemovals_BySystem' AS Dataset,
+    a.CurrMonth                  AS MonthEnd,
+    a.CONTRACT_SOURCE_SYSTEM     AS Dim1,      -- Legend: system
+    'Adds'                       AS Metric,
+    SUM(CASE WHEN a.PrevBal IS NULL THEN a.CurrBal ELSE 0 END) AS Value,
+    CAST(NULL AS VARCHAR(100))   AS Dim2
+  FROM Tab2_CurrVsPrev_Account a
+  GROUP BY a.CurrMonth, a.CONTRACT_SOURCE_SYSTEM
+
+  UNION ALL
+
+  SELECT
+    'Tab2_AddsRemovals_BySystem',
+    r.CurrMonth,
+    r.CONTRACT_SOURCE_SYSTEM,
+    'Removals',
+    SUM(-r.PrevBal),
+    CAST(NULL AS VARCHAR(100))
+  FROM Tab2_PrevNotCurr_Account r
+  GROUP BY r.CurrMonth, r.CONTRACT_SOURCE_SYSTEM
+),
+
+-- Persisting movers (delta for accounts present in both months) – Top 25 by abs(delta) per month
+Tab2_PersistingMovers_TopN AS (
+  SELECT
+    a.CurrMonth                                  AS MonthEnd,
+    a.ACCOUNT_IDENTIFIER                         AS AccountId,
+    a.CONTRACT_SOURCE_SYSTEM                     AS SystemName,
+    SUM(a.CurrBal - a.PrevBal)                   AS Delta
+  FROM Tab2_CurrVsPrev_Account a
+  WHERE a.PrevBal IS NOT NULL
+  GROUP BY a.CurrMonth, a.ACCOUNT_IDENTIFIER, a.CONTRACT_SOURCE_SYSTEM
+),
+Tab2_PersistingMovers_Ranked AS (
+  SELECT
+    MonthEnd,
+    AccountId,
+    SystemName,
+    Delta,
+    ROW_NUMBER() OVER (PARTITION BY MonthEnd ORDER BY ABS(Delta) DESC) AS rn
+  FROM Tab2_PersistingMovers_TopN
+),
+Tab2_PersistingMovers_Long AS (
+  SELECT
+    'Tab2_PersistingMovers'      AS Dataset,
+    MonthEnd,
+    AccountId                    AS Dim1,      -- use as category on bar chart (Top 25)
+    'DeltaSigned'                AS Metric,
+    Delta                        AS Value,
+    SystemName                   AS Dim2       -- optional: color by system in small multiples
+  FROM Tab2_PersistingMovers_Ranked
+  WHERE rn <= 25
+),
+
+-- Detailed ADDs and REMOVALs (account-level tables)
+Tab2_AddsDetail AS (
+  SELECT
+    'Tab2_AddsDetail'            AS Dataset,
+    a.CurrMonth                  AS MonthEnd,
+    a.ACCOUNT_IDENTIFIER         AS Dim1,      -- account id
+    'Add_Balance'                AS Metric,
+    SUM(a.CurrBal)               AS Value,
+    a.CONTRACT_SOURCE_SYSTEM     AS Dim2
+  FROM Tab2_CurrVsPrev_Account a
+  WHERE a.PrevBal IS NULL
+  GROUP BY a.CurrMonth, a.ACCOUNT_IDENTIFIER, a.CONTRACT_SOURCE_SYSTEM
+),
+Tab2_RemovalsDetail AS (
+  SELECT
+    'Tab2_RemovalsDetail'        AS Dataset,
+    r.CurrMonth                  AS MonthEnd,
+    r.ACCOUNT_IDENTIFIER         AS Dim1,
+    'Removal_Balance'            AS Metric,
+    SUM(r.PrevBal)               AS Value,     -- positive amount (you can flip sign in PBI if desired)
+    r.CONTRACT_SOURCE_SYSTEM     AS Dim2
+  FROM Tab2_PrevNotCurr_Account r
+  GROUP BY r.CurrMonth, r.ACCOUNT_IDENTIFIER, r.CONTRACT_SOURCE_SYSTEM
+),
+
+/* ===================== TAB 4 – Risk & Concentration (Non-Accrual) ===================== */
+
+-- PD_Grade buckets (adjust thresholds if your PD scale differs)
+Tab4_PD_Buckets AS (
+  SELECT
+    n.MonthEnd,
+    CASE
+      WHEN n.PD_GRADE_NUM IS NULL THEN 'Missing'
+      WHEN n.PD_GRADE_NUM < 3      THEN 'PD 1–2'
+      WHEN n.PD_GRADE_NUM < 6      THEN 'PD 3–5'
+      WHEN n.PD_GRADE_NUM < 9      THEN 'PD 6–8'
+      ELSE 'PD 9+'
+    END AS PDBand,
+    n.Balance
+  FROM NonAccrual n
+),
+Tab4_PD_Distribution AS (
+  SELECT
+    'Tab4_PD_Distribution'       AS Dataset,
+    MonthEnd,
+    PDBand                       AS Dim1,
+    'Balance'                    AS Metric,
+    SUM(Balance)                 AS Value,
+    CAST(NULL AS VARCHAR(100))   AS Dim2
+  FROM Tab4_PD_Buckets
+  GROUP BY MonthEnd, PDBand
+),
+
+-- Top 10 accounts by balance (per month)
+Tab4_TopAccounts AS (
+  SELECT
+    n.MonthEnd,
+    n.ACCOUNT_IDENTIFIER                                   AS AccountId,
+    n.CONTRACT_SOURCE_SYSTEM                               AS SystemName,
+    SUM(n.Balance)                                         AS Bal,
+    ROW_NUMBER() OVER (PARTITION BY n.MonthEnd ORDER BY SUM(n.Balance) DESC) AS rn
+  FROM NonAccrual n
+  GROUP BY n.MonthEnd, n.ACCOUNT_IDENTIFIER, n.CONTRACT_SOURCE_SYSTEM
+),
+Tab4_Top10Accounts_Long AS (
+  SELECT
+    'Tab4_Top10_Accounts'      AS Dataset,
+    MonthEnd,
+    AccountId                  AS Dim1,
+    'Balance'                  AS Metric,
+    Bal                        AS Value,
+    SystemName                 AS Dim2
+  FROM Tab4_TopAccounts
+  WHERE rn <= 10
+),
+
+-- Top-5 concentration % (sum of top 5 balances / total non-accrual balance)
+Tab4_Top5Conc AS (
+  SELECT
+    n.MonthEnd,
+    SUM(n.Balance) AS TotalNA
+  FROM NonAccrual n
+  GROUP BY n.MonthEnd
+),
+Tab4_Top5Conc_Top AS (
+  SELECT
+    t.MonthEnd,
+    SUM(t.Bal) AS Top5Bal
+  FROM (
+    SELECT
+      n.MonthEnd,
+      n.ACCOUNT_IDENTIFIER,
+      SUM(n.Balance) AS Bal,
+      ROW_NUMBER() OVER (PARTITION BY n.MonthEnd ORDER BY SUM(n.Balance) DESC) AS rn
+    FROM NonAccrual n
+    GROUP BY n.MonthEnd, n.ACCOUNT_IDENTIFIER
+  ) t
+  WHERE t.rn <= 5
+  GROUP BY t.MonthEnd
+),
+Tab4_Top5Conc_Long AS (
+  SELECT
+    'Tab4_Top5_Concentration'   AS Dataset,
+    c.MonthEnd                  AS MonthEnd,
+    'Top5Pct'                   AS Dim1,
+    'Percent'                   AS Metric,
+    (tc.Top5Bal / NULLIF(c.TotalNA,0)) * 100.0 AS Value,
+    CAST(NULL AS VARCHAR(100))                 AS Dim2
+  FROM Tab4_Top5Conc c
+  JOIN Tab4_Top5Conc_Top tc ON tc.MonthEnd = c.MonthEnd
+),
+
+/* ===================== TAB 5 – Anomaly Detection ===================== */
+/* Replace <YOUR_ANOMALY_TABLE> and column names as needed. 
+   Expect columns: EventDate (date or timestamp), Severity ('Critical'/'Warning'), System (optional). */
+
+AnomalySrc AS (
+  SELECT
+    CAST(EventDate AS DATE)        AS EventDate,
+    UPPER(TRIM(CAST(Severity AS VARCHAR(20)))) AS Severity,
+    CAST(SystemName AS VARCHAR(100)) AS SystemName   -- optional; remove if not available
+  FROM <YOUR_ANOMALY_TABLE>                           -- <<< TODO: set this
+  WHERE EventDate IS NOT NULL
+),
+AnomalyByMonth AS (
+  SELECT
+    ADD_MONTHS(DATE_TRUNC('month', EventDate), 1) - 1 AS MonthEnd,  -- normalize to month-end
+    CASE WHEN Severity IN ('CRITICAL','WARNING') THEN Severity ELSE 'OTHER' END AS Sev,
+    COUNT(*) AS Cnt
+  FROM AnomalySrc
+  GROUP BY ADD_MONTHS(DATE_TRUNC('month', EventDate), 1) - 1, 
+           CASE WHEN Severity IN ('CRITICAL','WARNING') THEN Severity ELSE 'OTHER' END
+),
+Tab5_AnomalyTrend AS (
+  SELECT
+    'Tab5_Anomaly_Trend'     AS Dataset,
+    MonthEnd                 AS MonthEnd,
+    Sev                      AS Dim1,     -- 'CRITICAL' / 'WARNING' / 'OTHER'
+    'Count'                  AS Metric,
+    Cnt                      AS Value,
+    CAST(NULL AS VARCHAR(100)) AS Dim2
+  FROM AnomalyByMonth
+),
+-- Optional: latest anomaly table for a detail grid
+Tab5_AnomalyTable AS (
+  SELECT
+    'Tab5_Anomaly_Table'     AS Dataset,
+    ADD_MONTHS(DATE_TRUNC('month', EventDate), 1) - 1 AS MonthEnd,
+    CAST(EventDate AS VARCHAR(30)) AS Dim1,   -- show actual datetime in the table
+    'Count'                  AS Metric,
+    1                        AS Value,
+    Severity                 AS Dim2
+  FROM AnomalySrc
+  WHERE EventDate >= ADD_MONTHS(CURRENT_DATE, -3)   -- last 3 months (adjust)
+)
+
+
+
+
+
+
 /* ===== Last 12 months detail with derived System & Commitment ===== */
 WITH bounds AS (
     SELECT AsOfMonthEnd = (SELECT MAX(m.LoadDate) FROM CRDLMTUFCALC.dbo.Credit_Line_Monthly AS m)
