@@ -1,3 +1,154 @@
+-- ONE-QUERY MULTI-DATASET OUTPUT (NETEZZA)
+-- Produces a tall table with a Dataset label so Power BI can filter per visual.
+
+WITH Base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE) AS MonthEnd,
+    ACCOUNT_IDENTIFIER,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    CAST(SOURCE_SYSTEM_BALANCE AS NUMERIC(38,2)) AS Balance,
+    UPPER(TRIM(CAST(NON_ACCRUAL_FLAG AS VARCHAR(10)))) AS NA_Flag,
+    CAST(PD_GRADE AS NUMERIC(18,6)) AS PD_GRADE_NUM
+  FROM V_DPRT_CREDIT_INSTRUMENTS
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND SOURCE_SYSTEM_BALANCE > 0
+),
+NonAccrual AS (
+  SELECT *
+  FROM Base
+  WHERE NA_Flag IN ('1','Y','YES','TRUE','T')
+),
+
+-- ===================== TAB 3: Portfolio Composition (stacked by GL level) =====================
+Tab3_GLStack AS (
+  SELECT
+    'Tab3_GL_Stack'::VARCHAR(40)         AS Dataset,
+    MonthEnd,
+    GL_ACCOUNT_HIER_LEVEL_4              AS Dim1,     -- use as Legend in stacked column
+    NULL::VARCHAR(100)                   AS Dim2,     -- placeholder
+    'Balance'::VARCHAR(40)               AS Metric,
+    SUM(Balance)                         AS Value
+  FROM Base
+  GROUP BY MonthEnd, GL_ACCOUNT_HIER_LEVEL_4
+),
+
+-- ===================== TAB 6: Adds / Removals / Persisting (NON-ACCRUAL) =====================
+Months AS (
+  SELECT DISTINCT MonthEnd FROM NonAccrual
+),
+MonthPairs AS (
+  SELECT m.MonthEnd AS CurrMonth, ADD_MONTHS(m.MonthEnd, -1) AS PrevMonth
+  FROM Months m
+),
+CurrVsPrev AS (               -- adds + persisting
+  SELECT
+    mp.CurrMonth,
+    mp.PrevMonth,
+    c.ACCOUNT_IDENTIFIER,
+    c.CONTRACT_SOURCE_SYSTEM,
+    SUM(c.Balance) AS CurrBal,
+    SUM(p.Balance) AS PrevBal
+  FROM MonthPairs mp
+  JOIN NonAccrual c
+    ON c.MonthEnd = mp.CurrMonth
+  LEFT JOIN NonAccrual p
+    ON p.MonthEnd = mp.PrevMonth
+   AND p.ACCOUNT_IDENTIFIER = c.ACCOUNT_IDENTIFIER
+   AND p.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
+  GROUP BY mp.CurrMonth, mp.PrevMonth, c.ACCOUNT_IDENTIFIER, c.CONTRACT_SOURCE_SYSTEM
+),
+PrevNotCurr AS (              -- removals
+  SELECT
+    mp.CurrMonth,
+    mp.PrevMonth,
+    p.ACCOUNT_IDENTIFIER,
+    p.CONTRACT_SOURCE_SYSTEM,
+    SUM(p.Balance) AS PrevBal
+  FROM MonthPairs mp
+  JOIN NonAccrual p
+    ON p.MonthEnd = mp.PrevMonth
+  LEFT JOIN NonAccrual c
+    ON c.MonthEnd = mp.CurrMonth
+   AND c.ACCOUNT_IDENTIFIER = p.ACCOUNT_IDENTIFIER
+   AND c.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
+  WHERE c.ACCOUNT_IDENTIFIER IS NULL
+  GROUP BY mp.CurrMonth, mp.PrevMonth, p.ACCOUNT_IDENTIFIER, p.CONTRACT_SOURCE_SYSTEM
+),
+Tab6_Wide AS (                -- month-level sums
+  SELECT
+    CurrMonth AS MonthEnd,
+    SUM(CASE WHEN PrevBal IS NULL THEN CurrBal ELSE 0 END)                         AS Adds,
+    SUM(CASE WHEN PrevBal IS NOT NULL THEN (CurrBal - PrevBal) ELSE 0 END)         AS PersistingDelta,
+    CAST(0 AS NUMERIC(38,2))                                                       AS Removals
+  FROM CurrVsPrev
+  GROUP BY CurrMonth
+
+  UNION ALL
+
+  SELECT
+    CurrMonth AS MonthEnd,
+    CAST(0 AS NUMERIC(38,2))                                                       AS Adds,
+    CAST(0 AS NUMERIC(38,2))                                                       AS PersistingDelta,
+    SUM(-PrevBal)                                                                  AS Removals
+  FROM PrevNotCurr
+  GROUP BY CurrMonth
+),
+Tab6_Collapsed AS (
+  SELECT
+    MonthEnd,
+    SUM(Adds)             AS Adds,
+    SUM(PersistingDelta)  AS PersistingDelta,
+    SUM(Removals)         AS Removals
+  FROM Tab6_Wide
+  GROUP BY MonthEnd
+),
+Tab6_Long AS (
+  SELECT 'Tab6_AddsRemovalsDelta'::VARCHAR(40) AS Dataset,
+         MonthEnd,
+         'Adds'::VARCHAR(100)                  AS Dim1,
+         NULL::VARCHAR(100)                    AS Dim2,
+         'AmountSigned'::VARCHAR(40)           AS Metric,
+         Adds                                  AS Value
+  FROM Tab6_Collapsed
+  UNION ALL
+  SELECT 'Tab6_AddsRemovalsDelta', MonthEnd, 'Removals', NULL, 'AmountSigned', Removals FROM Tab6_Collapsed
+  UNION ALL
+  SELECT 'Tab6_AddsRemovalsDelta', MonthEnd, 'Persisting Delta', NULL, 'AmountSigned', PersistingDelta FROM Tab6_Collapsed
+),
+
+-- ===================== TAB 7: Weighted Avg PD_Grade (NON-ACCRUAL) — latest month only =========
+LatestMonth AS (
+  SELECT MAX(MonthEnd) AS MonthEnd FROM NonAccrual
+),
+Tab7_PD_Latest AS (
+  SELECT
+    'Tab7_PD_WtAvg_Latest'::VARCHAR(40)  AS Dataset,
+    lm.MonthEnd                           AS MonthEnd,
+    NULL::VARCHAR(100)                    AS Dim1,
+    NULL::VARCHAR(100)                    AS Dim2,
+    'WeightedAvg_PD_Grade'::VARCHAR(40)   AS Metric,
+    SUM(n.Balance * n.PD_GRADE_NUM) / NULLIF(SUM(n.Balance), 0) AS Value
+  FROM NonAccrual n
+  JOIN LatestMonth lm ON n.MonthEnd = lm.MonthEnd
+  WHERE n.PD_GRADE_NUM IS NOT NULL
+  GROUP BY lm.MonthEnd
+)
+
+-- ===================== FINAL UNION OF ALL DATASETS =====================
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab3_GLStack
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab6_Long
+UNION ALL
+SELECT Dataset, MonthEnd, Dim1, Dim2, Metric, Value FROM Tab7_PD_Latest
+ORDER BY Dataset, MonthEnd, Dim1;
+
+
+
+
+
+
+
 -- Tab 3: Portfolio Composition — Stacked Column (Balance by GL Level) — NETEZZA
 SELECT
     CAST(END_OF_MONTH_DATE AS DATE)            AS MonthEnd,
