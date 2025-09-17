@@ -1,3 +1,184 @@
+=PY("
+import numpy as np
+import pandas as pd
+from math import isfinite
+try:
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+    _HAS_SM = True
+except Exception:
+    _HAS_SM = False
+
+# =========================
+# CONFIG
+# =========================
+SEASONAL_PERIODS = 12       # monthly data with yearly pattern
+FORECAST_HORIZON = 1        # 1 = next month; you can change to 3, 6, etc.
+W_Z, W_PCT, W_IMP = 0.5, 0.3, 0.2   # Severity weights (z, pct, $impact)
+Z80, Z95 = 1.2816, 1.9599
+
+# =========================
+# INPUT
+# =========================
+df = args[0].copy()
+
+# Standardize column names
+df.columns = [c.strip().upper() for c in df.columns]
+req = {'END_OF_MONTH_DATE','CONTRACT_SOURCE_SYSTEM','SOURCE_SYSTEM_BALANCE'}
+miss = req - set(df.columns)
+if miss:
+    raise ValueError(f'Missing required columns: {miss}')
+
+# Types + basic clean
+df['END_OF_MONTH_DATE'] = pd.to_datetime(df['END_OF_MONTH_DATE'])
+df['SOURCE_SYSTEM_BALANCE'] = pd.to_numeric(df['SOURCE_SYSTEM_BALANCE'], errors='coerce')
+df = df.dropna(subset=['END_OF_MONTH_DATE','SOURCE_SYSTEM_BALANCE'])
+df = (df
+      .groupby(['CONTRACT_SOURCE_SYSTEM','END_OF_MONTH_DATE'], as_index=False)['SOURCE_SYSTEM_BALANCE']
+      .sum()
+      .sort_values(['CONTRACT_SOURCE_SYSTEM','END_OF_MONTH_DATE']))
+
+# =========================
+# HELPERS
+# =========================
+def robust_std(resid):
+    if len(resid) == 0: 
+        return np.nan
+    med = np.median(resid)
+    mad = np.median(np.abs(resid - med))
+    return 1.4826*mad if mad>0 else (np.std(resid) if len(resid)>1 else np.nan)
+
+def seasonal_naive_forecast(series, h=1, sp=SEASONAL_PERIODS):
+    # Fallback if statsmodels isn't available or data is short:
+    # yhat_t+h = y_(t+h-sp) (seasonal naive)
+    out = []
+    n = len(series)
+    for _ in range(h):
+        if n - sp >= 0:
+            out.append(series.iloc[n - sp])
+        else:
+            out.append(series.iloc[-1])
+    return pd.Series(out, index=range(h))
+
+def fit_and_forecast(y, h=1, sp=SEASONAL_PERIODS):
+    y = y.astype(float)
+    model_name = 'Fallback-SeasonalNaive'
+    fitted_vals = pd.Series(index=y.index, dtype=float)
+
+    if _HAS_SM:
+        # Try ETS(A,A,A) if long enough; then ETS(A,A,N); else SES
+        if len(y) >= 2*sp:
+            try:
+                m = ExponentialSmoothing(y, trend='add', seasonal='add', seasonal_periods=sp, initialization_method='estimated')
+                fit = m.fit(optimized=True)
+                model_name = 'ETS(A,A,A)'
+            except Exception:
+                fit = None
+        else:
+            fit = None
+
+        if fit is None and len(y) >= 6:
+            try:
+                m = ExponentialSmoothing(y, trend='add', seasonal=None, initialization_method='estimated')
+                fit = m.fit(optimized=True)
+                model_name = 'ETS(A,A,N)'
+            except Exception:
+                fit = None
+
+        if fit is None:
+            try:
+                m = ExponentialSmoothing(y, trend=None, seasonal=None, initialization_method='estimated')
+                fit = m.fit(optimized=True)
+                model_name = 'SES'
+            except Exception:
+                fit = None
+
+        if fit is not None:
+            fitted_vals = pd.Series(fit.fittedvalues, index=y.index)
+            fcast = fit.forecast(h)
+            return model_name, fitted_vals, pd.Series(fcast.values, index=range(h))
+
+    # Fallback: seasonal naive
+    fcast = seasonal_naive_forecast(pd.Series(y.values), h=h, sp=sp)
+    # Pseudo fitted for residuals (shift by sp if possible)
+    if len(y) > sp:
+        fitted_vals.iloc[sp:] = y.values[:-sp]
+        fitted_vals.iloc[:sp] = y.values[0]
+    else:
+        fitted_vals[:] = y.values.mean()
+    return model_name, fitted_vals, fcast
+
+# =========================
+# MAIN
+# =========================
+rows = []
+for system, g in df.groupby('CONTRACT_SOURCE_SYSTEM', sort=False):
+    g = g.sort_values('END_OF_MONTH_DATE')
+    y = g['SOURCE_SYSTEM_BALANCE']
+
+    model_name, fitted_vals, fcast = fit_and_forecast(y, h=FORECAST_HORIZON, sp=SEASONAL_PERIODS)
+
+    resid = (y.values - np.nan_to_num(fitted_vals.values, nan=np.nan)).astype(float)
+    resid = resid[~np.isnan(resid)]
+    sigma = robust_std(resid)
+
+    last_date = g['END_OF_MONTH_DATE'].iloc[-1]
+    last_actual = float(y.iloc[-1])
+
+    # Build horizon rows (usually h=1; supports h>1)
+    for step in range(len(fcast)):
+        f = float(fcast.iloc[step])
+        # Next period date(s): month-end stepping
+        next_period = last_date + pd.offsets.MonthEnd(step+1)
+
+        # Simple normal-approx PI using residual sigma
+        if sigma is not None and isfinite(sigma):
+            lo80, hi80 = f - Z80*sigma, f + Z80*sigma
+            lo95, hi95 = f - Z95*sigma, f + Z95*sigma
+        else:
+            lo80 = hi80 = lo95 = hi95 = np.nan
+
+        # Diagnostics vs last actual (useful for step=0)
+        dev_abs = last_actual - f
+        dev_pct = (dev_abs / f) if f != 0 else np.nan
+        zscore = (dev_abs / sigma) if (sigma is not None and isfinite(sigma) and sigma>0) else np.nan
+
+        # Impact scaling by system median
+        med_lvl = float(np.median(y)) if len(y)>0 else 1.0
+        imp_term = min((abs(dev_abs) / (med_lvl*0.1)) if med_lvl>0 else 0.0, 1.0)  # 10% of median cap
+        z_term   = min(abs(zscore)/3.0, 1.0) if pd.notna(zscore) else 0.0         # cap ~3σ
+        pct_term = min(abs(dev_pct)/0.1, 1.0) if pd.notna(dev_pct) else 0.0       # cap at ±10%
+
+        severity = 100.0*(W_Z*z_term + W_PCT*pct_term + W_IMP*imp_term)
+
+        flag95 = (pd.notna(last_actual) and pd.notna(lo95) and (last_actual < lo95 or last_actual > hi95))
+
+        rows.append({
+            'CONTRACT_SOURCE_SYSTEM': system,
+            'MODEL': model_name,
+            'LAST_PERIOD': last_date,
+            'NEXT_PERIOD': next_period,
+            'STEP_AHEAD': step+1,
+            'ACTUAL_LAST': last_actual,
+            'FORECAST': f,
+            'PI80_LO': lo80, 'PI80_HI': hi80,
+            'PI95_LO': lo95, 'PI95_HI': hi95,
+            'DEV_ABS_vs_LAST': dev_abs,
+            'DEV_PCT_vs_LAST': dev_pct,
+            'Z_SCORE_vs_LAST': zscore,
+            'SEVERITY_0_100': severity,
+            'OUTSIDE_95_BAND_vs_LAST': bool(flag95)
+        })
+
+result = pd.DataFrame(rows).sort_values(['STEP_AHEAD','SEVERITY_0_100'], ascending=[True, False])
+
+return result
+", tblSSB[#All])
+
+
+
+
+
+
 -- Pull ~30 months (24+ buffer) ending at the latest END_OF_MONTH_DATE in the table
 WITH latest AS (
     SELECT MAX(END_OF_MONTH_DATE) AS max_eom
