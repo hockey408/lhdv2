@@ -1,3 +1,275 @@
+-- Adjust lookback here (use -24 for exactly two years)
+WITH latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -30) AS start_eom, max_eom FROM latest
+),
+
+-- 1) Aggregate to system × month in window
+base AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.CONTRACT_SOURCE_SYSTEM,
+    SUM(t.SOURCE_SYSTEM_BALANCE) AS SOURCE_SYSTEM_BALANCE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    -- Optional filters:
+    -- AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    -- AND t.BANK_CODE IN ('L-FCB','L-CIT','L-SVB')
+  GROUP BY 1,2
+),
+
+-- 2) Add a time index per system
+idx AS (
+  SELECT
+    b.*,
+    DENSE_RANK() OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS t_idx
+  FROM base b
+),
+
+-- 3) Rolling baselines, seasonal anchor, and overall stats (all with standard window sums)
+roll AS (
+  SELECT
+    i.*,
+
+    -- === 6-month rolling mean & sample std without STDDEV_* ===
+    -- window: last 6 rows (current + 5 preceding)
+    COUNT(*) OVER (
+      PARTITION BY i.CONTRACT_SOURCE_SYSTEM
+      ORDER BY i.END_OF_MONTH_DATE
+      ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+    )                                                      AS cnt6,
+    AVG(i.SOURCE_SYSTEM_BALANCE) OVER (
+      PARTITION BY i.CONTRACT_SOURCE_SYSTEM
+      ORDER BY i.END_OF_MONTH_DATE
+      ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+    )                                                      AS roll_mean_6,
+    AVG(i.SOURCE_SYSTEM_BALANCE * i.SOURCE_SYSTEM_BALANCE) OVER (
+      PARTITION BY i.CONTRACT_SOURCE_SYSTEM
+      ORDER BY i.END_OF_MONTH_DATE
+      ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+    )                                                      AS roll_mean2_6,
+
+    -- Seasonal naive anchor (value 12 months ago)
+    LAG(i.SOURCE_SYSTEM_BALANCE, 12) OVER (
+      PARTITION BY i.CONTRACT_SOURCE_SYSTEM
+      ORDER BY i.END_OF_MONTH_DATE
+    )                                                      AS lag12_balance,
+
+    -- Overall (per system) average & second moment for sample std fallback
+    COUNT(*)      OVER (PARTITION BY i.CONTRACT_SOURCE_SYSTEM)                AS cnt_all,
+    AVG(i.SOURCE_SYSTEM_BALANCE) OVER (PARTITION BY i.CONTRACT_SOURCE_SYSTEM) AS avg_all,
+    AVG(i.SOURCE_SYSTEM_BALANCE * i.SOURCE_SYSTEM_BALANCE)
+                 OVER (PARTITION BY i.CONTRACT_SOURCE_SYSTEM)                 AS avg2_all
+  FROM idx i
+),
+
+-- 4) 12-month rolling linear regression via window sums (no REGR_*):
+-- slope = (n*sum(xy) - sum(x)sum(y)) / (n*sum(x^2) - (sum(x))^2)
+-- intercept = (sum(y) - slope*sum(x)) / n
+trend AS (
+  SELECT
+    r.*,
+
+    -- Rolling window (current + 11 preceding) for linear regression
+    COUNT(*) OVER (
+      PARTITION BY r.CONTRACT_SOURCE_SYSTEM
+      ORDER BY r.END_OF_MONTH_DATE
+      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+    ) AS n12,
+
+    SUM(r.t_idx) OVER (
+      PARTITION BY r.CONTRACT_SOURCE_SYSTEM
+      ORDER BY r.END_OF_MONTH_DATE
+      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+    ) AS sumx12,
+
+    SUM(r.SOURCE_SYSTEM_BALANCE) OVER (
+      PARTITION BY r.CONTRACT_SOURCE_SYSTEM
+      ORDER BY r.END_OF_MONTH_DATE
+      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+    ) AS sumy12,
+
+    SUM(r.t_idx * r.SOURCE_SYSTEM_BALANCE) OVER (
+      PARTITION BY r.CONTRACT_SOURCE_SYSTEM
+      ORDER BY r.END_OF_MONTH_DATE
+      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+    ) AS sumxy12,
+
+    SUM(r.t_idx * r.t_idx) OVER (
+      PARTITION BY r.CONTRACT_SOURCE_SYSTEM
+      ORDER BY r.END_OF_MONTH_DATE
+      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+    ) AS sumxx12
+  FROM roll r
+),
+
+-- 5) Compute slope/intercept & rolling/sample sigmas
+calc AS (
+  SELECT
+    t.*,
+
+    -- 6-month sample std (sqrt( max( avg(x^2) - avg(x)^2, 0 ) * n/(n-1) ))
+    CASE
+      WHEN cnt6 > 1 THEN
+        SQRT(GREATEST(roll_mean2_6 - (roll_mean_6 * roll_mean_6), 0) * (cnt6::FLOAT / (cnt6 - 1)))
+      ELSE NULL
+    END AS roll_std_6,
+
+    -- overall sample std fallback
+    CASE
+      WHEN cnt_all > 1 THEN
+        SQRT(GREATEST(avg2_all - (avg_all * avg_all), 0) * (cnt_all::FLOAT / (cnt_all - 1)))
+      ELSE NULL
+    END AS std_all,
+
+    -- Linear regression slope/intercept on last up-to-12 months
+    CASE
+      WHEN n12 >= 2 AND (n12 * sumxx12 - (sumx12 * sumx12)) <> 0
+        THEN (n12 * sumxy12 - (sumx12 * sumy12)) / (n12 * sumxx12 - (sumx12 * sumx12))
+      ELSE NULL
+    END AS regr_slope_12,
+
+    CASE
+      WHEN n12 >= 1 THEN
+        (sumy12 - ( (CASE
+                        WHEN n12 >= 2 AND (n12 * sumxx12 - (sumx12 * sumx12)) <> 0
+                          THEN (n12 * sumxy12 - (sumx12 * sumy12)) / (n12 * sumxx12 - (sumx12 * sumx12))
+                        ELSE NULL
+                      END) * sumx12)) / n12
+      ELSE NULL
+    END AS regr_intercept_12
+  FROM trend t
+),
+
+-- 6) Last row per system
+last_per_sys AS (
+  SELECT c.*
+  FROM calc c
+  JOIN (
+    SELECT CONTRACT_SOURCE_SYSTEM, MAX(END_OF_MONTH_DATE) AS max_eom
+    FROM calc
+    GROUP BY CONTRACT_SOURCE_SYSTEM
+  ) m
+    ON c.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
+   AND c.END_OF_MONTH_DATE     = m.max_eom
+),
+
+-- 7) Build next-month forecast + scoring per system
+summary_next AS (
+  SELECT
+    l.CONTRACT_SOURCE_SYSTEM,
+    l.END_OF_MONTH_DATE                                AS last_period,
+    ADD_MONTHS(l.END_OF_MONTH_DATE, 1)                 AS next_period,
+    l.SOURCE_SYSTEM_BALANCE                            AS actual_last,
+
+    -- candidate forecasts
+    CASE
+      WHEN l.regr_slope_12 IS NOT NULL AND l.regr_intercept_12 IS NOT NULL
+        THEN l.regr_intercept_12 + l.regr_slope_12 * (l.t_idx + 1)
+      ELSE NULL
+    END                                                AS fc_linear,
+    l.lag12_balance                                    AS fc_seasonal,
+    l.roll_mean_6                                      AS fc_rollmean,
+
+    -- choose: linear → seasonal → rolling mean
+    COALESCE(
+      CASE
+        WHEN l.regr_slope_12 IS NOT NULL AND l.regr_intercept_12 IS NOT NULL
+          THEN l.regr_intercept_12 + l.regr_slope_12 * (l.t_idx + 1)
+        ELSE NULL
+      END,
+      l.lag12_balance,
+      l.roll_mean_6
+    )                                                  AS forecast_next,
+
+    -- sigma for bands: prefer rolling-6, else overall
+    COALESCE(l.roll_std_6, l.std_all)                  AS sigma_est,
+
+    -- overall average as size proxy
+    l.avg_all                                          AS avg_level_sys
+  FROM last_per_sys l
+),
+
+-- 8) Score & bands
+scored_next AS (
+  SELECT
+    s.CONTRACT_SOURCE_SYSTEM,
+    s.last_period,
+    s.next_period,
+    s.actual_last,
+    s.fc_linear,
+    s.fc_seasonal,
+    s.fc_rollmean,
+    s.forecast_next,
+
+    (s.forecast_next - 1.9599 * s.sigma_est)           AS pi95_lo,
+    (s.forecast_next + 1.9599 * s.sigma_est)           AS pi95_hi,
+
+    (s.actual_last - s.forecast_next)                  AS dev_abs_vs_last,
+    CASE WHEN s.forecast_next <> 0
+         THEN (s.actual_last - s.forecast_next) / s.forecast_next
+         ELSE NULL
+    END                                                AS dev_pct_vs_last,
+
+    CASE WHEN s.sigma_est IS NOT NULL AND s.sigma_est > 0
+         THEN (s.actual_last - s.forecast_next) / s.sigma_est
+         ELSE NULL
+    END                                                AS z_vs_last,
+
+    100 * (
+      0.5 * LEAST(ABS(CASE WHEN s.sigma_est IS NOT NULL AND s.sigma_est > 0
+                           THEN (s.actual_last - s.forecast_next) / s.sigma_est
+                           ELSE 0 END) / 3.0, 1.0)
+    + 0.3 * LEAST(ABS(CASE WHEN s.forecast_next <> 0
+                           THEN (s.actual_last - s.forecast_next) / s.forecast_next
+                           ELSE 0 END) / 0.10, 1.0)
+    + 0.2 * LEAST(ABS(s.actual_last - s.forecast_next) /
+                  NULLIF(s.avg_level_sys * 0.10, 0), 1.0)
+    )                                                  AS severity_0_100,
+
+    CASE
+      WHEN s.sigma_est IS NULL THEN NULL
+      WHEN s.actual_last < (s.forecast_next - 1.9599 * s.sigma_est) THEN TRUE
+      WHEN s.actual_last > (s.forecast_next + 1.9599 * s.sigma_est) THEN TRUE
+      ELSE FALSE
+    END                                                AS outside_95_band_vs_last
+  FROM summary_next s
+)
+
+-- Choose one of the final outputs:
+
+-- (A) One row per system for the NEXT period (ranked by severity)
+SELECT
+  'SUMMARY_NEXT' AS row_type,
+  CONTRACT_SOURCE_SYSTEM,
+  last_period,
+  next_period,
+  actual_last,
+  fc_linear,
+  fc_seasonal,
+  fc_rollmean,
+  forecast_next,
+  pi95_lo, pi95_hi,
+  dev_abs_vs_last,
+  dev_pct_vs_last,
+  z_vs_last,
+  severity_0_100,
+  outside_95_band_vs_last
+FROM scored_next
+ORDER BY severity_0_100 DESC, CONTRACT_SOURCE_SYSTEM;
+
+-- -- (B) If you also want history rows, say the word and I’ll add a HISTORY union like before.
+
+
+
+
+
 -- Change this to -24 if you want exactly 24 months
 WITH latest AS (
     SELECT MAX(END_OF_MONTH_DATE) AS max_eom
