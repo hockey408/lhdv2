@@ -7,6 +7,279 @@ rng AS (
   SELECT ADD_MONTHS(max_eom, -30) AS start_eom, max_eom FROM latest
 ),
 
+-- 1) system × month, filtered to Total Loans, cast to FLOAT8
+base AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.CONTRACT_SOURCE_SYSTEM,
+    CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8) AS SOURCE_SYSTEM_BALANCE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  GROUP BY 1,2
+),
+
+-- 2) row index per system (window only here)
+idx1 AS (
+  SELECT
+    b.*,
+    ROW_NUMBER() OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS rn
+  FROM base b
+),
+
+-- 3) materialize float index (no window use of fresh alias later)
+idx2 AS (
+  SELECT
+    i.*,
+    CAST(i.rn AS FLOAT8) AS rn_f
+  FROM idx1 i
+),
+
+-- 4) cumulative sums (window functions only here)
+csum AS (
+  SELECT
+    x.*,
+
+    -- cumulative sums for y and y^2
+    SUM(x.SOURCE_SYSTEM_BALANCE) OVER (
+      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
+    ) AS csum_y,
+
+    SUM(CAST(x.SOURCE_SYSTEM_BALANCE * x.SOURCE_SYSTEM_BALANCE AS FLOAT8)) OVER (
+      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
+    ) AS csum_y2,
+
+    -- cumulative x, x^2, and x*y
+    SUM(x.rn_f) OVER (
+      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
+    ) AS csum_x,
+
+    SUM(CAST(x.rn_f * x.rn_f AS FLOAT8)) OVER (
+      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
+    ) AS csum_x2,
+
+    SUM(CAST(x.rn_f * x.SOURCE_SYSTEM_BALANCE AS FLOAT8)) OVER (
+      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
+    ) AS csum_xy,
+
+    -- overall per-system moments for fallback sigma
+    COUNT(*) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM) AS cnt_all,
+    AVG(x.SOURCE_SYSTEM_BALANCE) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM) AS avg_all,
+    AVG(CAST(x.SOURCE_SYSTEM_BALANCE * x.SOURCE_SYSTEM_BALANCE AS FLOAT8))
+      OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM) AS avg2_all
+  FROM idx2 x
+),
+
+-- 5) build rolling windows via (csum - lag(csum)); also lag-12
+roll AS (
+  SELECT
+    c.*,
+
+    LEAST(c.rn, 6)  AS n6,
+    LEAST(c.rn, 12) AS n12,
+
+    -- 6-row rolling sums
+    (c.csum_y  - COALESCE(LAG(c.csum_y,  6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y,
+    (c.csum_y2 - COALESCE(LAG(c.csum_y2, 6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y2,
+
+    -- 12-row rolling sums for regression
+    (c.csum_x  - COALESCE(LAG(c.csum_x,  12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_x,
+    (c.csum_y  - COALESCE(LAG(c.csum_y,  12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_y,
+    (c.csum_x2 - COALESCE(LAG(c.csum_x2, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_x2,
+    (c.csum_xy - COALESCE(LAG(c.csum_xy, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_xy,
+
+    -- lag-12 seasonal anchor
+    LAG(c.SOURCE_SYSTEM_BALANCE, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE) AS lag12_balance
+  FROM csum c
+),
+
+-- 6) per-row stats (plain math; no window functions here)
+calc AS (
+  SELECT
+    r.*,
+
+    -- rolling mean (6)
+    CASE WHEN r.n6 > 0 THEN r.sum6_y / CAST(r.n6 AS FLOAT8) ELSE NULL END AS roll_mean_6,
+
+    -- sample std over last 6 rows: sqrt( max( (sum y^2 - (sum y)^2 / n) / (n-1), 0 ) )
+    CASE
+      WHEN r.n6 > 1 THEN
+        SQRT( GREATEST( (r.sum6_y2 - ( (r.sum6_y * r.sum6_y) / CAST(r.n6 AS FLOAT8) )), 0.0 ) / CAST(r.n6 - 1 AS FLOAT8) )
+      ELSE NULL
+    END AS roll_std_6,
+
+    -- regression slope / intercept over last up-to-12 rows
+    CASE
+      WHEN r.n12 >= 2 AND ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) ) <> 0.0
+        THEN ( (CAST(r.n12 AS FLOAT8) * r.sum12_xy) - (r.sum12_x * r.sum12_y) )
+             / ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) )
+      ELSE NULL
+    END AS regr_slope_12,
+
+    CASE
+      WHEN r.n12 >= 1 THEN
+        ( r.sum12_y
+          - ( COALESCE(
+                CASE
+                  WHEN r.n12 >= 2 AND ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) ) <> 0.0
+                    THEN ( (CAST(r.n12 AS FLOAT8) * r.sum12_xy) - (r.sum12_x * r.sum12_y) )
+                         / ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) )
+                  ELSE NULL
+                END, 0.0) * r.sum12_x ) ) / CAST(r.n12 AS FLOAT8)
+      ELSE NULL
+    END AS regr_intercept_12
+  FROM roll r
+),
+
+-- 7) last row per system (for next-period summary)
+last_per_sys AS (
+  SELECT c.*
+  FROM calc c
+  JOIN (
+    SELECT CONTRACT_SOURCE_SYSTEM, MAX(END_OF_MONTH_DATE) AS max_eom
+    FROM calc
+    GROUP BY CONTRACT_SOURCE_SYSTEM
+  ) m
+    ON c.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
+   AND c.END_OF_MONTH_DATE     = m.max_eom
+),
+
+-- 8) per-system next-period forecast + sigma and size
+summary_next AS (
+  SELECT
+    l.CONTRACT_SOURCE_SYSTEM,
+    l.END_OF_MONTH_DATE                                                                 AS last_period,
+    ADD_MONTHS(l.END_OF_MONTH_DATE, 1)                                                  AS next_period,
+    l.SOURCE_SYSTEM_BALANCE                                                             AS actual_last,
+
+    -- candidate forecasts
+    CASE
+      WHEN l.regr_slope_12 IS NOT NULL AND l.regr_intercept_12 IS NOT NULL
+        THEN l.regr_intercept_12 + l.regr_slope_12 * CAST(l.rn + 1 AS FLOAT8)
+      ELSE NULL
+    END                                                                                 AS fc_linear,
+    l.lag12_balance                                                                     AS fc_seasonal,
+    l.roll_mean_6                                                                       AS fc_rollmean,
+
+    -- choose forecast: linear → seasonal → rolling mean
+    COALESCE(
+      CASE
+        WHEN l.regr_slope_12 IS NOT NULL AND l.regr_intercept_12 IS NOT NULL
+          THEN l.regr_intercept_12 + l.regr_slope_12 * CAST(l.rn + 1 AS FLOAT8)
+        ELSE NULL
+      END,
+      l.lag12_balance,
+      l.roll_mean_6
+    )                                                                                   AS forecast_next,
+
+    -- sigma: prefer rolling-6 else overall sample std from moments
+    COALESCE(
+      l.roll_std_6,
+      CASE WHEN l.cnt_all > 1
+           THEN SQRT( GREATEST(l.avg2_all - (l.avg_all * l.avg_all), 0.0)
+                      * (CAST(l.cnt_all AS FLOAT8) / CAST(l.cnt_all - 1 AS FLOAT8)) )
+           ELSE NULL
+      END
+    )                                                                                   AS sigma_est,
+
+    l.avg_all                                                                           AS avg_level_sys
+  FROM last_per_sys l
+),
+
+-- 9) score + bands for the summary
+scored_next AS (
+  SELECT
+    s.CONTRACT_SOURCE_SYSTEM,
+    s.last_period,
+    s.next_period,
+    s.actual_last,
+    s.fc_linear,
+    s.fc_seasonal,
+    s.fc_rollmean,
+    s.forecast_next,
+
+    (s.forecast_next - 1.9599 * s.sigma_est)                                            AS pi95_lo,
+    (s.forecast_next + 1.9599 * s.sigma_est)                                            AS pi95_hi,
+
+    (s.actual_last - s.forecast_next)                                                   AS dev_abs_vs_last,
+    CASE WHEN s.forecast_next <> 0 THEN (s.actual_last - s.forecast_next) / s.forecast_next ELSE NULL END AS dev_pct_vs_last,
+    CASE WHEN s.sigma_est IS NOT NULL AND s.sigma_est > 0 THEN (s.actual_last - s.forecast_next) / s.sigma_est ELSE NULL END AS z_vs_last,
+
+    100.0 * (
+      0.5 * LEAST(ABS(CASE WHEN s.sigma_est IS NOT NULL AND s.sigma_est > 0 THEN (s.actual_last - s.forecast_next) / s.sigma_est ELSE 0 END) / 3.0, 1.0)
+    + 0.3 * LEAST(ABS(CASE WHEN s.forecast_next <> 0 THEN (s.actual_last - s.forecast_next) / s.forecast_next ELSE 0 END) / 0.10, 1.0)
+    + 0.2 * LEAST(ABS(s.actual_last - s.forecast_next) / NULLIF(s.avg_level_sys * 0.10, 0), 1.0)
+    )                                                                                   AS severity_0_100,
+
+    CASE
+      WHEN s.sigma_est IS NULL THEN NULL
+      WHEN s.actual_last < (s.forecast_next - 1.9599 * s.sigma_est) THEN TRUE
+      WHEN s.actual_last > (s.forecast_next + 1.9599 * s.sigma_est) THEN TRUE
+      ELSE FALSE
+    END                                                                                 AS outside_95_band_vs_last
+  FROM summary_next s
+)
+
+-- FINAL OUTPUT: union of full HISTORY and one-row-per-system SUMMARY_NEXT
+SELECT
+  'HISTORY'               AS row_type,
+  CONTRACT_SOURCE_SYSTEM,
+  END_OF_MONTH_DATE       AS period_date,
+  SOURCE_SYSTEM_BALANCE   AS actual,
+  roll_mean_6,
+  roll_std_6,
+  lag12_balance,
+  regr_slope_12,
+  regr_intercept_12,
+  NULL::FLOAT8            AS forecast_next,
+  NULL::FLOAT8            AS pi95_lo,
+  NULL::FLOAT8            AS pi95_hi,
+  NULL::FLOAT8            AS dev_abs_vs_last,
+  NULL::FLOAT8            AS dev_pct_vs_last,
+  NULL::FLOAT8            AS z_vs_last,
+  NULL::FLOAT8            AS severity_0_100,
+  NULL                    AS outside_95_band_vs_last
+FROM calc
+
+UNION ALL
+
+SELECT
+  'SUMMARY_NEXT'          AS row_type,
+  CONTRACT_SOURCE_SYSTEM,
+  next_period             AS period_date,
+  NULL::FLOAT8            AS actual,
+  NULL::FLOAT8            AS roll_mean_6,
+  NULL::FLOAT8            AS roll_std_6,
+  NULL::FLOAT8            AS lag12_balance,
+  NULL::FLOAT8            AS regr_slope_12,
+  NULL::FLOAT8            AS regr_intercept_12,
+  forecast_next,
+  pi95_lo,
+  pi95_hi,
+  dev_abs_vs_last,
+  dev_pct_vs_last,
+  z_vs_last,
+  severity_0_100,
+  outside_95_band_vs_last
+FROM scored_next
+
+ORDER BY CONTRACT_SOURCE_SYSTEM, period_date;
+
+
+
+
+
+WITH latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -30) AS start_eom, max_eom FROM latest
+),
+
 -- 1) system × month, cast to FLOAT8 early
 base AS (
   SELECT
