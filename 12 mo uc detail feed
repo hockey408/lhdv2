@@ -1,3 +1,237 @@
+-- Change this to -24 if you want exactly 24 months
+WITH latest AS (
+    SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+    FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+    WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+    SELECT ADD_MONTHS(max_eom, -30) AS start_eom, max_eom
+    FROM latest
+),
+-- 1) Aggregate to system x month within window
+base AS (
+    SELECT
+        t.END_OF_MONTH_DATE,
+        t.CONTRACT_SOURCE_SYSTEM,
+        SUM(t.SOURCE_SYSTEM_BALANCE) AS SOURCE_SYSTEM_BALANCE
+    FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+    CROSS JOIN rng r
+    WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+      AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+      -- Optional filters:
+      -- AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+      -- AND t.BANK_CODE IN ('L-FCB','L-CIT','L-SVB')
+    GROUP BY 1,2
+),
+-- 2) Index per system for trend math
+idx AS (
+    SELECT
+        END_OF_MONTH_DATE,
+        CONTRACT_SOURCE_SYSTEM,
+        SOURCE_SYSTEM_BALANCE,
+        DENSE_RANK() OVER (PARTITION BY CONTRACT_SOURCE_SYSTEM ORDER BY END_OF_MONTH_DATE) AS t_idx
+    FROM base
+),
+-- 3) Rolling baselines, seasonal anchor, and per-system level
+stats AS (
+    SELECT
+        i.*,
+        -- 6-month rolling mean/std (use 12 if you prefer)
+        AVG(SOURCE_SYSTEM_BALANCE) OVER (
+            PARTITION BY CONTRACT_SOURCE_SYSTEM
+            ORDER BY END_OF_MONTH_DATE
+            ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+        ) AS roll_mean_6,
+        STDDEV_SAMP(SOURCE_SYSTEM_BALANCE) OVER (
+            PARTITION BY CONTRACT_SOURCE_SYSTEM
+            ORDER BY END_OF_MONTH_DATE
+            ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+        ) AS roll_std_6,
+
+        -- Seasonal naive anchor (value 12 months ago)
+        LAG(SOURCE_SYSTEM_BALANCE, 12) OVER (
+            PARTITION BY CONTRACT_SOURCE_SYSTEM
+            ORDER BY END_OF_MONTH_DATE
+        ) AS lag12_balance,
+
+        -- Per-system average level (used to normalize impact)
+        AVG(SOURCE_SYSTEM_BALANCE) OVER (PARTITION BY CONTRACT_SOURCE_SYSTEM) AS avg_level_sys
+    FROM idx i
+),
+-- 4) Linear trend fit using regression aggregates on a 12-month rolling window (or fewer if not enough)
+trend AS (
+    SELECT
+        s.*,
+        -- slope/intercept of SSB vs time index over last up to 12 months
+        REGR_SLOPE(SOURCE_SYSTEM_BALANCE, t_idx) OVER (
+            PARTITION BY CONTRACT_SOURCE_SYSTEM
+            ORDER BY END_OF_MONTH_DATE
+            ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+        ) AS regr_slope_12,
+        REGR_INTERCEPT(SOURCE_SYSTEM_BALANCE, t_idx) OVER (
+            PARTITION BY CONTRACT_SOURCE_SYSTEM
+            ORDER BY END_OF_MONTH_DATE
+            ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+        ) AS regr_intercept_12
+    FROM stats s
+),
+-- 5) Last row per system (to compute NEXT-month forecast and severity vs last actual)
+last_per_sys AS (
+    SELECT t.*
+    FROM trend t
+    JOIN (
+        SELECT CONTRACT_SOURCE_SYSTEM, MAX(END_OF_MONTH_DATE) AS max_eom
+        FROM trend
+        GROUP BY CONTRACT_SOURCE_SYSTEM
+    ) m
+      ON t.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
+     AND t.END_OF_MONTH_DATE     = m.max_eom
+),
+-- 6) Build next-month summary per system
+summary_next AS (
+    SELECT
+        l.CONTRACT_SOURCE_SYSTEM,
+        l.END_OF_MONTH_DATE                         AS last_period,
+        ADD_MONTHS(l.END_OF_MONTH_DATE, 1)          AS next_period,
+        l.SOURCE_SYSTEM_BALANCE                     AS actual_last,
+
+        -- Next-month forecasts:
+        -- Linear trend (if regression available) at t_idx + 1
+        (CASE
+            WHEN l.regr_slope_12 IS NOT NULL AND l.regr_intercept_12 IS NOT NULL
+                 THEN l.regr_intercept_12 + l.regr_slope_12 * (l.t_idx + 1)
+            ELSE NULL
+         END)                                       AS fc_linear,
+
+        -- Seasonal naive (last year's same month)
+        l.lag12_balance                              AS fc_seasonal,
+
+        -- Choose forecast: linear > seasonal > rolling mean
+        COALESCE(
+            (CASE WHEN l.regr_slope_12 IS NOT NULL AND l.regr_intercept_12 IS NOT NULL
+                  THEN l.regr_intercept_12 + l.regr_slope_12 * (l.t_idx + 1)
+             END),
+            l.lag12_balance,
+            l.roll_mean_6
+        )                                            AS forecast_next,
+
+        -- Use rolling std as sigma proxy for PI (fallback to overall std if null)
+        COALESCE(l.roll_std_6,
+                 STDDEV_SAMP(l.SOURCE_SYSTEM_BALANCE) OVER (PARTITION BY l.CONTRACT_SOURCE_SYSTEM)) AS sigma_est,
+
+        l.avg_level_sys
+    FROM last_per_sys l
+),
+-- 7) Compute intervals, deviations, z, severity and flag
+scored_next AS (
+    SELECT
+        s.CONTRACT_SOURCE_SYSTEM,
+        s.last_period,
+        s.next_period,
+        s.actual_last,
+        s.fc_linear,
+        s.fc_seasonal,
+        s.forecast_next,
+
+        (s.forecast_next - (1.9599 * s.sigma_est))  AS pi95_lo,
+        (s.forecast_next + (1.9599 * s.sigma_est))  AS pi95_hi,
+
+        (s.actual_last - s.forecast_next)           AS dev_abs_vs_last,
+        CASE WHEN s.forecast_next <> 0
+             THEN (s.actual_last - s.forecast_next) / s.forecast_next
+             ELSE NULL
+        END                                         AS dev_pct_vs_last,
+
+        CASE WHEN s.sigma_est IS NOT NULL AND s.sigma_est > 0
+             THEN (s.actual_last - s.forecast_next) / s.sigma_est
+             ELSE NULL
+        END                                         AS z_vs_last,
+
+        -- Severity = 100 * (0.5 * z_term + 0.3 * pct_term + 0.2 * impact_term)
+        100 * (
+            0.5 * LEAST(ABS(CASE WHEN s.sigma_est IS NOT NULL AND s.sigma_est > 0
+                                 THEN (s.actual_last - s.forecast_next) / s.sigma_est
+                                 ELSE 0 END) / 3.0, 1.0)
+          + 0.3 * LEAST(ABS(CASE WHEN s.forecast_next <> 0
+                                 THEN (s.actual_last - s.forecast_next) / s.forecast_next
+                                 ELSE 0 END) / 0.10, 1.0)
+          + 0.2 * LEAST(ABS(s.actual_last - s.forecast_next) /
+                        NULLIF(s.avg_level_sys * 0.10, 0), 1.0)
+        )                                           AS severity_0_100,
+
+        CASE
+            WHEN s.sigma_est IS NULL THEN NULL
+            WHEN s.actual_last < (s.forecast_next - 1.9599 * s.sigma_est) THEN TRUE
+            WHEN s.actual_last > (s.forecast_next + 1.9599 * s.sigma_est) THEN TRUE
+            ELSE FALSE
+        END                                         AS outside_95_band_vs_last
+    FROM summary_next s
+),
+-- 8) History rows with rolling diagnostics (for charts / QA)
+history AS (
+    SELECT
+        'HISTORY'                                   AS row_type,
+        t.CONTRACT_SOURCE_SYSTEM,
+        t.END_OF_MONTH_DATE                         AS period_date,
+        t.SOURCE_SYSTEM_BALANCE                     AS actual,
+        t.roll_mean_6,
+        t.roll_std_6,
+        t.lag12_balance,
+        t.regr_slope_12,
+        t.regr_intercept_12,
+        t.avg_level_sys,
+        -- simple z-score vs rolling mean
+        CASE WHEN t.roll_std_6 IS NOT NULL AND t.roll_std_6 > 0
+             THEN (t.SOURCE_SYSTEM_BALANCE - t.roll_mean_6) / t.roll_std_6
+             ELSE NULL
+        END                                         AS z_vs_roll
+    FROM trend t
+)
+
+-- ===== Choose ONE of the following SELECTS =====
+
+-- (A) SUMMARY ONLY (one row per CONTRACT_SOURCE_SYSTEM for next month)
+-- SELECT
+--     'SUMMARY_NEXT'             AS row_type,
+--     s.CONTRACT_SOURCE_SYSTEM,
+--     s.last_period,
+--     s.next_period,
+--     s.actual_last,
+--     s.fc_linear,
+--     s.fc_seasonal,
+--     s.forecast_next,
+--     s.pi95_lo, s.pi95_hi,
+--     s.dev_abs_vs_last,
+--     s.dev_pct_vs_last,
+--     s.z_vs_last,
+--     s.severity_0_100,
+--     s.outside_95_band_vs_last
+-- FROM scored_next s
+-- ORDER BY s.severity_0_100 DESC, s.CONTRACT_SOURCE_SYSTEM;
+
+-- (B) HISTORY + SUMMARY together (filter in Excel/BI as needed)
+SELECT * FROM history
+UNION ALL
+SELECT
+    'SUMMARY_NEXT'               AS row_type,
+    s.CONTRACT_SOURCE_SYSTEM,
+    s.next_period                AS period_date,      -- use next-period date for summary rows
+    NULL                         AS actual,
+    NULL                         AS roll_mean_6,
+    NULL                         AS roll_std_6,
+    NULL                         AS lag12_balance,
+    NULL                         AS regr_slope_12,
+    NULL                         AS regr_intercept_12,
+    NULL                         AS avg_level_sys,
+    NULL                         AS z_vs_roll
+FROM scored_next s
+ORDER BY CONTRACT_SOURCE_SYSTEM, period_date;
+
+
+
+
+
+
 =PY("import numpy as np, pandas as pd
 try:
     from statsmodels.tsa.holtwinters import ExponentialSmoothing; _HAS_SM=True
