@@ -1,3 +1,76 @@
+import numpy as np, pandas as pd
+try:
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing; _HAS_SM=True
+except Exception:
+    _HAS_SM=False
+SP=12; H=1; Z80=1.2816; Z95=1.9599; WZ,WP,WI=0.5,0.3,0.2
+df=args[0].copy()
+df.columns=[c.strip().upper() for c in df.columns]
+req={'END_OF_MONTH_DATE','CONTRACT_SOURCE_SYSTEM','SOURCE_SYSTEM_BALANCE'}
+mis=req-set(df.columns)
+if mis: raise ValueError(f'Missing required columns: {mis}')
+df['END_OF_MONTH_DATE']=pd.to_datetime(df['END_OF_MONTH_DATE'])
+df['SOURCE_SYSTEM_BALANCE']=pd.to_numeric(df['SOURCE_SYSTEM_BALANCE'], errors='coerce')
+df=df.dropna(subset=['END_OF_MONTH_DATE','SOURCE_SYSTEM_BALANCE'])
+df=(df.groupby(['CONTRACT_SOURCE_SYSTEM','END_OF_MONTH_DATE'],as_index=False)['SOURCE_SYSTEM_BALANCE'].sum()
+       .sort_values(['CONTRACT_SOURCE_SYSTEM','END_OF_MONTH_DATE']))
+def rstd(r):
+    if r.size==0: return np.nan
+    med=np.nanmedian(r); mad=np.nanmedian(np.abs(r-med))
+    return 1.4826*mad if mad and mad>0 else (np.nanstd(r) if r.size>1 else np.nan)
+def s_naive(y,h,sp):
+    n=len(y); out=[]
+    for k in range(1,h+1):
+        out.append(y.iloc[n-sp] if n-sp>=0 else y.iloc[-1])
+    return pd.Series(out,index=range(h))
+def fit_fc(y,h,sp):
+    y=pd.Series(y.astype(float).values)
+    name='SeasonalNaive'; fit=None
+    if _HAS_SM:
+        try:
+            if len(y)>=2*sp:
+                fit=ExponentialSmoothing(y,trend='add',seasonal='add',seasonal_periods=sp,initialization_method='estimated').fit(optimized=True); name='ETS(A,A,A)'
+            elif len(y)>=6:
+                fit=ExponentialSmoothing(y,trend='add',seasonal=None,initialization_method='estimated').fit(optimized=True); name='ETS(A,A,N)'
+            else:
+                fit=ExponentialSmoothing(y,trend=None,seasonal=None,initialization_method='estimated').fit(optimized=True); name='SES'
+        except Exception:
+            fit=None
+        if fit is not None:
+            fv=pd.Series(fit.fittedvalues); fc=pd.Series(fit.forecast(H).values,index=range(H))
+            return name,fv,fc
+    fc=s_naive(y,H,sp)
+    fv=pd.Series(index=y.index,dtype=float)
+    if len(y)>sp:
+        fv.iloc[:sp]=y.values[0]; fv.iloc[sp:]=y.values[:-sp]
+    else:
+        fv[:]=np.nanmean(y.values)
+    return name,fv,fc
+rows=[]
+for sys,g in df.groupby('CONTRACT_SOURCE_SYSTEM',sort=False):
+    g=g.sort_values('END_OF_MONTH_DATE'); y=g['SOURCE_SYSTEM_BALANCE']
+    name,fv,fc=fit_fc(y,H,SP)
+    n=min(len(y),len(fv)); resid=(y.iloc[:n].values-np.nan_to_num(fv.iloc[:n].values,nan=np.nan)).astype(float)
+    resid=resid[~np.isnan(resid)]; sig=rstd(resid)
+    last_d=g['END_OF_MONTH_DATE'].iloc[-1]; last_a=float(y.iloc[-1]); med=float(np.nanmedian(y.values)) if len(y) else 1.0
+    for step in range(len(fc)):
+        f=float(fc.iloc[step]); next_d=last_d+pd.offsets.MonthEnd(step+1)
+        if sig is not None and np.isfinite(sig):
+            lo80,hi80=f-Z80*sig,f+Z80*sig; lo95,hi95=f-Z95*sig,f+Z95*sig
+        else:
+            lo80=hi80=lo95=hi95=np.nan
+        dev_abs=last_a-f; dev_pct=(dev_abs/f) if f!=0 else np.nan; z=(dev_abs/sig) if (sig is not None and np.isfinite(sig) and sig>0) else np.nan
+        zt=min(abs(z)/3.0,1.0) if pd.notna(z) else 0.0; pt=min(abs(dev_pct)/0.1,1.0) if pd.notna(dev_pct) else 0.0; it=min((abs(dev_abs)/(med*0.1)) if med>0 else 0.0,1.0)
+        sev=100.0*(WZ*zt+WP*pt+WI*it); flag95=(pd.notna(last_a) and pd.notna(lo95) and (last_a<lo95 or last_a>hi95))
+        rows.append({'CONTRACT_SOURCE_SYSTEM':sys,'MODEL':name,'LAST_PERIOD':last_d,'NEXT_PERIOD':next_d,'STEP_AHEAD':step+1,'ACTUAL_LAST':last_a,'FORECAST':f,'PI80_LO':lo80,'PI80_HI':hi80,'PI95_LO':lo95,'PI95_HI':hi95,'DEV_ABS_vs_LAST':dev_abs,'DEV_PCT_vs_LAST':dev_pct,'Z_SCORE_vs_LAST':z,'SEVERITY_0_100':sev,'OUTSIDE_95_BAND_vs_LAST':bool(flag95)})
+res=pd.DataFrame(rows).sort_values(['STEP_AHEAD','SEVERITY_0_100'],ascending=[True,False])
+return res
+
+
+
+
+
+
 =PY("import numpy as np, pandas as pd
 try:
     from statsmodels.tsa.holtwinters import ExponentialSmoothing; _HAS_SM=True
