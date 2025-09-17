@@ -1,3 +1,317 @@
+#!/usr/bin/env python3
+"""
+ssb_forecast.py
+
+End-to-end forecasting + anomaly scoring for SOURCE_SYSTEM_BALANCE (SSB) by CONTRACT_SOURCE_SYSTEM.
+
+Inputs
+------
+- An input file containing at least these columns:
+    END_OF_MONTH_DATE, CONTRACT_SOURCE_SYSTEM, SOURCE_SYSTEM_BALANCE
+- File can be .xlsx/.xls (Excel) or .csv
+
+Outputs
+-------
+- Excel file with 3 sheets:
+    1) Summary            -> per-system next-month forecast, PIs, severity rank
+    2) Forecast_Horizon   -> per-system multi-step forecasts (1..H)
+    3) Fitted_History     -> in-sample fitted values per system (for QA/plots)
+- (Optional) Per-system CSVs if --per_system_csv_dir is provided
+
+Usage
+-----
+python ssb_forecast.py --input data.xlsx --sheet Sheet1 --output ssb_forecast_output.xlsx --horizon 1 --seasonal_periods 12
+
+Notes
+-----
+- Uses statsmodels ExponentialSmoothing if installed; otherwise falls back to seasonal-naive.
+- Severity score blends Z-score surprise, percent deviation, and $ impact normalized by median system size.
+"""
+
+import argparse
+import os
+import sys
+from typing import Tuple, Optional
+
+import numpy as np
+import pandas as pd
+
+# Try to import statsmodels; fallback if unavailable
+_HAS_SM = True
+try:
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+except Exception:
+    _HAS_SM = False
+
+# -----------------------------
+# Config defaults
+# -----------------------------
+DEFAULT_SEASONAL_PERIODS = 12     # monthly data -> yearly seasonality
+DEFAULT_HORIZON = 1               # months ahead
+Z80 = 1.2816
+Z95 = 1.9599
+# Severity weights (z, percent, impact)
+WZ, WPCT, WIMP = 0.5, 0.3, 0.2
+
+REQUIRED_COLS = {'END_OF_MONTH_DATE', 'CONTRACT_SOURCE_SYSTEM', 'SOURCE_SYSTEM_BALANCE'}
+
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def robust_sigma(resid: np.ndarray) -> float:
+    """Robust sigma using MAD; fallback to std if needed."""
+    resid = resid[~np.isnan(resid)]
+    if resid.size == 0:
+        return np.nan
+    med = np.nanmedian(resid)
+    mad = np.nanmedian(np.abs(resid - med))
+    if mad and mad > 0:
+        return 1.4826 * mad
+    return float(np.nanstd(resid)) if resid.size > 1 else np.nan
+
+
+def seasonal_naive_forecast(y: pd.Series, h: int, sp: int) -> pd.Series:
+    """Seasonal naive: yhat(t+h) = y(t+h-sp)."""
+    out = []
+    n = len(y)
+    for k in range(1, h + 1):
+        idx = n - sp
+        out.append(y.iloc[idx] if idx >= 0 else y.iloc[-1])
+    return pd.Series(out, index=range(h), dtype=float)
+
+
+def fit_and_forecast(y: pd.Series, h: int, sp: int) -> Tuple[str, pd.Series, pd.Series]:
+    """Fit ETS if possible; else fallback to seasonal naive. Returns (model_name, fitted_vals, forecast)."""
+    y = pd.Series(pd.to_numeric(y, errors='coerce').astype(float).values)  # clean index 0..n-1, drop weird types
+    model_name = 'SeasonalNaive'
+    fitted_vals = pd.Series(index=y.index, dtype=float)
+
+    if _HAS_SM:
+        fit = None
+        # ETS(A,A,A) if long enough for seasonality
+        if len(y) >= 2 * sp:
+            try:
+                m = ExponentialSmoothing(
+                    y, trend='add', seasonal='add', seasonal_periods=sp, initialization_method='estimated'
+                )
+                fit = m.fit(optimized=True)
+                model_name = 'ETS(A,A,A)'
+            except Exception:
+                fit = None
+        # ETS(A,A,N) (trend, no season)
+        if fit is None and len(y) >= 6:
+            try:
+                m = ExponentialSmoothing(y, trend='add', seasonal=None, initialization_method='estimated')
+                fit = m.fit(optimized=True)
+                model_name = 'ETS(A,A,N)'
+            except Exception:
+                fit = None
+        # SES (no trend/season)
+        if fit is None:
+            try:
+                m = ExponentialSmoothing(y, trend=None, seasonal=None, initialization_method='estimated')
+                fit = m.fit(optimized=True)
+                model_name = 'SES'
+            except Exception:
+                fit = None
+
+        if fit is not None:
+            fitted_vals = pd.Series(fit.fittedvalues, index=y.index, dtype=float)
+            fcast = pd.Series(fit.forecast(h).values, index=range(h), dtype=float)
+            return model_name, fitted_vals, fcast
+
+    # Fallback: seasonal naive + pseudo-fitted
+    fcast = seasonal_naive_forecast(y, h=h, sp=sp)
+    if len(y) > sp:
+        fitted_vals.iloc[:sp] = y.values[0]
+        fitted_vals.iloc[sp:] = y.values[:-sp]
+    else:
+        fitted_vals[:] = float(np.nanmean(y.values))
+    return model_name, fitted_vals, fcast
+
+
+def load_input(path: str, sheet: Optional[str] = None) -> pd.DataFrame:
+    """Load data from CSV or Excel; return DataFrame."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ('.xlsx', '.xls'):
+        df = pd.read_excel(path, sheet_name=sheet)
+    elif ext == '.csv':
+        df = pd.read_csv(path)
+    else:
+        raise ValueError(f'Unsupported file extension: {ext}. Use .xlsx/.xls or .csv')
+    return df
+
+
+def normalize_and_aggregate(df: pd.DataFrame) -> pd.DataFrame:
+    """Standardize columns, ensure types, aggregate to system x month."""
+    df = df.copy()
+    df.columns = [c.strip().upper() for c in df.columns]
+    missing = REQUIRED_COLS - set(df.columns)
+    if missing:
+        raise ValueError(f'Missing required columns: {missing}')
+    df['END_OF_MONTH_DATE'] = pd.to_datetime(df['END_OF_MONTH_DATE'])
+    df['SOURCE_SYSTEM_BALANCE'] = pd.to_numeric(df['SOURCE_SYSTEM_BALANCE'], errors='coerce')
+    df = df.dropna(subset=['END_OF_MONTH_DATE', 'SOURCE_SYSTEM_BALANCE'])
+
+    # Aggregate in case duplicates exist at month/system
+    df = (df.groupby(['CONTRACT_SOURCE_SYSTEM', 'END_OF_MONTH_DATE'], as_index=False)['SOURCE_SYSTEM_BALANCE']
+            .sum()
+            .sort_values(['CONTRACT_SOURCE_SYSTEM', 'END_OF_MONTH_DATE']))
+    return df
+
+
+def compute_outputs(df: pd.DataFrame, horizon: int, sp: int) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    For each system:
+      - fit model, compute in-sample fitted/residuals/sigma
+      - create next H forecasts with simple normal-approx PIs from residual sigma
+      - compute severity vs last actual for step=1
+    Returns: (summary_df, horizon_df, fitted_history_df)
+    """
+    summary_rows = []
+    horizon_rows = []
+    fitted_rows = []
+
+    for system, g in df.groupby('CONTRACT_SOURCE_SYSTEM', sort=False):
+        g = g.sort_values('END_OF_MONTH_DATE')
+        y = g['SOURCE_SYSTEM_BALANCE'].astype(float)
+        last_date = g['END_OF_MONTH_DATE'].iloc[-1]
+        last_actual = float(y.iloc[-1])
+        med_level = float(np.nanmedian(y.values)) if len(y) else 1.0
+
+        model_name, fitted_vals, fcast = fit_and_forecast(y, h=horizon, sp=sp)
+
+        # Residuals & sigma (align lengths)
+        n = min(len(y), len(fitted_vals))
+        resid = (y.iloc[:n].values - fitted_vals.iloc[:n].values).astype(float)
+        sigma = robust_sigma(resid)
+
+        # Save fitted history rows
+        for t_idx, (dt, actual, fitted) in enumerate(zip(g['END_OF_MONTH_DATE'].iloc[:n], y.iloc[:n], fitted_vals.iloc[:n])):
+            fitted_rows.append({
+                'CONTRACT_SOURCE_SYSTEM': system,
+                'DATE': pd.to_datetime(dt),
+                'ACTUAL': float(actual),
+                'FITTED': float(fitted) if not np.isnan(fitted) else np.nan,
+                'MODEL': model_name
+            })
+
+        # Build horizon rows and summary for step=1
+        for step in range(len(fcast)):
+            f = float(fcast.iloc[step])
+            next_period = last_date + pd.offsets.MonthEnd(step + 1)
+
+            if sigma is not None and np.isfinite(sigma):
+                lo80, hi80 = f - Z80 * sigma, f + Z80 * sigma
+                lo95, hi95 = f - Z95 * sigma, f + Z95 * sigma
+            else:
+                lo80 = hi80 = lo95 = hi95 = np.nan
+
+            horizon_rows.append({
+                'CONTRACT_SOURCE_SYSTEM': system,
+                'MODEL': model_name,
+                'LAST_PERIOD': last_date,
+                'NEXT_PERIOD': next_period,
+                'STEP_AHEAD': step + 1,
+                'FORECAST': f,
+                'PI80_LO': lo80, 'PI80_HI': hi80,
+                'PI95_LO': lo95, 'PI95_HI': hi95
+            })
+
+            # Only compute severity vs last actual for step=1 (most actionable)
+            if step == 0:
+                dev_abs = last_actual - f
+                dev_pct = (dev_abs / f) if f != 0 else np.nan
+                zscore = (dev_abs / sigma) if (sigma is not None and np.isfinite(sigma) and sigma > 0) else np.nan
+
+                z_term = min(abs(zscore) / 3.0, 1.0) if not np.isnan(zscore) else 0.0  # cap ~3Ï
+                pct_term = min(abs(dev_pct) / 0.1, 1.0) if not np.isnan(dev_pct) else 0.0  # cap 10%
+                imp_term = min((abs(dev_abs) / (med_level * 0.1)) if med_level > 0 else 0.0, 1.0)  # 10% median cap
+
+                severity = 100.0 * (WZ * z_term + WPCT * pct_term + WIMP * imp_term)
+                flag95 = (not np.isnan(last_actual) and not np.isnan(lo95) and (last_actual < lo95 or last_actual > hi95))
+
+                summary_rows.append({
+                    'CONTRACT_SOURCE_SYSTEM': system,
+                    'MODEL': model_name,
+                    'LAST_PERIOD': last_date,
+                    'NEXT_PERIOD': next_period,
+                    'ACTUAL_LAST': last_actual,
+                    'FORECAST_NEXT': f,
+                    'PI80_LO': lo80, 'PI80_HI': hi80,
+                    'PI95_LO': lo95, 'PI95_HI': hi95,
+                    'DEV_ABS_vs_LAST': dev_abs,
+                    'DEV_PCT_vs_LAST': dev_pct,
+                    'Z_SCORE_vs_LAST': zscore,
+                    'SEVERITY_0_100': severity,
+                    'OUTSIDE_95_BAND_vs_LAST': bool(flag95)
+                })
+
+    summary_df = pd.DataFrame(summary_rows).sort_values('SEVERITY_0_100', ascending=False)
+    horizon_df = pd.DataFrame(horizon_rows).sort_values(['STEP_AHEAD', 'CONTRACT_SOURCE_SYSTEM'])
+    fitted_df = pd.DataFrame(fitted_rows).sort_values(['CONTRACT_SOURCE_SYSTEM', 'DATE'])
+    return summary_df, horizon_df, fitted_df
+
+
+def main():
+    p = argparse.ArgumentParser(description='Forecast SOURCE_SYSTEM_BALANCE per CONTRACT_SOURCE_SYSTEM with severity scoring.')
+    p.add_argument('--input', required=True, help='Input file path (.xlsx/.xls or .csv)')
+    p.add_argument('--sheet', default=None, help='Excel sheet name (if input is .xlsx/.xls)')
+    p.add_argument('--output', default='ssb_forecast_output.xlsx', help='Output Excel file path')
+    p.add_argument('--horizon', type=int, default=DEFAULT_HORIZON, help='Forecast horizon in months (default: 1)')
+    p.add_argument('--seasonal_periods', type=int, default=DEFAULT_SEASONAL_PERIODS, help='Seasonal periods (default: 12 for monthly)')
+    p.add_argument('--per_system_csv_dir', default=None, help='Optional dir to write per-system CSVs')
+    args = p.parse_args()
+
+    # Load and prep
+    df_raw = load_input(args.input, sheet=args.sheet)
+    df = normalize_and_aggregate(df_raw)
+
+    # Compute outputs
+    summary_df, horizon_df, fitted_df = compute_outputs(df, horizon=args.horizon, sp=args.seasonal_periods)
+
+    # Ensure output dir exists
+    out_dir = os.path.dirname(os.path.abspath(args.output))
+    if out_dir and not os.path.exists(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+
+    # Write Excel
+    with pd.ExcelWriter(args.output, engine='openpyxl') as xw:
+        summary_df.to_excel(xw, sheet_name='Summary', index=False)
+        horizon_df.to_excel(xw, sheet_name='Forecast_Horizon', index=False)
+        fitted_df.to_excel(xw, sheet_name='Fitted_History', index=False)
+
+    # Optional per-system CSVs
+    if args.per_system_csv_dir:
+        os.makedirs(args.per_system_csv_dir, exist_ok=True)
+        for sys_name, g in summary_df.groupby('CONTRACT_SOURCE_SYSTEM', sort=False):
+            safe = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in str(sys_name))
+            path = os.path.join(args.per_system_csv_dir, f'{safe}_summary.csv')
+            g.to_csv(path, index=False)
+        for sys_name, g in fitted_df.groupby('CONTRACT_SOURCE_SYSTEM', sort=False):
+            safe = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in str(sys_name))
+            path = os.path.join(args.per_system_csv_dir, f'{safe}_fitted_history.csv')
+            g.to_csv(path, index=False)
+        for sys_name, g in horizon_df.groupby('CONTRACT_SOURCE_SYSTEM', sort=False):
+            safe = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in str(sys_name))
+            path = os.path.join(args.per_system_csv_dir, f'{safe}_horizon.csv')
+            g.to_csv(path, index=False)
+
+    print(f'Wrote: {args.output}')
+    if args.per_system_csv_dir:
+        print(f'Per-system CSVs in: {args.per_system_csv_dir}')
+
+
+if __name__ == '__main__':
+    main()
+
+
+
+
+
+
+
 import numpy as np, pandas as pd
 try:
     from statsmodels.tsa.holtwinters import ExponentialSmoothing; _HAS_SM=True
