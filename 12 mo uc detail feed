@@ -1,3 +1,38 @@
+-- Pull ~30 months (24+ buffer) ending at the latest END_OF_MONTH_DATE in the table
+WITH latest AS (
+    SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+    FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+    WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+    SELECT ADD_MONTHS(max_eom, -30) AS start_eom, max_eom
+    FROM latest
+),
+base AS (
+    SELECT
+        END_OF_MONTH_DATE,
+        CONTRACT_SOURCE_SYSTEM,
+        SOURCE_SYSTEM_BALANCE
+    FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+    CROSS JOIN rng r
+    WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+      AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+      -- Optional filters you might want:
+      -- AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+      -- AND t.BANK_CODE IN ('L-FCB','L-CIT','L-SVB')
+)
+SELECT
+    END_OF_MONTH_DATE,
+    CONTRACT_SOURCE_SYSTEM,
+    SUM(SOURCE_SYSTEM_BALANCE) AS SOURCE_SYSTEM_BALANCE
+FROM base
+GROUP BY 1,2
+ORDER BY 1,2;
+
+
+
+
+
 -- === RC_CODE monthly trend + MoM variance + anomaly flags (last 12 months) ===
 WITH base AS (
     SELECT
