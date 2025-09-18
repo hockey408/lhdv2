@@ -1,3 +1,82 @@
+Date	Category	Description	 Amount 	Type
+9/6/2025	Coffee	Starbucks	 9.82 	Wants
+9/6/2025	Zyn	Shell	 6.00 	Wants
+9/6/2025	Snacks	Shell	 5.00 	Wants
+9/6/2025	Subscriptions	Netflix	 10.00 	Wants
+9/6/2025	Subscriptions	Hulu/Disney/ESPN	 10.00 	Wants
+9/6/2025	Clothing	J.Crew	 168.92 	Wants
+9/6/2025	Rent	Rent	 1,720.00 	Needs
+9/6/2025	Internet	Internet	 33.00 	Needs
+9/6/2025	Coffee	Starbucks	 3.86 	Wants
+9/6/2025	Alcohol	The Local	 13.00 	Wants
+9/6/2025	Alcohol	CVS	 12.00 	Wants
+9/6/2025	Alcohol	R-Day	 20.00 	Wants
+9/6/2025	Transit	Uber	 28.00 	Wants
+9/6/2025	Transit	Uber	 30.00 	Wants
+9/6/2025	Dining Out	Sizzle & Crunch	 30.20 	Wants
+9/7/2025	Coffee	Starbucks	 10.00 	Wants
+9/7/2025	Alcohol	Old Stove	 11.40 	Wants
+9/7/2025	Transit	Limes	 14.75 	Wants
+9/7/2025	Dining Out	Tom Douglas (Half Shell)	 76.91 	Wants
+9/7/2025	Dining Out	Mochinut	 20.97 	Wants
+9/7/2025	Entertainment	Toys	 32.73 	Wants
+9/7/2025	Coffee	Starbucks	 3.68 	Wants
+9/7/2025	Coffee	Starbucks	 3.68 	Wants
+9/7/2025	Groceries	Wholefoods	 12.00 	Needs
+9/7/2025	Coffee	Starbucks	 3.00 	Wants
+9/7/2025	Coffee	Starbucks	 8.18 	Wants
+9/7/2025	Snacks	Starbucks	 7.46 	Wants
+9/9/2025	Entertainment	Sandbox VR	 121.39 	Wants
+9/9/2025	Health & Fitness	Row House	 135.00 	Wants
+9/9/2025	Coffee	Starbucks	 4.00 	Wants
+9/9/2025	Dining Out	Starbucks	 7.00 	Wants
+9/9/2025	Transit	Parking Ticket	 123.00 	Wants
+9/10/2025	Snacks	CVS	 7.00 	Wants
+9/10/2025	Coffee	CVS	 13.00 	Wants
+9/11/2025	Transit	Parking Ticket	 93.50 	Wants
+9/11/2025	Dining Out	Jimmy John's	 18.09 	Wants
+9/11/2025	Dining Out	Thomas Street Tavern	 35.21 	Wants
+9/11/2025	Alcohol	Thomas Street Tavern	 20.00 	Wants
+9/12/2025	Coffee	Starbucks	 4.00 	Wants
+9/12/2025	Dining Out	Starbucks	 6.00 	Wants
+9/12/2025	Dining Out	Vitality Bowls	 16.53 	Wants
+9/12/2025	Snacks	CVS	 7.20 	Wants
+9/12/2025	Alcohol	CVS	 16.00 	Wants
+9/12/2025	Groceries	Wholefoods	 119.00 	Needs
+9/13/2025	Subscriptions	ChatGPT	 22.00 	Wants
+9/13/2025	Subscriptions	Apple iCloud Storage	 2.99 	Wants
+9/13/2025	Coffee	Starbucks	 10.65 	Wants
+9/13/2025	Zyn	Shell	 6.00 	Wants
+9/13/2025	Groceries	Wholefoods	 83.81 	Needs
+9/13/2025	Miscellaneous	Flowers for Kim	 42.80 	Wants
+9/13/2025	Alcohol	Urban Family	 35.00 	Wants
+9/14/2025	Groceries	Wholefoods	 17.63 	Needs
+9/14/2025	Travel	Chase Travel	 286.89 	Wants
+9/15/2025	Auto	Ford Credit	 605.00 	Needs
+9/15/2025	Student Loans	Mohela	 189.00 	Needs
+9/15/2025	Entertainment	Habs Ticket	 97.00 	Wants
+9/15/2025	Zyn	Shell	 6.59 	Wants
+9/15/2025	Pet Care	CVS	 17.00 	Wants
+9/15/2025	Alcohol	CVS	 16.00 	Wants
+9/15/2025	Snacks	CVS	 2.00 	Wants
+9/16/2025	Coffee	Starbucks	 3.81 	Wants
+9/16/2025	Dining Out	Starbucks	 7.13 	Wants
+9/16/2025	Utilities	Lights	 25.00 	Needs
+9/16/2025	Auto	Insurance	 308.82 	Needs
+9/17/2025	HOA	Kuester	 448.79 	Needs
+9/16/2025	Hockey	Jersey	 120.00 	Wants
+9/16/2025	Groceries	QFC	 126.77 	Needs
+9/16/2025	Gas	Chevron	 76.67 	Needs
+9/17/2025	Hockey	Tape	 4.34 	Wants
+9/17/2025	Hockey	Eagles	 1,005.00 	Wants
+9/17/2025	Zyn	Shell	 6.59 	Wants
+
+
+
+
+
+
+
 WITH latest AS (
   SELECT MAX(END_OF_MONTH_DATE) AS max_eom
   FROM V_DPRT_CREDIT_INSTRUMENTS_ME
