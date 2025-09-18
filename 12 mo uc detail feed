@@ -1,3 +1,25 @@
+1. Executive Overview (for documentation)
+
+Purpose:
+This analysis detects unusual month-over-month changes in SOURCE_SYSTEM_BALANCE by CONTRACT_SOURCE_SYSTEM (system-level balances), using rolling statistics, regression trends, and seasonality adjustments.
+
+Key Outputs:
+
+	•	HISTORY: De-seasonalized series with rolling mean, rolling std, and regression parameters
+	•	SUMMARY_BACKTEST_12M_SA: 12-month backtest comparing forecast vs. actual, with z-scores and severity ranking
+	•	SUMMARY_NEXT_FWD_SA: Forward forecast for next month, with prediction intervals
+
+How to Use:
+
+	•	Analysts review SUMMARY_BACKTEST_12M_SA to investigate high-severity anomalies (sorted descending).
+	•	Executives view the Power BI dashboard to understand portfolio stability, key drivers, and focus areas.
+
+
+
+
+
+
+
 WITH latest AS (
   SELECT MAX(END_OF_MONTH_DATE) AS max_eom
   FROM V_DPRT_CREDIT_INSTRUMENTS_ME
