@@ -1,3 +1,57 @@
+Field
+Meaning
+How to Interpret / Use
+row_type
+Which panel the row belongs to (HISTORY_LITE_MAIN, SUMMARY_HISTORICAL_ERROR_OD, etc.)
+Filter on this to drive visuals. Analysts will mostly focus on SUMMARY_ANOMALY_DETECTION_MAIN.
+CONTRACT_SOURCE_SYSTEM
+Unique source system identifier
+Dimension you’ll pivot on; group by this for system-level review.
+period_date
+Month-end date for the row
+Timeline dimension; order chronologically.
+actual
+Actual SOURCE_SYSTEM_BALANCE for that system/date
+The “truth” — compare to forecast_val to see deviation.
+forecast_val
+Predicted balance for the period based on prior month model (linear regression preferred, fallback to lag-12 or 6-mo mean)
+Used to measure surprise — if far from actual, flag as anomaly.
+sigma_est
+Estimated standard deviation (6-month rolling)
+Used for z-score and 95% confidence band; large sigma = more tolerant model.
+pi95_lo / pi95_hi
+95% prediction interval around forecast
+If actual lies outside, it’s statistically surprising.
+dev_abs
+Actual − Forecast (dollar variance)
+Positive = higher than expected, negative = lower than expected.
+dev_pct
+(Actual − Forecast) ÷ Forecast
+Size of surprise relative to expectation; >+10% or <-10% is material.
+z_score
+Number of sigmas away from forecast
+>3 or <-3 = statistically significant.
+severity_0_100
+Composite anomaly score (0–100): weighted combination of
+Use to rank anomalies. ≥80 = high priority review.
+outside_95_band
+Boolean if actual outside 95% PI
+A simple flag for “statistically significant deviation.”
+sigma_recent
+Rolling std (6-month) used in latest month only (in HISTORY_LITE)
+Helps analysts understand system volatility at current close.
+regr_slope_12
+12-month regression slope (trend)
+Positive = trend up, negative = trend down; can explain whether forecast momentum was reasonable.
+lag12_balance
+Actual balance from same month prior year
+Used as seasonal fallback; good for analysts to cross-check.
+
+
+
+
+
+
 /* ========= VARIANCE / ANOMALY QUERY with OD SEGMENTATION + BPLN EXCLUSION =========
    Unified output columns (16 columns, same order in every UNION arm):
    1)  row_type
