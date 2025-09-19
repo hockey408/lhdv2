@@ -1,3 +1,23 @@
+ACAR01-EXCPTN
+HUBFSV-EXCPTN
+INFL05-EXCPTN
+INFL10-EXCPTN
+LNIQ01-EXCPTN
+SBO001-EXCPTN
+STKY01-EXCPTN
+STRAT1-EXCPTN
+ALL
+GL
+LJ
+SYN
+FRDS_EXCPTN
+ADJ
+SYN
+
+
+
+
+
 /* ================== PARAMETERS ================== */
 /* Maintain list of synthetic systems here (or replace with a SELECT from a reference table) */
 WITH synthetic_list AS (
