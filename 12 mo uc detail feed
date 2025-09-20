@@ -1,3 +1,320 @@
+-- =========================
+-- Parameters (tune freely)
+-- =========================
+WITH params AS (
+  SELECT
+    'Total Loans'      AS target_lvl4,     -- optional GL layer filter
+    12                 AS months_back,     -- lookback for change log
+    CAST(500000.0 AS FLOAT8) AS dollar_anchor, -- scale for "large" $ moves
+    CAST(0.15     AS FLOAT8) AS pct_anchor     -- scale for "large" % moves (15%)
+),
+
+-- Anchor the window (need N months of points to compute N-1 deltas)
+latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT
+    ADD_MONTHS(l.max_eom, -(SELECT months_back FROM params)) AS start_eom,
+    l.max_eom AS max_eom
+  FROM latest l
+),
+
+-- ========================
+-- Monthly measures (SSB)
+-- ========================
+measures AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.CONTRACT_SOURCE_SYSTEM,
+    t.ACCOUNT_KEY,
+    CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8) AS SOURCE_SYSTEM_BALANCE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = (SELECT target_lvl4 FROM params)
+    -- OPTIONAL system filter:
+    -- AND t.CONTRACT_SOURCE_SYSTEM IN ('L-FCB_CORE','L-CIT_CORE','L-SVB_CORE')
+  GROUP BY 1,2,3
+),
+
+-- ==================================
+-- Monthly KDE attributes (your 9 KDEs)
+-- Use MAX() assuming single-valued per acct/month
+-- ==================================
+attr AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.CONTRACT_SOURCE_SYSTEM,
+    t.ACCOUNT_KEY,
+    MAX(t.PD_GRADE)            AS PD_GRADE,
+    MAX(t.NON_ACCRUAL_FLAG)    AS NON_ACCRUAL_FLAG,
+    MAX(t.DAYS_PAST_DUE)       AS DAYS_PAST_DUE,
+    MAX(t.MATURITY_DATE)       AS MATURITY_DATE,
+    MAX(t.RISK_UNIT)           AS RISK_UNIT,
+    MAX(t.FDIC_CALL_CODE)      AS FDIC_CALL_CODE,
+    MAX(t.LIFESTAGE)           AS LIFESTAGE,
+    MAX(t.NICHE_CD)            AS NICHE_CD,
+    MAX(t.RBC_CODE)            AS RBC_CODE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = (SELECT target_lvl4 FROM params)
+    -- OPTIONAL system filter:
+    -- AND t.CONTRACT_SOURCE_SYSTEM IN ('L-FCB_CORE','L-CIT_CORE','L-SVB_CORE')
+  GROUP BY 1,2,3
+),
+
+-- Merge measures + KDEs at same grain
+base AS (
+  SELECT
+    m.END_OF_MONTH_DATE,
+    m.CONTRACT_SOURCE_SYSTEM,
+    m.ACCOUNT_KEY,
+    m.SOURCE_SYSTEM_BALANCE,
+    a.PD_GRADE,
+    a.NON_ACCRUAL_FLAG,
+    a.DAYS_PAST_DUE,
+    a.MATURITY_DATE,
+    a.RISK_UNIT,
+    a.FDIC_CALL_CODE,
+    a.LIFESTAGE,
+    a.NICHE_CD,
+    a.RBC_CODE
+  FROM measures m
+  LEFT JOIN attr a
+    ON a.END_OF_MONTH_DATE      = m.END_OF_MONTH_DATE
+   AND a.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
+   AND a.ACCOUNT_KEY            = m.ACCOUNT_KEY
+),
+
+-- Compute prior values and balance deltas (for impact context only)
+chg AS (
+  SELECT
+    b.*,
+    LAG(b.END_OF_MONTH_DATE)     OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_EOM,
+    LAG(b.SOURCE_SYSTEM_BALANCE) OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_SSB,
+
+    LAG(b.PD_GRADE)           OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_PD_GRADE,
+    LAG(b.NON_ACCRUAL_FLAG)   OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_NON_ACCRUAL_FLAG,
+    LAG(b.DAYS_PAST_DUE)      OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_DAYS_PAST_DUE,
+    LAG(b.MATURITY_DATE)      OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_MATURITY_DATE,
+    LAG(b.RISK_UNIT)          OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_RISK_UNIT,
+    LAG(b.FDIC_CALL_CODE)     OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_FDIC_CALL_CODE,
+    LAG(b.LIFESTAGE)          OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_LIFESTAGE,
+    LAG(b.NICHE_CD)           OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_NICHE_CD,
+    LAG(b.RBC_CODE)           OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_RBC_CODE
+  FROM base b
+),
+
+-- Keep only rows that have a prior month
+delta AS (
+  SELECT
+    c.END_OF_MONTH_DATE,
+    c.PREV_EOM,
+    c.CONTRACT_SOURCE_SYSTEM,
+    c.ACCOUNT_KEY,
+
+    -- balances for impact scoring (not for triggering)
+    c.SOURCE_SYSTEM_BALANCE AS CURR_SSB,
+    c.PREV_SSB,
+    (COALESCE(c.SOURCE_SYSTEM_BALANCE,0) - COALESCE(c.PREV_SSB,0)) AS DELTA_DOLLAR,
+    CASE WHEN c.PREV_SSB IS NULL OR c.PREV_SSB = 0 THEN NULL
+         ELSE ((c.SOURCE_SYSTEM_BALANCE - c.PREV_SSB) / c.PREV_SSB) * 100 END AS DELTA_PCT,
+
+    -- KDEs: current/prior
+    c.PD_GRADE,             c.PREV_PD_GRADE,
+    c.NON_ACCRUAL_FLAG,     c.PREV_NON_ACCRUAL_FLAG,
+    c.DAYS_PAST_DUE,        c.PREV_DAYS_PAST_DUE,
+    c.MATURITY_DATE,        c.PREV_MATURITY_DATE,
+    c.RISK_UNIT,            c.PREV_RISK_UNIT,
+    c.FDIC_CALL_CODE,       c.PREV_FDIC_CALL_CODE,
+    c.LIFESTAGE,            c.PREV_LIFESTAGE,
+    c.NICHE_CD,             c.PREV_NICHE_CD,
+    c.RBC_CODE,             c.PREV_RBC_CODE
+  FROM chg c
+  WHERE c.PREV_EOM IS NOT NULL
+),
+
+-- ==========================================
+-- UNPIVOT: one row per KDE change (9 UNIONs)
+-- ==========================================
+kde_changes AS (
+  SELECT END_OF_MONTH_DATE, PREV_EOM, CONTRACT_SOURCE_SYSTEM, ACCOUNT_KEY,
+         'PD_GRADE' AS KDE,
+         CAST(PREV_PD_GRADE AS VARCHAR(200)) AS PREV_VAL,
+         CAST(PD_GRADE       AS VARCHAR(200)) AS CURR_VAL,
+         DELTA_DOLLAR, DELTA_PCT, CURR_SSB, PREV_SSB
+  FROM delta
+  WHERE ( (PD_GRADE <> PREV_PD_GRADE)
+       OR (PD_GRADE IS NULL AND PREV_PD_GRADE IS NOT NULL)
+       OR (PD_GRADE IS NOT NULL AND PREV_PD_GRADE IS NULL) )
+
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, PREV_EOM, CONTRACT_SOURCE_SYSTEM, ACCOUNT_KEY,
+         'NON_ACCRUAL_FLAG',
+         CAST(PREV_NON_ACCRUAL_FLAG AS VARCHAR(200)),
+         CAST(NON_ACCRUAL_FLAG      AS VARCHAR(200)),
+         DELTA_DOLLAR, DELTA_PCT, CURR_SSB, PREV_SSB
+  FROM delta
+  WHERE ( (NON_ACCRUAL_FLAG <> PREV_NON_ACCRUAL_FLAG)
+       OR (NON_ACCRUAL_FLAG IS NULL AND PREV_NON_ACCRUAL_FLAG IS NOT NULL)
+       OR (NON_ACCRUAL_FLAG IS NOT NULL AND PREV_NON_ACCRUAL_FLAG IS NULL) )
+
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, PREV_EOM, CONTRACT_SOURCE_SYSTEM, ACCOUNT_KEY,
+         'DAYS_PAST_DUE',
+         CAST(PREV_DAYS_PAST_DUE AS VARCHAR(200)),
+         CAST(DAYS_PAST_DUE      AS VARCHAR(200)),
+         DELTA_DOLLAR, DELTA_PCT, CURR_SSB, PREV_SSB
+  FROM delta
+  WHERE ( (DAYS_PAST_DUE <> PREV_DAYS_PAST_DUE)
+       OR (DAYS_PAST_DUE IS NULL AND PREV_DAYS_PAST_DUE IS NOT NULL)
+       OR (DAYS_PAST_DUE IS NOT NULL AND PREV_DAYS_PAST_DUE IS NULL) )
+
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, PREV_EOM, CONTRACT_SOURCE_SYSTEM, ACCOUNT_KEY,
+         'MATURITY_DATE',
+         CAST(PREV_MATURITY_DATE AS VARCHAR(200)),
+         CAST(MATURITY_DATE      AS VARCHAR(200)),
+         DELTA_DOLLAR, DELTA_PCT, CURR_SSB, PREV_SSB
+  FROM delta
+  WHERE ( (MATURITY_DATE <> PREV_MATURITY_DATE)
+       OR (MATURITY_DATE IS NULL AND PREV_MATURITY_DATE IS NOT NULL)
+       OR (MATURITY_DATE IS NOT NULL AND PREV_MATURITY_DATE IS NULL) )
+
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, PREV_EOM, CONTRACT_SOURCE_SYSTEM, ACCOUNT_KEY,
+         'RISK_UNIT',
+         CAST(PREV_RISK_UNIT AS VARCHAR(200)),
+         CAST(RISK_UNIT      AS VARCHAR(200)),
+         DELTA_DOLLAR, DELTA_PCT, CURR_SSB, PREV_SSB
+  FROM delta
+  WHERE ( (RISK_UNIT <> PREV_RISK_UNIT)
+       OR (RISK_UNIT IS NULL AND PREV_RISK_UNIT IS NOT NULL)
+       OR (RISK_UNIT IS NOT NULL AND PREV_RISK_UNIT IS NULL) )
+
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, PREV_EOM, CONTRACT_SOURCE_SYSTEM, ACCOUNT_KEY,
+         'FDIC_CALL_CODE',
+         CAST(PREV_FDIC_CALL_CODE AS VARCHAR(200)),
+         CAST(FDIC_CALL_CODE      AS VARCHAR(200)),
+         DELTA_DOLLAR, DELTA_PCT, CURR_SSB, PREV_SSB
+  FROM delta
+  WHERE ( (FDIC_CALL_CODE <> PREV_FDIC_CALL_CODE)
+       OR (FDIC_CALL_CODE IS NULL AND PREV_FDIC_CALL_CODE IS NOT NULL)
+       OR (FDIC_CALL_CODE IS NOT NULL AND PREV_FDIC_CALL_CODE IS NULL) )
+
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, PREV_EOM, CONTRACT_SOURCE_SYSTEM, ACCOUNT_KEY,
+         'LIFESTAGE',
+         CAST(PREV_LIFESTAGE AS VARCHAR(200)),
+         CAST(LIFESTAGE      AS VARCHAR(200)),
+         DELTA_DOLLAR, DELTA_PCT, CURR_SSB, PREV_SSB
+  FROM delta
+  WHERE ( (LIFESTAGE <> PREV_LIFESTAGE)
+       OR (LIFESTAGE IS NULL AND PREV_LIFESTAGE IS NOT NULL)
+       OR (LIFESTAGE IS NOT NULL AND PREV_LIFESTAGE IS NULL) )
+
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, PREV_EOM, CONTRACT_SOURCE_SYSTEM, ACCOUNT_KEY,
+         'NICHE_CD',
+         CAST(PREV_NICHE_CD AS VARCHAR(200)),
+         CAST(NICHE_CD      AS VARCHAR(200)),
+         DELTA_DOLLAR, DELTA_PCT, CURR_SSB, PREV_SSB
+  FROM delta
+  WHERE ( (NICHE_CD <> PREV_NICHE_CD)
+       OR (NICHE_CD IS NULL AND PREV_NICHE_CD IS NOT NULL)
+       OR (NICHE_CD IS NOT NULL AND PREV_NICHE_CD IS NULL) )
+
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, PREV_EOM, CONTRACT_SOURCE_SYSTEM, ACCOUNT_KEY,
+         'RBC_CODE',
+         CAST(PREV_RBC_CODE AS VARCHAR(200)),
+         CAST(RBC_CODE      AS VARCHAR(200)),
+         DELTA_DOLLAR, DELTA_PCT, CURR_SSB, PREV_SSB
+  FROM delta
+  WHERE ( (RBC_CODE <> PREV_RBC_CODE)
+       OR (RBC_CODE IS NULL AND PREV_RBC_CODE IS NOT NULL)
+       OR (RBC_CODE IS NOT NULL AND PREV_RBC_CODE IS NULL) )
+),
+
+-- Rolling z-score on $ delta per acct+system (computed on change rows)
+with_z AS (
+  SELECT
+    k.*,
+    AVG(DELTA_DOLLAR) OVER (
+      PARTITION BY ACCOUNT_KEY, CONTRACT_SOURCE_SYSTEM
+      ORDER BY END_OF_MONTH_DATE
+      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+    ) AS delta_avg_12,
+    STDDEV_SAMP(DELTA_DOLLAR) OVER (
+      PARTITION BY ACCOUNT_KEY, CONTRACT_SOURCE_SYSTEM
+      ORDER BY END_OF_MONTH_DATE
+      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+    ) AS delta_std_12
+  FROM kde_changes k
+),
+
+scored AS (
+  SELECT
+    w.*,
+    CASE WHEN w.delta_std_12 IS NULL OR w.delta_std_12 = 0
+         THEN NULL
+         ELSE (w.DELTA_DOLLAR - w.delta_avg_12) / w.delta_std_12
+    END AS DELTA_Z_12,
+
+    /* Impact score (0..~5):
+       - $: normalized by anchor, capped @1
+       - %: normalized by anchor, capped @1
+       - z: |z| capped @3
+    */
+    LEAST(1.0, ABS(w.DELTA_DOLLAR) / (SELECT dollar_anchor FROM params)) +
+    LEAST(1.0, COALESCE(ABS(w.DELTA_PCT)/100.0, 0.0) / (SELECT pct_anchor FROM params)) +
+    LEAST(3.0, ABS(COALESCE(
+        CASE WHEN w.delta_std_12 IS NULL OR w.delta_std_12 = 0 THEN NULL
+             ELSE (w.DELTA_DOLLAR - w.delta_avg_12) / w.delta_std_12
+        END, 0.0))
+    ) AS impact_score
+  FROM with_z w
+)
+
+-- ======================================================
+-- B) Most-recent-month KDE-change "suspects" (default)
+--    Sort by impact_score, then $ move.
+-- ======================================================
+SELECT
+  s.END_OF_MONTH_DATE,
+  s.CONTRACT_SOURCE_SYSTEM,
+  s.ACCOUNT_KEY,
+  s.KDE,
+  s.PREV_VAL,
+  s.CURR_VAL,
+  s.CURR_SSB, s.PREV_SSB,
+  s.DELTA_DOLLAR, s.DELTA_PCT, s.DELTA_Z_12,
+  ROUND(s.impact_score, 3) AS impact_score
+FROM scored s
+WHERE s.END_OF_MONTH_DATE = (SELECT max_eom FROM latest)
+ORDER BY impact_score DESC, ABS(DELTA_DOLLAR) DESC, KDE, ACCOUNT_KEY;
+
+/* ======================================================
+-- A) Full 12-month KDE change log (uncomment to use)
+SELECT
+  END_OF_MONTH_DATE, PREV_EOM,
+  CONTRACT_SOURCE_SYSTEM, ACCOUNT_KEY,
+  KDE, PREV_VAL, CURR_VAL,
+  CURR_SSB, PREV_SSB, DELTA_DOLLAR, DELTA_PCT, DELTA_Z_12,
+  ROUND(impact_score, 3) AS impact_score
+FROM scored
+ORDER BY END_OF_MONTH_DATE DESC, impact_score DESC, KDE, ACCOUNT_KEY;
+====================================================== */
+
+
+
+
+
 -- =========================================
 -- Params (edit anchors/weights to taste)
 -- =========================================
