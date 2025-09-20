@@ -1,3 +1,50 @@
+/* 2) Snapshot ATTRIBUTES per (account, month) — no UPDATE_TS/LOAD_TS needed */
+attr_snapshot AS (
+  SELECT *
+  FROM (
+    SELECT
+      t.END_OF_MONTH_DATE,
+      t.CONTRACT_SOURCE_SYSTEM,
+      t.ACCOUNT_KEY,
+
+      -- Attributes you want
+      t.FACILITY_ID,
+      t.RC_CODE,
+      t.RC_DESCRIPTION,
+      t.GL_ACCOUNT_HIER_LEVEL_4,
+      t.GL_ACCOUNT_CODE,
+      t.GL_ACCOUNT_DESCRIPTION,
+      t.NON_ACCRUAL_FLAG,
+      t.STATUS_CODE_DESCRIPTION,
+      t.MATURITY_DATE,
+
+      -- Heuristic tie-breaker: prefer rows that are more "material"/informative
+      ROW_NUMBER() OVER (
+        PARTITION BY t.ACCOUNT_KEY, t.END_OF_MONTH_DATE
+        ORDER BY
+          CASE WHEN t.NON_ACCRUAL_FLAG = 'Y' THEN 1 ELSE 0 END DESC,
+          COALESCE(t.GL_BALANCE,0)           DESC,
+          COALESCE(t.COMMITMENT_BALANCE,0)   DESC,
+          COALESCE(t.AVAILABLE_BALANCE,0)    DESC,
+          COALESCE(t.MATURITY_DATE, DATE '1900-01-01') DESC,
+          t.RC_CODE,
+          t.GL_ACCOUNT_CODE
+      ) AS rn
+    FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+    CROSS JOIN latest_month lm
+    CROSS JOIN prior_month pm
+    WHERE t.END_OF_MONTH_DATE IN (lm.max_eom, pm.prev_eom)
+      AND t.GL_ACCOUNT_HIER_LEVEL_4 = (SELECT target_lvl4 FROM params)
+      AND t.CONTRACT_SOURCE_SYSTEM IN ('L-FCB_CORE','L-CIT_CORE','L-SVB_CORE')  -- edit
+  ) s
+  WHERE rn = 1
+)
+
+
+
+
+
+
 -- ========= Parameters you edit =========
 -- Put the systems you want to research here
 WITH params AS (
