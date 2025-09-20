@@ -1,3 +1,35 @@
+=LET(
+  sys, [@CONTRACT_SOURCE_SYSTEM],
+  dt,  [@period_date],
+  SUMIFS(
+    tblVariance[actual],
+    tblVariance[CONTRACT_SOURCE_SYSTEM], sys,
+    tblVariance[row_type], "SUMMARY_ANOMALY_DETECTION_MAIN",
+    tblVariance[period_date], EDATE(dt,-1)
+  )
+)
+
+
+
+=LET(
+  prior, [@[Prior month actual]],
+  IF(prior="","", [@actual] - prior)
+)
+
+
+
+=LET(
+  prior, [@[Prior month actual]],
+  IF(prior<=0,"", [@[MoM Change ($)]] / prior)
+)
+
+
+
+
+
+
+
+
 =XLOOKUP(1,(tblVariance[CONTRACT_SOURCE_SYSTEM]=C3)*(tblVariance[period_date]=C2)*(tblVariance[row_type]="SUMMARY_ANOMALY_DETECTION_MAIN"),tblVariance[outside_95_band])
 
 
