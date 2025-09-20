@@ -1,3 +1,15 @@
+=AVERAGEIFS(tblVariance[actual],
+            tblVariance[row_type],{"SUMMARY_ANOMALY_DETECTION_MAIN","SUMMARY_ANOMALY_DETECTION_SYNTH","SUMMARY_ANOMALY_DETECTION_OD"},
+            tblVariance[period_date],MAX(tblVariance[period_date]))
+
+
+=RMSE_Latest / AvgActual_Latest
+
+
+
+
+
+
 =SQRT(AVERAGEIFS(tblVariance[Squared Error],
                  tblVariance[row_type],{"SUMMARY_ANOMALY_DETECTION_MAIN","SUMMARY_ANOMALY_DETECTION_SYNTH","SUMMARY_ANOMALY_DETECTION_OD"},
                  tblVariance[period_date],MAX(tblVariance[period_date])))
