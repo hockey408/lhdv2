@@ -1,3 +1,319 @@
+-- =========================================
+-- Params (edit anchors/weights to taste)
+-- =========================================
+WITH params AS (
+  SELECT
+    'Total Loans'       AS target_lvl4,     -- GL layer filter (optional)
+    12                  AS months_back,     -- lookback window for changes
+    1000000.0::FLOAT8   AS dollar_anchor,   -- $ scale: ~$1M => full 25 pts
+    0.20::FLOAT8        AS pct_anchor,      -- % scale: 20% => full 25 pts
+    5.0::FLOAT8         AS w_na_flip,       -- KDE weights (max sum = 22)
+    4.0::FLOAT8         AS w_rc_code,
+    3.0::FLOAT8         AS w_gl_l4,
+    3.0::FLOAT8         AS w_gl_code,
+    1.0::FLOAT8         AS w_gl_desc,
+    3.0::FLOAT8         AS w_facility,
+    2.0::FLOAT8         AS w_status_desc,
+    1.0::FLOAT8         AS w_maturity
+),
+
+-- Latest month and window start (need 13 months to compute 12 deltas)
+latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(l.max_eom, -(SELECT months_back FROM params)) AS start_eom,
+         l.max_eom AS max_eom
+  FROM latest l
+),
+
+-- =========================================
+-- Measures per (account_key, system, month)
+-- =========================================
+measures AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.CONTRACT_SOURCE_SYSTEM,
+    t.ACCOUNT_KEY,
+    CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8) AS SOURCE_SYSTEM_BALANCE,
+    CAST(SUM(t.GL_BALANCE)           AS FLOAT8) AS GL_BALANCE,
+    CAST(SUM(t.AVAILABLE_BALANCE)    AS FLOAT8) AS AVAILABLE_BALANCE,
+    CAST(SUM(t.COMMITMENT_BALANCE)   AS FLOAT8) AS COMMITMENT_BALANCE,
+    CAST(SUM(t.CHARGE_OFF_AMOUNT_ITD) AS FLOAT8) AS CHARGE_OFF_AMOUNT_ITD,
+    CAST(SUM(t.RECOVERY_AMOUNT_ITD)   AS FLOAT8) AS RECOVERY_AMOUNT_ITD,
+    CAST(SUM(t.NET_CHARGE_OFF_ITD)    AS FLOAT8) AS NET_CHARGE_OFF_ITD
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = (SELECT target_lvl4 FROM params)
+    -- Optional: limit to research systems
+    -- AND t.CONTRACT_SOURCE_SYSTEM IN ('L-FCB_CORE','L-CIT_CORE','L-SVB_CORE')
+  GROUP BY 1,2,3
+),
+
+-- =========================================
+-- KDE attributes per (account_key, system, month)
+-- Use MAX() assuming single-valued per acct/month; safe & fast.
+-- If attributes can vary within month, switch to ROW_NUMBER() snapshot.
+-- =========================================
+attr AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.CONTRACT_SOURCE_SYSTEM,
+    t.ACCOUNT_KEY,
+    MAX(t.FACILITY_ID)              AS FACILITY_ID,
+    MAX(t.RC_CODE)                  AS RC_CODE,
+    MAX(t.RC_DESCRIPTION)           AS RC_DESCRIPTION,
+    MAX(t.GL_ACCOUNT_HIER_LEVEL_4)  AS GL_ACCOUNT_HIER_LEVEL_4,
+    MAX(t.GL_ACCOUNT_CODE)          AS GL_ACCOUNT_CODE,
+    MAX(t.GL_ACCOUNT_DESCRIPTION)   AS GL_ACCOUNT_DESCRIPTION,
+    MAX(t.NON_ACCRUAL_FLAG)         AS NON_ACCRUAL_FLAG,
+    MAX(t.STATUS_CODE_DESCRIPTION)  AS STATUS_CODE_DESCRIPTION,
+    MAX(t.MATURITY_DATE)            AS MATURITY_DATE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = (SELECT target_lvl4 FROM params)
+    -- Optional: same system filter as measures
+    -- AND t.CONTRACT_SOURCE_SYSTEM IN ('L-FCB_CORE','L-CIT_CORE','L-SVB_CORE')
+  GROUP BY 1,2,3
+),
+
+-- Base: measures + attributes at same grain
+base AS (
+  SELECT
+    m.END_OF_MONTH_DATE,
+    m.CONTRACT_SOURCE_SYSTEM,
+    m.ACCOUNT_KEY,
+    -- KDEs
+    a.FACILITY_ID,
+    a.RC_CODE,
+    a.RC_DESCRIPTION,
+    a.GL_ACCOUNT_HIER_LEVEL_4,
+    a.GL_ACCOUNT_CODE,
+    a.GL_ACCOUNT_DESCRIPTION,
+    a.NON_ACCRUAL_FLAG,
+    a.STATUS_CODE_DESCRIPTION,
+    a.MATURITY_DATE,
+    -- Measures
+    m.SOURCE_SYSTEM_BALANCE,
+    m.GL_BALANCE,
+    m.AVAILABLE_BALANCE,
+    m.COMMITMENT_BALANCE,
+    m.CHARGE_OFF_AMOUNT_ITD,
+    m.RECOVERY_AMOUNT_ITD,
+    m.NET_CHARGE_OFF_ITD
+  FROM measures m
+  LEFT JOIN attr a
+    ON a.END_OF_MONTH_DATE      = m.END_OF_MONTH_DATE
+   AND a.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
+   AND a.ACCOUNT_KEY            = m.ACCOUNT_KEY
+),
+
+-- =========================================
+-- Compute MoM prev values and change flags
+-- =========================================
+changes AS (
+  SELECT
+    b.*,
+    LAG(b.END_OF_MONTH_DATE)        OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_EOM,
+    LAG(b.SOURCE_SYSTEM_BALANCE)    OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_SSB,
+    LAG(b.FACILITY_ID)              OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_FACILITY_ID,
+    LAG(b.RC_CODE)                  OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_RC_CODE,
+    LAG(b.RC_DESCRIPTION)           OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_RC_DESCRIPTION,
+    LAG(b.GL_ACCOUNT_HIER_LEVEL_4)  OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_GL_L4,
+    LAG(b.GL_ACCOUNT_CODE)          OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_GL_CODE,
+    LAG(b.GL_ACCOUNT_DESCRIPTION)   OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_GL_DESC,
+    LAG(b.NON_ACCRUAL_FLAG)         OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_NA_FLAG,
+    LAG(b.STATUS_CODE_DESCRIPTION)  OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_STATUS_DESC,
+    LAG(b.MATURITY_DATE)            OVER (PARTITION BY b.ACCOUNT_KEY, b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS PREV_MATURITY_DATE
+  FROM base b
+),
+
+-- Only rows that have a prior month within window
+delta AS (
+  SELECT
+    c.END_OF_MONTH_DATE,
+    c.CONTRACT_SOURCE_SYSTEM,
+    c.ACCOUNT_KEY,
+
+    -- Current values
+    c.SOURCE_SYSTEM_BALANCE AS CURR_SSB,
+    c.FACILITY_ID           AS CURR_FACILITY_ID,
+    c.RC_CODE               AS CURR_RC_CODE,
+    c.RC_DESCRIPTION        AS CURR_RC_DESCRIPTION,
+    c.GL_ACCOUNT_HIER_LEVEL_4 AS CURR_GL_L4,
+    c.GL_ACCOUNT_CODE       AS CURR_GL_CODE,
+    c.GL_ACCOUNT_DESCRIPTION AS CURR_GL_DESC,
+    c.NON_ACCRUAL_FLAG      AS CURR_NA_FLAG,
+    c.STATUS_CODE_DESCRIPTION AS CURR_STATUS_DESC,
+    c.MATURITY_DATE         AS CURR_MATURITY_DATE,
+
+    -- Prior values
+    c.PREV_EOM,
+    c.PREV_SSB,
+    c.PREV_FACILITY_ID,
+    c.PREV_RC_CODE,
+    c.PREV_RC_DESCRIPTION,
+    c.PREV_GL_L4,
+    c.PREV_GL_CODE,
+    c.PREV_GL_DESC,
+    c.PREV_NA_FLAG,
+    c.PREV_STATUS_DESC,
+    c.PREV_MATURITY_DATE,
+
+    -- $ and % deltas
+    (COALESCE(c.SOURCE_SYSTEM_BALANCE,0) - COALESCE(c.PREV_SSB,0)) AS DELTA_DOLLAR,
+    CASE WHEN c.PREV_SSB IS NULL OR c.PREV_SSB = 0
+         THEN NULL
+         ELSE ((c.SOURCE_SYSTEM_BALANCE - c.PREV_SSB) / c.PREV_SSB) * 100
+    END AS DELTA_PCT,
+
+    -- KDE change flags (null-safe comparisons)
+    CASE WHEN (c.CURR_FACILITY_ID <> c.PREV_FACILITY_ID)
+        OR (c.CURR_FACILITY_ID IS NULL AND c.PREV_FACILITY_ID IS NOT NULL)
+        OR (c.CURR_FACILITY_ID IS NOT NULL AND c.PREV_FACILITY_ID IS NULL) THEN 1 ELSE 0 END AS CHG_FACILITY,
+
+    CASE WHEN (c.CURR_RC_CODE <> c.PREV_RC_CODE)
+        OR (c.CURR_RC_CODE IS NULL AND c.PREV_RC_CODE IS NOT NULL)
+        OR (c.CURR_RC_CODE IS NOT NULL AND c.PREV_RC_CODE IS NULL) THEN 1 ELSE 0 END AS CHG_RC_CODE,
+
+    CASE WHEN (c.CURR_GL_L4 <> c.PREV_GL_L4)
+        OR (c.CURR_GL_L4 IS NULL AND c.PREV_GL_L4 IS NOT NULL)
+        OR (c.CURR_GL_L4 IS NOT NULL AND c.PREV_GL_L4 IS NULL) THEN 1 ELSE 0 END AS CHG_GL_L4,
+
+    CASE WHEN (c.CURR_GL_CODE <> c.PREV_GL_CODE)
+        OR (c.CURR_GL_CODE IS NULL AND c.PREV_GL_CODE IS NOT NULL)
+        OR (c.CURR_GL_CODE IS NOT NULL AND c.PREV_GL_CODE IS NULL) THEN 1 ELSE 0 END AS CHG_GL_CODE,
+
+    CASE WHEN (c.CURR_GL_DESC <> c.PREV_GL_DESC)
+        OR (c.CURR_GL_DESC IS NULL AND c.PREV_GL_DESC IS NOT NULL)
+        OR (c.CURR_GL_DESC IS NOT NULL AND c.PREV_GL_DESC IS NULL) THEN 1 ELSE 0 END AS CHG_GL_DESC,
+
+    CASE WHEN (c.CURR_NA_FLAG <> c.PREV_NA_FLAG)
+        OR (c.CURR_NA_FLAG IS NULL AND c.PREV_NA_FLAG IS NOT NULL)
+        OR (c.CURR_NA_FLAG IS NOT NULL AND c.PREV_NA_FLAG IS NULL) THEN 1 ELSE 0 END AS CHG_NON_ACCRUAL,
+
+    CASE WHEN (c.CURR_STATUS_DESC <> c.PREV_STATUS_DESC)
+        OR (c.CURR_STATUS_DESC IS NULL AND c.PREV_STATUS_DESC IS NOT NULL)
+        OR (c.CURR_STATUS_DESC IS NOT NULL AND c.PREV_STATUS_DESC IS NULL) THEN 1 ELSE 0 END AS CHG_STATUS_DESC,
+
+    CASE WHEN (c.CURR_MATURITY_DATE <> c.PREV_MATURITY_DATE)
+        OR (c.CURR_MATURITY_DATE IS NULL AND c.PREV_MATURITY_DATE IS NOT NULL)
+        OR (c.CURR_MATURITY_DATE IS NOT NULL AND c.PREV_MATURITY_DATE IS NULL) THEN 1 ELSE 0 END AS CHG_MATURITY
+  FROM changes c
+  WHERE c.PREV_EOM IS NOT NULL
+),
+
+-- =========================================
+-- Severity scoring and rolling Z-score
+-- =========================================
+scored AS (
+  SELECT
+    d.*,
+    -- Monetary subscore (0..50): 25 from $ move, 25 from % move (anchors cap)
+    (CASE
+       WHEN ABS(d.DELTA_DOLLAR) >= (SELECT dollar_anchor FROM params)
+       THEN 25.0
+       ELSE 25.0 * (ABS(d.DELTA_DOLLAR) / (SELECT dollar_anchor FROM params))
+     END)
+    +
+    (CASE
+       WHEN d.DELTA_PCT IS NULL THEN 0.0
+       WHEN ABS(d.DELTA_PCT)/100.0 >= (SELECT pct_anchor FROM params)
+       THEN 25.0
+       ELSE 25.0 * ((ABS(d.DELTA_PCT)/100.0) / (SELECT pct_anchor FROM params))
+     END)                                        AS monetary_score_0_50,
+
+    -- KDE subscore (0..50): scale sum of weights by max sum (22)
+    50.0 * (
+      (d.CHG_NON_ACCRUAL * (SELECT w_na_flip      FROM params)) +
+      (d.CHG_RC_CODE     * (SELECT w_rc_code      FROM params)) +
+      (d.CHG_GL_L4       * (SELECT w_gl_l4        FROM params)) +
+      (d.CHG_GL_CODE     * (SELECT w_gl_code      FROM params)) +
+      (d.CHG_GL_DESC     * (SELECT w_gl_desc      FROM params)) +
+      (d.CHG_FACILITY    * (SELECT w_facility     FROM params)) +
+      (d.CHG_STATUS_DESC * (SELECT w_status_desc  FROM params)) +
+      (d.CHG_MATURITY    * (SELECT w_maturity     FROM params))
+    ) / 22.0                                      AS kde_score_0_50,
+
+    -- Rolling 12 (including current) Z-score of $ delta per acct+system
+    AVG(d.DELTA_DOLLAR) OVER (
+      PARTITION BY d.ACCOUNT_KEY, d.CONTRACT_SOURCE_SYSTEM
+      ORDER BY d.END_OF_MONTH_DATE
+      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+    ) AS delta_avg_12,
+    STDDEV_SAMP(d.DELTA_DOLLAR) OVER (
+      PARTITION BY d.ACCOUNT_KEY, d.CONTRACT_SOURCE_SYSTEM
+      ORDER BY d.END_OF_MONTH_DATE
+      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+    ) AS delta_std_12
+  FROM delta d
+),
+
+final AS (
+  SELECT
+    s.*,
+    CASE
+      WHEN s.delta_std_12 IS NULL OR s.delta_std_12 = 0 THEN NULL
+      ELSE (s.DELTA_DOLLAR - s.delta_avg_12) / s.delta_std_12
+    END AS delta_z_12,
+    ROUND(s.monetary_score_0_50 + s.kde_score_0_50, 1) AS severity_0_100,
+
+    -- Compact list of changed KDEs
+    TRIM(BOTH ',' FROM
+      (CASE WHEN CHG_NON_ACCRUAL = 1 THEN ',NON_ACCRUAL' ELSE '' END) ||
+      (CASE WHEN CHG_RC_CODE     = 1 THEN ',RC_CODE'     ELSE '' END) ||
+      (CASE WHEN CHG_GL_L4       = 1 THEN ',GL_L4'       ELSE '' END) ||
+      (CASE WHEN CHG_GL_CODE     = 1 THEN ',GL_CODE'     ELSE '' END) ||
+      (CASE WHEN CHG_GL_DESC     = 1 THEN ',GL_DESC'     ELSE '' END) ||
+      (CASE WHEN CHG_FACILITY    = 1 THEN ',FACILITY'    ELSE '' END) ||
+      (CASE WHEN CHG_STATUS_DESC = 1 THEN ',STATUS'      ELSE '' END) ||
+      (CASE WHEN CHG_MATURITY    = 1 THEN ',MATURITY'    ELSE '' END)
+    ) AS changed_fields
+  FROM scored s
+)
+
+SELECT
+  END_OF_MONTH_DATE, PREV_EOM,
+  CONTRACT_SOURCE_SYSTEM,
+  ACCOUNT_KEY,
+
+  -- Balance context
+  PREV_SSB, CURR_SSB,
+  DELTA_DOLLAR, DELTA_PCT, delta_z_12,
+
+  -- KDE old/new (curr shown here; join back to attr if you also want explicit prev text values)
+  CURR_RC_CODE, CURR_RC_DESCRIPTION,
+  CURR_GL_L4,   CURR_GL_CODE, CURR_GL_DESC,
+  CURR_FACILITY_ID, CURR_STATUS_DESC, CURR_NA_FLAG, CURR_MATURITY_DATE,
+
+  -- KDE flags
+  CHG_RC_CODE, CHG_GL_L4, CHG_GL_CODE, CHG_GL_DESC,
+  CHG_FACILITY, CHG_STATUS_DESC, CHG_NON_ACCRUAL, CHG_MATURITY,
+  changed_fields,
+
+  -- Scores
+  ROUND(monetary_score_0_50, 1) AS monetary_score_0_50,
+  ROUND(kde_score_0_50, 1)      AS kde_score_0_50,
+  severity_0_100
+
+FROM final
+-- Focus on real movement or any KDE change; comment WHERE to see all rows
+WHERE (COALESCE(CURR_SSB,0) <> COALESCE(PREV_SSB,0))
+   OR (CHG_RC_CODE + CHG_GL_L4 + CHG_GL_CODE + CHG_GL_DESC
+     + CHG_FACILITY + CHG_STATUS_DESC + CHG_NON_ACCRUAL + CHG_MATURITY) > 0
+ORDER BY severity_0_100 DESC, ABS(DELTA_DOLLAR) DESC, END_OF_MONTH_DATE DESC;
+
+
+
+
+
+
+
+
 /* 2) Snapshot ATTRIBUTES per (account, month) — no UPDATE_TS/LOAD_TS needed */
 attr_snapshot AS (
   SELECT *
