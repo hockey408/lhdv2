@@ -1,3 +1,21 @@
+=EOMONTH(
+  MAX( FILTER( tblVariance[period_date], ISNUMBER(tblVariance[period_date]) ) ),
+0)
+
+
+=EOMONTH(
+  MAX(
+    FILTER(
+      tblVariance[period_date],
+      (tblVariance[row_type]="SUMMARY_ANOMALY_DETECTION_MAIN")*
+      ISNUMBER(tblVariance[period_date])
+    )
+  ),
+0)
+
+
+
+
 =LET(
   sys, [@CONTRACT_SOURCE_SYSTEM],
   dt,  [@period_date],
