@@ -1,3 +1,27 @@
+=SQRT(AVERAGEIFS(tblVariance[Squared Error],
+                 tblVariance[row_type],{"SUMMARY_ANOMALY_DETECTION_MAIN","SUMMARY_ANOMALY_DETECTION_SYNTH","SUMMARY_ANOMALY_DETECTION_OD"},
+                 tblVariance[period_date],MAX(tblVariance[period_date])))
+
+
+=SQRT(AVERAGEIFS(tblVariance[Squared Error],
+                 tblVariance[row_type],{"SUMMARY_ANOMALY_DETECTION_MAIN","SUMMARY_ANOMALY_DETECTION_SYNTH","SUMMARY_ANOMALY_DETECTION_OD"},
+                 tblVariance[period_date],MAX(tblVariance[period_date])))
+
+
+=SQRT(AVERAGEIFS(tblVariance[Squared Error],
+                 tblVariance[row_type],"SUMMARY_HISTORICAL_ERROR_MAIN"))
+
+
+
+
+
+
+
+
+
+
+
+
 /* ========= ANOMALY / VARIANCE with OUTLIER FILTER + 13 MONTHS + REGRESSION =========
    Excludes: systems with $0 balance for the entire 13-month window (“$0 for over a year”).
    Also excludes: CONTRACT_SOURCE_SYSTEM = 'BPLN'.
