@@ -1,3 +1,73 @@
+WITH latest_month AS (
+    SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+    FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+    WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+prior_month AS (
+    SELECT ADD_MONTHS(max_eom, -1) AS prev_eom
+    FROM latest_month
+),
+
+-- 1) Base pull for both months, now at ACCOUNT_IDENTIFIER granularity
+base AS (
+    SELECT
+        t.END_OF_MONTH_DATE,
+        t.CONTRACT_SOURCE_SYSTEM,
+        t.ACCOUNT_IDENTIFIER,
+        CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8) AS SOURCE_SYSTEM_BALANCE
+        -- >>> PLACEHOLDER: Add additional fields here for research <<<
+    FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+    CROSS JOIN latest_month lm
+    CROSS JOIN prior_month pm
+    WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+      AND t.END_OF_MONTH_DATE IN (lm.max_eom, pm.prev_eom)
+      AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+      AND t.CONTRACT_SOURCE_SYSTEM IN (
+            -- List only the systems you want to research:
+            'L-FCB_CORE', 'L-CIT_CORE', 'L-SVB_CORE'
+      )
+    GROUP BY 1,2,3
+),
+
+-- 2) Pivot into current/prior columns per account
+pivoted AS (
+    SELECT
+        ACCOUNT_IDENTIFIER,
+        CONTRACT_SOURCE_SYSTEM,
+        MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom FROM latest_month) THEN SOURCE_SYSTEM_BALANCE END) AS CURR_BAL,
+        MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM prior_month) THEN SOURCE_SYSTEM_BALANCE END) AS PREV_BAL
+    FROM base
+    GROUP BY ACCOUNT_IDENTIFIER, CONTRACT_SOURCE_SYSTEM
+)
+
+-- 3) Final Output
+SELECT
+    ACCOUNT_IDENTIFIER,
+    CONTRACT_SOURCE_SYSTEM,
+    PREV_BAL,
+    CURR_BAL,
+    (CURR_BAL - PREV_BAL) AS MOM_CHANGE_DOLLAR,
+    CASE 
+        WHEN PREV_BAL = 0 THEN NULL
+        ELSE ((CURR_BAL - PREV_BAL) / PREV_BAL) * 100
+    END AS MOM_CHANGE_PCT
+FROM pivoted
+WHERE (CURR_BAL - PREV_BAL) <> 0 -- only show accounts with change
+ORDER BY ABS(CURR_BAL - PREV_BAL) DESC;  -- biggest movers first
+
+
+
+CASE 
+    WHEN PREV_BAL IS NULL THEN 'NEW'
+    WHEN CURR_BAL IS NULL THEN 'CLOSED'
+    ELSE 'EXISTING'
+END AS ACCOUNT_STATUS
+
+
+
+
+
+
 =IFERROR(
   SUMIFS(
     tblVariance[actual],
