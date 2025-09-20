@@ -1,3 +1,11 @@
+=XLOOKUP(1,(tblVariance[CONTRACT_SOURCE_SYSTEM]=C3)*(tblVariance[period_date]=C2)*(tblVariance[row_type]="SUMMARY_ANOMALY_DETECTION_MAIN"),tblVariance[outside_95_band])
+
+
+
+
+
+
+
 =SUMPRODUCT(
    (tblVariance[row_type]="SUMMARY_ANOMALY_DETECTION_MAIN")*
    (tblVariance[period_date]=LatestMonth)*
