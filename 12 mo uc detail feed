@@ -2,6 +2,19 @@
   SUMIFS(
     tblVariance[actual],
     tblVariance[CONTRACT_SOURCE_SYSTEM], [@CONTRACT_SOURCE_SYSTEM],
+    tblVariance[row_type],               "SUMMARY_HISTORICAL_ERROR_MAIN",
+    tblVariance[period_date],            EDATE([@period_date],-1)
+  ),
+"")
+
+
+
+
+
+=IFERROR(
+  SUMIFS(
+    tblVariance[actual],
+    tblVariance[CONTRACT_SOURCE_SYSTEM], [@CONTRACT_SOURCE_SYSTEM],
     tblVariance[row_type],               "SUMMARY_ANOMALY_DETECTION_MAIN",
     tblVariance[period_date],            EDATE([@period_date],-1)
   ),
