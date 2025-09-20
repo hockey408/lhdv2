@@ -1,3 +1,16 @@
+
+=COUNTIFS(tblVariance[row_type], "SUMMARY_ANOMALY_DETECTION_MAIN", tblVariance[period_date], LatestMonth, tblVariance[Abs % Error], "<=0.1") / COUNTIFS(tblVariance[row_type], "SUMMARY_ANOMALY_DETECTION_MAIN", tblVariance[period_date], LatestMonth)
+% of systems within ±10%
+Coverage %
+=COUNTIFS(tblVariance[row_type], "SUMMARY_ANOMALY_DETECTION_MAIN", tblVariance[period_date], LatestMonth, tblVariance[actual], ">=" & tblVariance[pi95_lo], tblVariance[actual], "<=" & tblVariance[pi95_hi]) / COUNTIFS(tblVariance[row_type], "SUMMARY_ANOMALY_DETECTION_MAIN", tblVariance[period_date], LatestMonth)
+
+
+
+
+
+
+
+
 =AVERAGEIFS(tblVariance[actual],
             tblVariance[row_type],{"SUMMARY_ANOMALY_DETECTION_MAIN","SUMMARY_ANOMALY_DETECTION_SYNTH","SUMMARY_ANOMALY_DETECTION_OD"},
             tblVariance[period_date],MAX(tblVariance[period_date]))
