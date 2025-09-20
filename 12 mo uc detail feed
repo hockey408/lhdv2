@@ -1,3 +1,18 @@
+=SUMPRODUCT(
+   (tblVariance[row_type]="SUMMARY_ANOMALY_DETECTION_MAIN")*
+   (tblVariance[period_date]=LatestMonth)*
+   (tblVariance[actual]>=tblVariance[pi95_lo])*
+   (tblVariance[actual]<=tblVariance[pi95_hi])
+)
+/
+SUMPRODUCT(
+   (tblVariance[row_type]="SUMMARY_ANOMALY_DETECTION_MAIN")*
+   (tblVariance[period_date]=LatestMonth)
+)
+
+
+
+
 
 =COUNTIFS(tblVariance[row_type], "SUMMARY_ANOMALY_DETECTION_MAIN", tblVariance[period_date], LatestMonth, tblVariance[Abs % Error], "<=0.1") / COUNTIFS(tblVariance[row_type], "SUMMARY_ANOMALY_DETECTION_MAIN", tblVariance[period_date], LatestMonth)
 % of systems within ±10%
