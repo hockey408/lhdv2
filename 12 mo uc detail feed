@@ -1,3 +1,23 @@
+=IF(
+  COUNTIFS(
+    tblVariance[CONTRACT_SOURCE_SYSTEM], [@CONTRACT_SOURCE_SYSTEM],
+    tblVariance[row_type],               [@row_type],
+    tblVariance[period_date],            EDATE([@period_date],-1)
+  )=0,
+  "",
+  SUMIFS(
+    tblVariance[actual],
+    tblVariance[CONTRACT_SOURCE_SYSTEM], [@CONTRACT_SOURCE_SYSTEM],
+    tblVariance[row_type],               [@row_type],
+    tblVariance[period_date],            EDATE([@period_date],-1)
+  )
+)
+
+
+
+
+
+
 =LET(
   sys, [@CONTRACT_SOURCE_SYSTEM],
   dt,  [@period_date],
