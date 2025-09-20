@@ -2,6 +2,282 @@
 -- Monthly KDE Systemic Summary (positive-balance only)
 --  • KDE-specific magnitudes
 --  • Z-scores on change_count and sum_magnitude_norm ONLY
+--  • exposure_dollars included (no z-score on it)
+--  • SINGLE OUTPUT: full history in one result set
+-- ============================================================
+WITH params AS (
+  SELECT
+    12      AS months_back,          -- lookback for baselines
+    3.0     AS z_threshold,          -- anomaly flag threshold per z
+    -- Magnitude caps to normalize to ~0..1 (tune to domain)
+    CAST(4.0   AS FLOAT8) AS cap_pd_steps,   -- PD steps
+    CAST(60.0  AS FLOAT8) AS cap_dpd_days,   -- DPD days
+    CAST(730.0 AS FLOAT8) AS cap_mty_days,   -- Maturity days (~2y)
+    CAST(365.0 AS FLOAT8) AS cap_book_days,  -- Book date days (~1y)
+    'Total Loans' AS target_lvl4             -- optional layer filter
+),
+
+latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT
+    ADD_MONTHS(l.max_eom, -(SELECT months_back FROM params)) AS start_eom,
+    l.max_eom AS max_eom
+  FROM latest l
+),
+
+-- 1) Monthly measures (POSITIVE balance only)
+measures AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.CONTRACT_SOURCE_SYSTEM,
+    t.ACCOUNT_KEY,
+    CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8) AS SOURCE_SYSTEM_BALANCE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = (SELECT target_lvl4 FROM params)
+  GROUP BY 1,2,3
+  HAVING SUM(t.SOURCE_SYSTEM_BALANCE) > 0
+),
+
+-- 2) KDE snapshots for POSITIVE-balance population
+kde_month AS (
+  SELECT
+    m.END_OF_MONTH_DATE,
+    m.CONTRACT_SOURCE_SYSTEM,
+    m.ACCOUNT_KEY,
+    m.SOURCE_SYSTEM_BALANCE AS CURR_SSB,     -- carry exposure for summary
+    -- KDEs (original + added)
+    MAX(t.PD_GRADE)                 AS PD_GRADE,
+    MAX(t.NON_ACCRUAL_FLAG)         AS NON_ACCRUAL_FLAG,
+    MAX(t.DAYS_PAST_DUE)            AS DAYS_PAST_DUE,
+    MAX(t.MATURITY_DATE)            AS MATURITY_DATE,
+    MAX(t.RISK_UNIT)                AS RISK_UNIT,
+    MAX(t.FDIC_CALL_CODE)           AS FDIC_CALL_CODE,
+    MAX(t.LIFESTAGE)                AS LIFESTAGE,
+    MAX(t.NICHE_CD)                 AS NICHE_CD,
+    MAX(t.RBC_CODE)                 AS RBC_CODE,
+    MAX(t.REVOLVING_NON_REVOLVING)  AS REVOLVING_NON_REVOLVING,
+    MAX(t.RC_CODE)                  AS RC_CODE,
+    MAX(t.RATE_TYPE)                AS RATE_TYPE,
+    MAX(t.CRE_FLAG)                 AS CRE_FLAG,
+    MAX(t.BOOK_DATE)                AS BOOK_DATE
+  FROM measures m
+  JOIN V_DPRT_CREDIT_INSTRUMENTS_ME t
+    ON t.END_OF_MONTH_DATE      = m.END_OF_MONTH_DATE
+   AND t.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
+   AND t.ACCOUNT_KEY            = m.ACCOUNT_KEY
+  GROUP BY 1,2,3,4
+),
+
+-- 3) Prior-month values per acct+system
+kde_chg AS (
+  SELECT
+    k.*,
+    LAG(k.END_OF_MONTH_DATE)          OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_EOM,
+    LAG(k.PD_GRADE)                   OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_PD_GRADE,
+    LAG(k.NON_ACCRUAL_FLAG)           OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_NON_ACCRUAL_FLAG,
+    LAG(k.DAYS_PAST_DUE)              OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_DAYS_PAST_DUE,
+    LAG(k.MATURITY_DATE)              OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_MATURITY_DATE,
+    LAG(k.RISK_UNIT)                  OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_RISK_UNIT,
+    LAG(k.FDIC_CALL_CODE)             OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_FDIC_CALL_CODE,
+    LAG(k.LIFESTAGE)                  OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_LIFESTAGE,
+    LAG(k.NICHE_CD)                   OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_NICHE_CD,
+    LAG(k.RBC_CODE)                   OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_RBC_CODE,
+    LAG(k.REVOLVING_NON_REVOLVING)    OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_REVOLVING_NON_REVOLVING,
+    LAG(k.RC_CODE)                    OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_RC_CODE,
+    LAG(k.RATE_TYPE)                  OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_RATE_TYPE,
+    LAG(k.CRE_FLAG)                   OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_CRE_FLAG,
+    LAG(k.BOOK_DATE)                  OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS PREV_BOOK_DATE
+  FROM kde_month k
+),
+
+-- 4) UNPIVOT rows where a KDE changed; compute magnitude and carry exposure
+kde_changes AS (
+  -- PD_GRADE (numeric-ish; map first if alpha)
+  SELECT END_OF_MONTH_DATE, 'PD_GRADE' AS KDE,
+         ABS(CAST(NULLIF(PD_GRADE,'') AS FLOAT8) - CAST(NULLIF(PREV_PD_GRADE,'') AS FLOAT8)) AS magnitude_raw,
+         LEAST(1.0, ABS(CAST(NULLIF(PD_GRADE,'') AS FLOAT8) - CAST(NULLIF(PREV_PD_GRADE,'') AS FLOAT8)) / (SELECT cap_pd_steps FROM params)) AS magnitude_norm,
+         CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (PD_GRADE <> PREV_PD_GRADE) OR (PD_GRADE IS NULL AND PREV_PD_GRADE IS NOT NULL) OR (PD_GRADE IS NOT NULL AND PREV_PD_GRADE IS NULL) )
+
+  UNION ALL
+  -- NON_ACCRUAL_FLAG (categorical)
+  SELECT END_OF_MONTH_DATE, 'NON_ACCRUAL_FLAG', 1.0::FLOAT8, 1.0::FLOAT8, CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (NON_ACCRUAL_FLAG <> PREV_NON_ACCRUAL_FLAG) OR (NON_ACCRUAL_FLAG IS NULL AND PREV_NON_ACCRUAL_FLAG IS NOT NULL) OR (NON_ACCRUAL_FLAG IS NOT NULL AND PREV_NON_ACCRUAL_FLAG IS NULL) )
+
+  UNION ALL
+  -- DAYS_PAST_DUE (numeric)
+  SELECT END_OF_MONTH_DATE, 'DAYS_PAST_DUE',
+         ABS(COALESCE(DAYS_PAST_DUE,0) - COALESCE(PREV_DAYS_PAST_DUE,0))::FLOAT8,
+         LEAST(1.0, ABS(COALESCE(DAYS_PAST_DUE,0) - COALESCE(PREV_DAYS_PAST_DUE,0)) / (SELECT cap_dpd_days FROM params)),
+         CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (DAYS_PAST_DUE <> PREV_DAYS_PAST_DUE) OR (DAYS_PAST_DUE IS NULL AND PREV_DAYS_PAST_DUE IS NOT NULL) OR (DAYS_PAST_DUE IS NOT NULL AND PREV_DAYS_PAST_DUE IS NULL) )
+
+  UNION ALL
+  -- MATURITY_DATE (days)
+  SELECT END_OF_MONTH_DATE, 'MATURITY_DATE',
+         ABS((CAST(MATURITY_DATE AS DATE) - CAST(PREV_MATURITY_DATE AS DATE)))::FLOAT8,
+         LEAST(1.0, ABS((CAST(MATURITY_DATE AS DATE) - CAST(PREV_MATURITY_DATE AS DATE))) / (SELECT cap_mty_days FROM params)),
+         CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (MATURITY_DATE <> PREV_MATURITY_DATE) OR (MATURITY_DATE IS NULL AND PREV_MATURITY_DATE IS NOT NULL) OR (MATURITY_DATE IS NOT NULL AND PREV_MATURITY_DATE IS NULL) )
+
+  UNION ALL
+  -- RISK_UNIT (categorical)
+  SELECT END_OF_MONTH_DATE, 'RISK_UNIT', 1.0::FLOAT8, 1.0::FLOAT8, CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (RISK_UNIT <> PREV_RISK_UNIT) OR (RISK_UNIT IS NULL AND PREV_RISK_UNIT IS NOT NULL) OR (RISK_UNIT IS NOT NULL AND PREV_RISK_UNIT IS NULL) )
+
+  UNION ALL
+  -- FDIC_CALL_CODE (categorical)
+  SELECT END_OF_MONTH_DATE, 'FDIC_CALL_CODE', 1.0::FLOAT8, 1.0::FLOAT8, CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (FDIC_CALL_CODE <> PREV_FDIC_CALL_CODE) OR (FDIC_CALL_CODE IS NULL AND PREV_FDIC_CALL_CODE IS NOT NULL) OR (FDIC_CALL_CODE IS NOT NULL AND PREV_FDIC_CALL_CODE IS NULL) )
+
+  UNION ALL
+  -- LIFESTAGE (categorical)
+  SELECT END_OF_MONTH_DATE, 'LIFESTAGE', 1.0::FLOAT8, 1.0::FLOAT8, CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (LIFESTAGE <> PREV_LIFESTAGE) OR (LIFESTAGE IS NULL AND PREV_LIFESTAGE IS NOT NULL) OR (LIFESTAGE IS NOT NULL AND PREV_LIFESTAGE IS NULL) )
+
+  UNION ALL
+  -- NICHE_CD (categorical)
+  SELECT END_OF_MONTH_DATE, 'NICHE_CD', 1.0::FLOAT8, 1.0::FLOAT8, CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (NICHE_CD <> PREV_NICHE_CD) OR (NICHE_CD IS NULL AND PREV_NICHE_CD IS NOT NULL) OR (NICHE_CD IS NOT NULL AND PREV_NICHE_CD IS NULL) )
+
+  UNION ALL
+  -- RBC_CODE (categorical)
+  SELECT END_OF_MONTH_DATE, 'RBC_CODE', 1.0::FLOAT8, 1.0::FLOAT8, CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (RBC_CODE <> PREV_RBC_CODE) OR (RBC_CODE IS NULL AND PREV_RBC_CODE IS NOT NULL) OR (RBC_CODE IS NOT NULL AND PREV_RBC_CODE IS NULL) )
+
+  UNION ALL
+  -- REVOLVING_NON_REVOLVING (categorical)
+  SELECT END_OF_MONTH_DATE, 'REVOLVING_NON_REVOLVING', 1.0::FLOAT8, 1.0::FLOAT8, CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (REVOLVING_NON_REVOLVING <> PREV_REVOLVING_NON_REVOLVING) OR (REVOLVING_NON_REVOLVING IS NULL AND PREV_REVOLVING_NON_REVOLVING IS NOT NULL) OR (REVOLVING_NON_REVOLVING IS NOT NULL AND PREV_REVOLVING_NON_REVOLVING IS NULL) )
+
+  UNION ALL
+  -- RC_CODE (categorical)
+  SELECT END_OF_MONTH_DATE, 'RC_CODE', 1.0::FLOAT8, 1.0::FLOAT8, CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (RC_CODE <> PREV_RC_CODE) OR (RC_CODE IS NULL AND PREV_RC_CODE IS NOT NULL) OR (RC_CODE IS NOT NULL AND PREV_RC_CODE IS NULL) )
+
+  UNION ALL
+  -- RATE_TYPE (categorical)
+  SELECT END_OF_MONTH_DATE, 'RATE_TYPE', 1.0::FLOAT8, 1.0::FLOAT8, CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (RATE_TYPE <> PREV_RATE_TYPE) OR (RATE_TYPE IS NULL AND PREV_RATE_TYPE IS NOT NULL) OR (RATE_TYPE IS NOT NULL AND PREV_RATE_TYPE IS NULL) )
+
+  UNION ALL
+  -- CRE_FLAG (categorical)
+  SELECT END_OF_MONTH_DATE, 'CRE_FLAG', 1.0::FLOAT8, 1.0::FLOAT8, CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (CRE_FLAG <> PREV_CRE_FLAG) OR (CRE_FLAG IS NULL AND PREV_CRE_FLAG IS NOT NULL) OR (CRE_FLAG IS NOT NULL AND PREV_CRE_FLAG IS NULL) )
+
+  UNION ALL
+  -- BOOK_DATE (days)
+  SELECT END_OF_MONTH_DATE, 'BOOK_DATE',
+         ABS((CAST(BOOK_DATE AS DATE) - CAST(PREV_BOOK_DATE AS DATE)))::FLOAT8,
+         LEAST(1.0, ABS((CAST(BOOK_DATE AS DATE) - CAST(PREV_BOOK_DATE AS DATE))) / (SELECT cap_book_days FROM params)),
+         CURR_SSB
+  FROM kde_chg
+  WHERE PREV_EOM IS NOT NULL
+    AND ( (BOOK_DATE <> PREV_BOOK_DATE) OR (BOOK_DATE IS NULL AND PREV_BOOK_DATE IS NOT NULL) OR (BOOK_DATE IS NOT NULL AND PREV_BOOK_DATE IS NULL) )
+),
+
+-- 5) Monthly systemic summary by KDE (+ exposure_dollars)
+kde_monthly_summary AS (
+  SELECT
+    c.END_OF_MONTH_DATE,
+    c.KDE,
+    COUNT(*)                         AS change_count,
+    SUM(c.magnitude_raw)             AS sum_magnitude_raw,
+    AVG(c.magnitude_raw)             AS avg_magnitude_raw,
+    SUM(c.magnitude_norm)            AS sum_magnitude_norm,
+    AVG(c.magnitude_norm)            AS avg_magnitude_norm,
+    SUM(c.CURR_SSB)                  AS exposure_dollars      -- included (no z-score on it)
+  FROM kde_changes c
+  GROUP BY c.END_OF_MONTH_DATE, c.KDE
+),
+
+-- 6) Rolling baselines vs prior 12 months (exclude current)
+kde_with_stats AS (
+  SELECT
+    s.*,
+    AVG(change_count)         OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS avg_count_12,
+    STDDEV_SAMP(change_count) OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS std_count_12,
+    AVG(sum_magnitude_norm)         OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS avg_mag_12,
+    STDDEV_SAMP(sum_magnitude_norm) OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS std_mag_12
+  FROM kde_monthly_summary s
+),
+
+scored AS (
+  SELECT
+    k.*,
+    CASE WHEN k.std_count_12 IS NOT NULL AND k.std_count_12 > 0
+         THEN (k.change_count - k.avg_count_12) / k.std_count_12
+         ELSE NULL END AS count_z,
+    CASE WHEN k.std_mag_12 IS NOT NULL AND k.std_mag_12 > 0
+         THEN (k.sum_magnitude_norm - k.avg_mag_12) / k.std_mag_12
+         ELSE NULL END AS magnitude_z,
+    -- Combined anomaly score: sum of positive z's (NULL -> 0)
+    COALESCE(GREATEST(0.0, (CASE WHEN k.std_count_12 > 0 THEN (k.change_count - k.avg_count_12)/k.std_count_12 END)), 0.0)
+    +
+    COALESCE(GREATEST(0.0, (CASE WHEN k.std_mag_12  > 0 THEN (k.sum_magnitude_norm - k.avg_mag_12)/k.std_mag_12 END)), 0.0)
+    AS anomaly_score
+  FROM kde_with_stats k
+)
+
+-- 7) SINGLE OUTPUT: Full history (within lookback window)
+SELECT
+  END_OF_MONTH_DATE,
+  KDE,
+  change_count,
+  sum_magnitude_raw,
+  avg_magnitude_raw,
+  sum_magnitude_norm,
+  avg_magnitude_norm,
+  exposure_dollars,                   -- exposure impact (no z-score)
+  ROUND(count_z,    3) AS count_z,
+  ROUND(magnitude_z, 3) AS magnitude_z,
+  ROUND(anomaly_score, 3) AS anomaly_score,
+  CASE
+    WHEN (COALESCE(count_z,0)    >= (SELECT z_threshold FROM params))
+      OR (COALESCE(magnitude_z,0) >= (SELECT z_threshold FROM params))
+    THEN 1 ELSE 0 END AS LIKELY_SYSTEMIC_ANOMALY
+FROM scored
+ORDER BY END_OF_MONTH_DATE DESC, anomaly_score DESC, KDE;
+
+
+
+
+-- ============================================================
+-- Monthly KDE Systemic Summary (positive-balance only)
+--  • KDE-specific magnitudes
+--  • Z-scores on change_count and sum_magnitude_norm ONLY
 --  • Adds exposure_dollars column (no z-score on it)
 --  • Latest month ranked by anomaly signal
 -- ============================================================
