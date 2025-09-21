@@ -1,3 +1,59 @@
+pd_cast AS (
+  SELECT
+    END_OF_MONTH_DATE,
+    CONTRACT_SOURCE_SYSTEM,
+    ACCOUNT_KEY,
+
+    /* Parse PD_GRADE text → INT only if it is purely digits */
+    CASE
+      WHEN REGEXP_LIKE(TRIM(PD_GRADE), '^[0-9]+$')
+           THEN CAST(TRIM(PD_GRADE) AS INTEGER)
+      ELSE NULL
+    END AS pd_int_raw,
+
+    CASE
+      WHEN REGEXP_LIKE(TRIM(prev_pd), '^[0-9]+$')
+           THEN CAST(TRIM(prev_pd) AS INTEGER)
+      ELSE NULL
+    END AS prev_pd_int_raw
+  FROM kde_chg
+),
+/* Validate allowed set and expose as FLOAT8 for math */
+pd_cast_valid AS (
+  SELECT
+    END_OF_MONTH_DATE,
+    CONTRACT_SOURCE_SYSTEM,
+    ACCOUNT_KEY,
+    CASE WHEN pd_int_raw BETWEEN 0 AND 14 OR pd_int_raw = 98
+         THEN pd_int_raw::FLOAT8 END AS PD_NUM,
+    CASE WHEN prev_pd_int_raw BETWEEN 0 AND 14 OR prev_pd_int_raw = 98
+         THEN prev_pd_int_raw::FLOAT8 END AS PREV_PD_NUM
+  FROM pd_cast
+)
+
+
+
+JOIN pd_cast_valid p
+  ON p.END_OF_MONTH_DATE = kc.END_OF_MONTH_DATE
+ AND p.CONTRACT_SOURCE_SYSTEM = kc.CONTRACT_SOURCE_SYSTEM
+ AND p.ACCOUNT_KEY = kc.ACCOUNT_KEY
+
+
+
+
+WITH ...measures..., ...month_totals..., ...kde_month..., ...kde_chg...,
+pd_cast AS ( /* first CTE above */ ),
+pd_cast_valid AS ( /* second CTE above */ )
+SELECT
+  COUNT(*) AS rows_all,
+  SUM(CASE WHEN PD_NUM IS NOT NULL OR PREV_PD_NUM IS NOT NULL THEN 1 ELSE 0 END) AS rows_valid_pd,
+  SUM(CASE WHEN PD_NUM IS NULL  AND PREV_PD_NUM IS NULL  THEN 1 ELSE 0 END) AS rows_dropped
+FROM pd_cast_valid;
+
+
+
+
+
 WITH
 ...same measures, month_totals, kde_month, kde_chg...,
 pd_cast AS (
