@@ -1,3 +1,36 @@
+RMSE :=
+VAR _rows :=
+    FILTER(
+        ALLSELECTED(tblVariance),
+        NOT ISBLANK(tblVariance[actual]) &&
+        NOT ISBLANK(tblVariance[forecast_val])
+    )
+VAR _sumSq :=
+    SUMX(_rows, POWER(tblVariance[actual] - tblVariance[forecast_val], 2))
+VAR _n := COUNTROWS(_rows)
+RETURN IF(_n > 0, SQRT(DIVIDE(_sumSq, _n)))
+
+
+
+
+Coverage % :=
+VAR _base :=
+    FILTER(
+        ALLSELECTED(tblVariance),
+        NOT ISBLANK(tblVariance[actual])   &&
+        NOT ISBLANK(tblVariance[pi95_lo]) &&
+        NOT ISBLANK(tblVariance[pi95_hi])
+    )
+VAR _total   := COUNTROWS(_base)
+VAR _outside := COUNTROWS( FILTER(_base, tblVariance[OUTSIDE_95_BAND] = TRUE() ) )
+RETURN IF(_total > 0, 1 - DIVIDE(_outside, _total))
+
+
+
+
+
+
+
 WITH
 /* ---------------------------- config ---------------------------- */
 params AS (
