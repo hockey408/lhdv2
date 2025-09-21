@@ -1,4 +1,59 @@
 WITH
+measures AS (...),
+month_totals AS (...),
+kde_month AS (...),
+kde_chg AS (...),
+pd_cast AS (...),
+pd_cast_valid AS (...),
+
+kde_changes_a AS ( ...your working Part 1 block... ),
+kde_changes_dates AS ( ...from Step 2... ),
+kde_changes_cats  AS ( ...from Step 3... ),
+
+kde_changes AS (
+  SELECT * FROM kde_changes_a
+  UNION ALL SELECT * FROM kde_changes_dates
+  UNION ALL SELECT * FROM kde_changes_cats
+),
+kde_monthly AS (
+  SELECT
+    END_OF_MONTH_DATE,
+    KDE,
+    COUNT(*)                        AS change_count,
+    SUM(CURR_SSB)                   AS exposure_dollars,
+    SUM(bool_on)                    AS flag_on_count,
+    SUM(bool_off)                   AS flag_off_count,
+    SUM(numeric_mag)                AS sum_numeric_magnitude,
+    AVG(CASE WHEN numeric_mag IS NOT NULL THEN numeric_mag END) AS avg_numeric_magnitude,
+    SUM(days_mag)                   AS sum_days_moved,
+    AVG(CASE WHEN days_mag IS NOT NULL THEN days_mag END) AS avg_days_moved
+  FROM kde_changes
+  GROUP BY 1,2
+),
+kde_with_denoms AS (
+  SELECT
+    m.*,
+    t.month_total_accounts,
+    t.month_total_ssb,
+    CASE WHEN t.month_total_accounts > 0
+         THEN m.change_count / t.month_total_accounts::FLOAT8 END AS change_rate,
+    CASE WHEN t.month_total_ssb > 0
+         THEN m.exposure_dollars / t.month_total_ssb::FLOAT8 END AS exposure_share
+  FROM kde_monthly m
+  JOIN month_totals t USING (END_OF_MONTH_DATE)
+)
+SELECT *
+FROM kde_with_denoms
+ORDER BY END_OF_MONTH_DATE DESC, KDE
+LIMIT 100;
+
+
+
+
+
+
+
+WITH
 measures AS (...same as before...),
 month_totals AS (...same...),
 kde_month AS (...same...),
