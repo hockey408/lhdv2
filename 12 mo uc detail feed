@@ -1,3 +1,25 @@
+, with_prev AS (
+  SELECT
+    w.*,
+    LAG(w.change_count)        OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_change_count,
+    LAG(w.exposure_dollars)    OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_exposure_dollars,
+    LAG(w.flag_on_count)       OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_flag_on_count,
+    LAG(w.flag_off_count)      OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_flag_off_count,
+    LAG(w.sum_numeric_magnitude) OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_sum_numeric_magnitude,
+    LAG(w.sum_days_moved)        OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_sum_days_moved
+  FROM kde_with_denoms w
+)
+SELECT END_OF_MONTH_DATE, KDE,
+       change_count, prev_change_count,
+       exposure_dollars, prev_exposure_dollars
+FROM with_prev
+ORDER BY END_OF_MONTH_DATE DESC, KDE
+LIMIT 50;
+
+
+
+
+
 WITH
 /* ---------- population: pos balance per acct x system ---------- */
 measures AS (
