@@ -1,3 +1,20 @@
+Coverage % :=
+VAR BaseRows =
+    FILTER (
+        ALLSELECTED ( tblVariance ),
+        NOT ISBLANK ( tblVariance[actual] )
+            && NOT ISBLANK ( tblVariance[pi95_lo] )
+            && NOT ISBLANK ( tblVariance[pi95_hi] )
+    )
+VAR TotalCount = COUNTROWS ( BaseRows )
+VAR OutsideCount =
+    COUNTROWS ( FILTER ( BaseRows, tblVariance[OUTSIDE_95_BAND] = TRUE () ) )
+RETURN IF ( TotalCount > 0, 1 - DIVIDE ( OutsideCount, TotalCount ) )
+
+
+
+
+
 RMSE :=
 VAR _rows :=
     FILTER(
