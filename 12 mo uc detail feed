@@ -1,4 +1,102 @@
 WITH
+-- reuse your working CTEs verbatim:
+measures AS (...same as you ran...),
+month_totals AS (...same...),
+kde_month AS (...same...),
+kde_chg AS (...same...),
+pd_cast AS (...same...),
+pd_cast_valid AS (...same...),
+
+kde_changes_a AS (
+  -- NON_ACCRUAL_FLAG
+  SELECT
+    kc.END_OF_MONTH_DATE, 'NON_ACCRUAL_FLAG' AS KDE, kc.CURR_SSB,
+    CASE WHEN UPPER(TRIM(kc.prev_na)) = 'N' AND UPPER(TRIM(kc.NON_ACCRUAL_FLAG)) = 'Y' THEN 1 ELSE 0 END AS bool_on,
+    CASE WHEN UPPER(TRIM(kc.prev_na)) = 'Y' AND UPPER(TRIM(kc.NON_ACCRUAL_FLAG)) = 'N' THEN 1 ELSE 0 END AS bool_off,
+    NULL::FLOAT8 AS numeric_mag, NULL::FLOAT8 AS days_mag
+  FROM kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND (UPPER(TRIM(kc.NON_ACCRUAL_FLAG)) <> UPPER(TRIM(kc.prev_na)) OR ((kc.NON_ACCRUAL_FLAG IS NULL) <> (kc.prev_na IS NULL)))
+
+  UNION ALL
+  -- CRE_FLAG
+  SELECT
+    kc.END_OF_MONTH_DATE, 'CRE_FLAG', kc.CURR_SSB,
+    CASE WHEN UPPER(TRIM(kc.prev_cre)) = 'N' AND UPPER(TRIM(kc.CRE_FLAG)) = 'Y' THEN 1 ELSE 0 END,
+    CASE WHEN UPPER(TRIM(kc.prev_cre)) = 'Y' AND UPPER(TRIM(kc.CRE_FLAG)) = 'N' THEN 1 ELSE 0 END,
+    NULL::FLOAT8, NULL::FLOAT8
+  FROM kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND (UPPER(TRIM(kc.CRE_FLAG)) <> UPPER(TRIM(kc.prev_cre)) OR ((kc.CRE_FLAG IS NULL) <> (kc.prev_cre IS NULL)))
+
+  UNION ALL
+  -- PD_GRADE (validated numeric set)
+  SELECT
+    kc.END_OF_MONTH_DATE, 'PD_GRADE', kc.CURR_SSB,
+    0, 0,
+    ABS(p.PD_NUM - p.PREV_PD_NUM) AS numeric_mag,
+    NULL::FLOAT8
+  FROM kde_chg kc
+  JOIN pd_cast_valid p
+    ON p.END_OF_MONTH_DATE = kc.END_OF_MONTH_DATE
+   AND p.CONTRACT_SOURCE_SYSTEM = kc.CONTRACT_SOURCE_SYSTEM
+   AND p.ACCOUNT_KEY = kc.ACCOUNT_KEY
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.PD_GRADE <> kc.prev_pd) OR ((kc.PD_GRADE IS NULL) <> (kc.prev_pd IS NULL)) )
+
+  UNION ALL
+  -- DAYS_PAST_DUE
+  SELECT
+    kc.END_OF_MONTH_DATE, 'DAYS_PAST_DUE', kc.CURR_SSB,
+    0, 0,
+    ABS(COALESCE(kc.DAYS_PAST_DUE::FLOAT8,0) - COALESCE(kc.prev_dpd::FLOAT8,0)),
+    NULL::FLOAT8
+  FROM kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.DAYS_PAST_DUE <> kc.prev_dpd) OR ((kc.DAYS_PAST_DUE IS NULL) <> (kc.prev_dpd IS NULL)) )
+)
+SELECT KDE, COUNT(*) AS change_rows, SUM(CURR_SSB) AS exposure_sum
+FROM kde_changes_a
+GROUP BY KDE
+ORDER BY KDE;
+
+
+
+
+
+WITH
+measures AS (...), month_totals AS (...), kde_month AS (...), kde_chg AS (...),
+
+kde_changes_dates AS (
+  SELECT
+    kc.END_OF_MONTH_DATE, 'MATURITY_DATE' AS KDE, kc.CURR_SSB,
+    0 AS bool_on, 0 AS bool_off,
+    NULL::FLOAT8 AS numeric_mag,
+    ABS((DATE(kc.MATURITY_DATE) - DATE(kc.prev_mty)))::FLOAT8 AS days_mag
+  FROM kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.MATURITY_DATE <> kc.prev_mty) OR ((kc.MATURITY_DATE IS NULL) <> (kc.prev_mty IS NULL)) )
+
+  UNION ALL
+  SELECT
+    kc.END_OF_MONTH_DATE, 'BOOK_DATE', kc.CURR_SSB,
+    0, 0,
+    NULL::FLOAT8,
+    ABS((DATE(kc.BOOK_DATE) - DATE(kc.prev_book)))::FLOAT8
+  FROM kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.BOOK_DATE <> kc.prev_book) OR ((kc.BOOK_DATE IS NULL) <> (kc.prev_book IS NULL)) )
+)
+SELECT KDE, COUNT(*) AS change_rows, SUM(CURR_SSB) AS exposure_sum
+FROM kde_changes_dates
+GROUP BY KDE
+ORDER BY KDE;
+
+
+
+
+
+WITH
 /* ---------------------------- config ---------------------------- */
 params AS (
   SELECT
