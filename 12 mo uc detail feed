@@ -1,3 +1,36 @@
+WITH
+measures AS (...same as before...),
+month_totals AS (...same...),
+kde_month AS (...same...),
+kde_chg AS (...same...),
+
+kde_changes_cats AS (
+  SELECT END_OF_MONTH_DATE, 'RISK_UNIT'               AS KDE, CURR_SSB, 0 AS bool_on, 0 AS bool_off, NULL::FLOAT8 AS numeric_mag, NULL::FLOAT8 AS days_mag
+  FROM kde_chg WHERE prev_eom IS NOT NULL AND (RISK_UNIT <> prev_risk_unit OR ((RISK_UNIT IS NULL) <> (prev_risk_unit IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'FDIC_CALL_CODE',          CURR_SSB, 0,0, NULL::FLOAT8, NULL::FLOAT8 FROM kde_chg
+    WHERE prev_eom IS NOT NULL AND (FDIC_CALL_CODE <> prev_fcc OR ((FDIC_CALL_CODE IS NULL) <> (prev_fcc IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'LIFESTAGE',               CURR_SSB, 0,0, NULL::FLOAT8, NULL::FLOAT8 FROM kde_chg
+    WHERE prev_eom IS NOT NULL AND (LIFESTAGE <> prev_lifestage OR ((LIFESTAGE IS NULL) <> (prev_lifestage IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'NICHE_CD',                CURR_SSB, 0,0, NULL::FLOAT8, NULL::FLOAT8 FROM kde_chg
+    WHERE prev_eom IS NOT NULL AND (NICHE_CD <> prev_niche OR ((NICHE_CD IS NULL) <> (prev_niche IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RBC_CODE',                CURR_SSB, 0,0, NULL::FLOAT8, NULL::FLOAT8 FROM kde_chg
+    WHERE prev_eom IS NOT NULL AND (RBC_CODE <> prev_rbc OR ((RBC_CODE IS NULL) <> (prev_rbc IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'REVOLVING_NON_REVOLVING', CURR_SSB, 0,0, NULL::FLOAT8, NULL::FLOAT8 FROM kde_chg
+    WHERE prev_eom IS NOT NULL AND (REVOLVING_NON_REVOLVING <> prev_revolver OR ((REVOLVING_NON_REVOLVING IS NULL) <> (prev_revolver IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RC_CODE',                 CURR_SSB, 0,0, NULL::FLOAT8, NULL::FLOAT8 FROM kde_chg
+    WHERE prev_eom IS NOT NULL AND (RC_CODE <> prev_rc OR ((RC_CODE IS NULL) <> (prev_rc IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RATE_TYPE',               CURR_SSB, 0,0, NULL::FLOAT8, NULL::FLOAT8 FROM kde_chg
+    WHERE prev_eom IS NOT NULL AND (RATE_TYPE <> prev_rate_type OR ((RATE_TYPE IS NULL) <> (prev_rate_type IS NULL)))
+)
+SELECT KDE, COUNT(*) AS change_rows, SUM(CURR_SSB) AS exposure_sum
+FROM kde_changes_cats
+GROUP BY KDE
+ORDER BY KDE;
+
+
+
+
+
 , -- Step 2: dates only
 kde_changes_dates AS (
   -- MATURITY_DATE
