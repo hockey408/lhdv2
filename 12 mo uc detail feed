@@ -1,3 +1,28 @@
+WITH
+measures AS (...same as before...),
+month_totals AS (...same as above...),
+kde_month AS (
+  SELECT
+    m.END_OF_MONTH_DATE,
+    m.CONTRACT_SOURCE_SYSTEM,
+    m.ACCOUNT_KEY,
+    m.SOURCE_SYSTEM_BALANCE AS CURR_SSB,
+    MAX(t.PD_GRADE)      AS PD_GRADE,
+    MAX(t.DAYS_PAST_DUE) AS DAYS_PAST_DUE
+    -- (you can add more KDE fields here, but start small to debug)
+  FROM measures m
+  JOIN CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t
+    ON t.END_OF_MONTH_DATE      = m.END_OF_MONTH_DATE
+   AND t.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
+   AND t.ACCOUNT_KEY            = m.ACCOUNT_KEY
+  GROUP BY 1,2,3,4
+)
+SELECT * FROM kde_month LIMIT 20;
+
+
+
+
+
 WITH measures AS (
   SELECT t.END_OF_MONTH_DATE, t.CONTRACT_SOURCE_SYSTEM, t.ACCOUNT_KEY,
          SUM(t.SOURCE_SYSTEM_BALANCE) AS SOURCE_SYSTEM_BALANCE
