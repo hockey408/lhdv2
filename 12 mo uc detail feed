@@ -1,3 +1,125 @@
+-- E. pd_cast
+DROP TABLE IF EXISTS tmp_pd_cast;
+CREATE TEMP TABLE tmp_pd_cast AS
+SELECT
+  END_OF_MONTH_DATE, CONTRACT_SOURCE_SYSTEM, ACCOUNT_KEY,
+  CASE WHEN PD_GRADE BETWEEN 0 AND 14 OR PD_GRADE = 98 THEN CAST(PD_GRADE AS DOUBLE PRECISION) ELSE NULL END AS PD_NUM,
+  CASE WHEN prev_pd BETWEEN 0 AND 14 OR prev_pd = 98 THEN CAST(prev_pd AS DOUBLE PRECISION) ELSE NULL END AS PREV_PD_NUM
+FROM tmp_kde_chg;
+SELECT COUNT(*) AS cnt_pd_cast FROM tmp_pd_cast;
+
+-- F. kde_changes (union)
+DROP TABLE IF EXISTS tmp_kde_changes;
+CREATE TEMP TABLE tmp_kde_changes AS
+(
+  -- BOOLEAN: NON_ACCRUAL_FLAG (Y/N)
+  SELECT
+    kc.END_OF_MONTH_DATE,
+    'NON_ACCRUAL_FLAG' AS KDE,
+    kc.CURR_SSB,
+    CASE WHEN UPPER(TRIM(kc.prev_na)) = 'N' AND UPPER(TRIM(kc.NON_ACCRUAL_FLAG)) = 'Y' THEN 1 ELSE 0 END AS bool_on,
+    CASE WHEN UPPER(TRIM(kc.prev_na)) = 'Y' AND UPPER(TRIM(kc.NON_ACCRUAL_FLAG)) = 'N' THEN 1 ELSE 0 END AS bool_off,
+    CAST(NULL AS DOUBLE PRECISION) AS numeric_mag,
+    CAST(NULL AS DOUBLE PRECISION) AS days_mag
+  FROM tmp_kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND (UPPER(TRIM(kc.NON_ACCRUAL_FLAG)) <> UPPER(TRIM(kc.prev_na)) OR ((kc.NON_ACCRUAL_FLAG IS NULL) <> (kc.prev_na IS NULL)))
+
+  UNION ALL
+  -- BOOLEAN: CRE_FLAG (Y/N)
+  SELECT
+    kc.END_OF_MONTH_DATE,
+    'CRE_FLAG' AS KDE,
+    kc.CURR_SSB,
+    CASE WHEN UPPER(TRIM(kc.prev_cre)) = 'N' AND UPPER(TRIM(kc.CRE_FLAG)) = 'Y' THEN 1 ELSE 0 END AS bool_on,
+    CASE WHEN UPPER(TRIM(kc.prev_cre)) = 'Y' AND UPPER(TRIM(kc.CRE_FLAG)) = 'N' THEN 1 ELSE 0 END AS bool_off,
+    CAST(NULL AS DOUBLE PRECISION) AS numeric_mag,
+    CAST(NULL AS DOUBLE PRECISION) AS days_mag
+  FROM tmp_kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND (UPPER(TRIM(kc.CRE_FLAG)) <> UPPER(TRIM(kc.prev_cre)) OR ((kc.CRE_FLAG IS NULL) <> (kc.prev_cre IS NULL)))
+
+  UNION ALL
+  -- NUMERIC: PD_GRADE
+  SELECT
+    kc.END_OF_MONTH_DATE,
+    'PD_GRADE' AS KDE,
+    kc.CURR_SSB,
+    0 AS bool_on, 0 AS bool_off,
+    ABS(p.PD_NUM - p.PREV_PD_NUM) AS numeric_mag,
+    CAST(NULL AS DOUBLE PRECISION) AS days_mag
+  FROM tmp_kde_chg kc
+  JOIN tmp_pd_cast p
+    ON p.END_OF_MONTH_DATE = kc.END_OF_MONTH_DATE
+   AND p.CONTRACT_SOURCE_SYSTEM = kc.CONTRACT_SOURCE_SYSTEM
+   AND p.ACCOUNT_KEY = kc.ACCOUNT_KEY
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.PD_GRADE <> kc.prev_pd) OR ((kc.PD_GRADE IS NULL) <> (kc.prev_pd IS NULL)) )
+
+  UNION ALL
+  -- NUMERIC: DPD
+  SELECT
+    kc.END_OF_MONTH_DATE,
+    'DAYS_PAST_DUE' AS KDE,
+    kc.CURR_SSB,
+    0, 0,
+    ABS(COALESCE(CAST(kc.DAYS_PAST_DUE AS DOUBLE PRECISION),0) - COALESCE(CAST(kc.prev_dpd AS DOUBLE PRECISION),0)) AS numeric_mag,
+    CAST(NULL AS DOUBLE PRECISION) AS days_mag
+  FROM tmp_kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.DAYS_PAST_DUE <> kc.prev_dpd) OR ((kc.DAYS_PAST_DUE IS NULL) <> (kc.prev_dpd IS NULL)) )
+
+  UNION ALL
+  -- DATE: MATURITY_DATE
+  SELECT
+    kc.END_OF_MONTH_DATE,
+    'MATURITY_DATE' AS KDE,
+    kc.CURR_SSB,
+    0, 0,
+    CAST(NULL AS DOUBLE PRECISION),
+    ABS((DATE(kc.MATURITY_DATE) - DATE(kc.prev_mty)))::DOUBLE PRECISION AS days_mag
+  FROM tmp_kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.MATURITY_DATE <> kc.prev_mty) OR ((kc.MATURITY_DATE IS NULL) <> (kc.prev_mty IS NULL)) )
+
+  UNION ALL
+  -- DATE: BOOK_DATE
+  SELECT
+    kc.END_OF_MONTH_DATE,
+    'BOOK_DATE' AS KDE,
+    kc.CURR_SSB,
+    0, 0,
+    CAST(NULL AS DOUBLE PRECISION),
+    ABS((DATE(kc.BOOK_DATE) - DATE(kc.prev_book)))::DOUBLE PRECISION AS days_mag
+  FROM tmp_kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.BOOK_DATE <> kc.prev_book) OR ((kc.BOOK_DATE IS NULL) <> (kc.prev_book IS NULL)) )
+
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RISK_UNIT',               CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM tmp_kde_chg
+  WHERE prev_eom IS NOT NULL AND (RISK_UNIT <> prev_risk_unit OR ((RISK_UNIT IS NULL) <> (prev_risk_unit IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'FDIC_CALL_CODE',          CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM tmp_kde_chg
+  WHERE prev_eom IS NOT NULL AND (FDIC_CALL_CODE <> prev_fcc OR ((FDIC_CALL_CODE IS NULL) <> (prev_fcc IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'LIFESTAGE',               CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM tmp_kde_chg
+  WHERE prev_eom IS NOT NULL AND (LIFESTAGE <> prev_lifestage OR ((LIFESTAGE IS NULL) <> (prev_lifestage IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'NICHE_CD',                CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM tmp_kde_chg
+  WHERE prev_eom IS NOT NULL AND (NICHE_CD <> prev_niche OR ((NICHE_CD IS NULL) <> (prev_niche IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RBC_CODE',                CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM tmp_kde_chg
+  WHERE prev_eom IS NOT NULL AND (RBC_CODE <> prev_rbc OR ((RBC_CODE IS NULL) <> (prev_rbc IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'REVOLVING_NON_REVOLVING', CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM tmp_kde_chg
+  WHERE prev_eom IS NOT NULL AND (REVOLVING_NON_REVOLVING <> prev_revolver OR ((REVOLVING_NON_REVOLVING IS NULL) <> (prev_revolver IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RC_CODE',                 CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM tmp_kde_chg
+  WHERE prev_eom IS NOT NULL AND (RC_CODE <> prev_rc OR ((RC_CODE IS NULL) <> (prev_rc IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RATE_TYPE',               CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM tmp_kde_chg
+  WHERE prev_eom IS NOT NULL AND (RATE_TYPE <> prev_rate_type OR ((RATE_TYPE IS NULL) <> (prev_rate_type IS NULL)))
+);
+SELECT COUNT(*) AS cnt_kde_changes FROM tmp_kde_changes;
+
+
+
+
+
+
+
 -- A. measures
 DROP TABLE IF EXISTS tmp_measures;
 CREATE TEMP TABLE tmp_measures AS
