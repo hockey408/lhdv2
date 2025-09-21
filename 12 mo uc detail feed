@@ -1,6 +1,458 @@
 -- ======================================================================
 -- KDE monthly (type-aware) + MoM deltas + Expected vs Actual (SQL-only)
 -- Netezza-friendly: DOUBLE PRECISION casts, fixed window frames, RC_CODE raw
+-- Assumptions:
+--   • *_FLAG fields are Y/N
+--   • PD_GRADE is numeric; valid values are 0–14, 98
+-- ======================================================================
+
+WITH params AS (
+  SELECT
+    36 AS months_back,                -- history window (months)
+    'Total Loans' AS target_lvl4
+),
+params_flags AS (                     -- <<< tune these centrally
+  SELECT
+    1  AS use_trend6,                 -- 1 = use 6-mo trend, 0 = use 12-mo trend
+    0.70::DOUBLE PRECISION AS weight_trend,
+    0.30::DOUBLE PRECISION AS weight_seasonal,
+    2.5  AS z_threshold,              -- z-like threshold
+    0.25 AS mom_pct_threshold,        -- 25%
+    50000000::DOUBLE PRECISION AS abs_dollar_threshold,   -- $50MM
+    0.15 AS rel_vs_expected_threshold -- 15%
+),
+
+latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+),
+rng AS (
+  SELECT
+    ADD_MONTHS(l.max_eom, -(SELECT months_back FROM params)) AS start_eom,
+    l.max_eom AS max_eom
+  FROM latest l
+),
+
+-- 1) Positive-balance population by month × system × account
+measures AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.CONTRACT_SOURCE_SYSTEM,
+    t.ACCOUNT_KEY,
+    CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS DOUBLE PRECISION) AS SOURCE_SYSTEM_BALANCE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = (SELECT target_lvl4 FROM params)
+  GROUP BY 1,2,3
+  HAVING SUM(t.SOURCE_SYSTEM_BALANCE) > 0
+),
+
+-- 2) Denominators per month
+month_totals AS (
+  SELECT
+    m.END_OF_MONTH_DATE,
+    COUNT(DISTINCT (m.CONTRACT_SOURCE_SYSTEM || '|' || m.ACCOUNT_KEY)) AS month_total_accounts,
+    SUM(m.SOURCE_SYSTEM_BALANCE) AS month_total_ssb
+  FROM measures m
+  GROUP BY 1
+),
+
+-- 3) Monthly snapshots with KDEs (RC_CODE kept raw)
+kde_month AS (
+  SELECT
+    m.END_OF_MONTH_DATE,
+    m.CONTRACT_SOURCE_SYSTEM,
+    m.ACCOUNT_KEY,
+    m.SOURCE_SYSTEM_BALANCE AS CURR_SSB,
+
+    MAX(t.PD_GRADE)      AS PD_GRADE,
+    MAX(t.DAYS_PAST_DUE) AS DAYS_PAST_DUE,
+    MAX(t.MATURITY_DATE) AS MATURITY_DATE,
+    MAX(t.BOOK_DATE)     AS BOOK_DATE,
+
+    MAX(t.NON_ACCRUAL_FLAG)        AS NON_ACCRUAL_FLAG,   -- Y/N
+    MAX(t.CRE_FLAG)                AS CRE_FLAG,           -- Y/N
+
+    MAX(t.RISK_UNIT)               AS RISK_UNIT,
+    MAX(t.FDIC_CALL_CODE)          AS FDIC_CALL_CODE,
+    MAX(t.LIFESTAGE)               AS LIFESTAGE,
+    MAX(t.NICHE_CD)                AS NICHE_CD,
+    MAX(t.RBC_CODE)                AS RBC_CODE,
+    MAX(t.REVOLVING_NON_REVOLVING) AS REVOLVING_NON_REVOLVING,
+    MAX(t.RC_CODE)                 AS RC_CODE,            -- raw
+    MAX(t.RATE_TYPE)               AS RATE_TYPE
+  FROM measures m
+  JOIN V_DPRT_CREDIT_INSTRUMENTS_ME t
+    ON t.END_OF_MONTH_DATE      = m.END_OF_MONTH_DATE
+   AND t.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
+   AND t.ACCOUNT_KEY            = m.ACCOUNT_KEY
+  GROUP BY 1,2,3,4
+),
+
+-- 4) Prior-month values per acct+system
+kde_chg AS (
+  SELECT
+    k.*,
+    LAG(k.END_OF_MONTH_DATE)       OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_eom,
+
+    LAG(k.PD_GRADE)                OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_pd,
+    LAG(k.DAYS_PAST_DUE)           OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_dpd,
+    LAG(k.MATURITY_DATE)           OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_mty,
+    LAG(k.BOOK_DATE)               OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_book,
+
+    LAG(k.NON_ACCRUAL_FLAG)        OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_na,
+    LAG(k.CRE_FLAG)                OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_cre,
+
+    LAG(k.RISK_UNIT)               OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_risk_unit,
+    LAG(k.FDIC_CALL_CODE)          OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_fcc,
+    LAG(k.LIFESTAGE)               OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_lifestage,
+    LAG(k.NICHE_CD)                OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_niche,
+    LAG(k.RBC_CODE)                OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_rbc,
+    LAG(k.REVOLVING_NON_REVOLVING) OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_revolver,
+    LAG(k.RC_CODE)                 OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_rc,
+    LAG(k.RATE_TYPE)               OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_rate_type
+  FROM kde_month k
+),
+
+-- 4b) PD_GRADE numeric validation (0–14, 98); ignore others in magnitude
+pd_cast AS (
+  SELECT
+    END_OF_MONTH_DATE, CONTRACT_SOURCE_SYSTEM, ACCOUNT_KEY,
+    CASE WHEN PD_GRADE BETWEEN 0 AND 14 OR PD_GRADE = 98 THEN CAST(PD_GRADE AS DOUBLE PRECISION) ELSE NULL END AS PD_NUM,
+    CASE WHEN prev_pd BETWEEN 0 AND 14 OR prev_pd = 98 THEN CAST(prev_pd AS DOUBLE PRECISION) ELSE NULL END AS PREV_PD_NUM
+  FROM kde_chg
+),
+
+-- 5) UNPIVOT by KDE with type-aware payload
+kde_changes AS (
+
+  -- --------- BOOLEAN KDEs (Y/N) ---------
+  -- NON_ACCRUAL_FLAG
+  SELECT
+    kc.END_OF_MONTH_DATE,
+    'NON_ACCRUAL_FLAG' AS KDE,
+    kc.CURR_SSB,
+    CASE WHEN UPPER(TRIM(kc.prev_na)) = 'N' AND UPPER(TRIM(kc.NON_ACCRUAL_FLAG)) = 'Y' THEN 1 ELSE 0 END AS bool_on,
+    CASE WHEN UPPER(TRIM(kc.prev_na)) = 'Y' AND UPPER(TRIM(kc.NON_ACCRUAL_FLAG)) = 'N' THEN 1 ELSE 0 END AS bool_off,
+    CAST(NULL AS DOUBLE PRECISION) AS numeric_mag,
+    CAST(NULL AS DOUBLE PRECISION) AS days_mag
+  FROM kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND (UPPER(TRIM(kc.NON_ACCRUAL_FLAG)) <> UPPER(TRIM(kc.prev_na)) OR ((kc.NON_ACCRUAL_FLAG IS NULL) <> (kc.prev_na IS NULL)))
+
+  UNION ALL
+  -- CRE_FLAG
+  SELECT
+    kc.END_OF_MONTH_DATE,
+    'CRE_FLAG' AS KDE,
+    kc.CURR_SSB,
+    CASE WHEN UPPER(TRIM(kc.prev_cre)) = 'N' AND UPPER(TRIM(kc.CRE_FLAG)) = 'Y' THEN 1 ELSE 0 END AS bool_on,
+    CASE WHEN UPPER(TRIM(kc.prev_cre)) = 'Y' AND UPPER(TRIM(kc.CRE_FLAG)) = 'N' THEN 1 ELSE 0 END AS bool_off,
+    CAST(NULL AS DOUBLE PRECISION) AS numeric_mag,
+    CAST(NULL AS DOUBLE PRECISION) AS days_mag
+  FROM kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND (UPPER(TRIM(kc.CRE_FLAG)) <> UPPER(TRIM(kc.prev_cre)) OR ((kc.CRE_FLAG IS NULL) <> (kc.prev_cre IS NULL)))
+
+  -- --------- NUMERIC KDEs ---------
+  UNION ALL
+  -- PD_GRADE (valid 0–14, 98 only)
+  SELECT
+    kc.END_OF_MONTH_DATE,
+    'PD_GRADE' AS KDE,
+    kc.CURR_SSB,
+    0 AS bool_on,
+    0 AS bool_off,
+    ABS(p.PD_NUM - p.PREV_PD_NUM) AS numeric_mag,
+    CAST(NULL AS DOUBLE PRECISION) AS days_mag
+  FROM kde_chg kc
+  JOIN pd_cast p
+    ON p.END_OF_MONTH_DATE = kc.END_OF_MONTH_DATE
+   AND p.CONTRACT_SOURCE_SYSTEM = kc.CONTRACT_SOURCE_SYSTEM
+   AND p.ACCOUNT_KEY = kc.ACCOUNT_KEY
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.PD_GRADE <> kc.prev_pd) OR ((kc.PD_GRADE IS NULL) <> (kc.prev_pd IS NULL)) )
+
+  UNION ALL
+  -- DAYS_PAST_DUE
+  SELECT
+    kc.END_OF_MONTH_DATE,
+    'DAYS_PAST_DUE' AS KDE,
+    kc.CURR_SSB,
+    0 AS bool_on,
+    0 AS bool_off,
+    ABS(COALESCE(CAST(kc.DAYS_PAST_DUE AS DOUBLE PRECISION),0) - COALESCE(CAST(kc.prev_dpd AS DOUBLE PRECISION),0)) AS numeric_mag,
+    CAST(NULL AS DOUBLE PRECISION) AS days_mag
+  FROM kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.DAYS_PAST_DUE <> kc.prev_dpd) OR ((kc.DAYS_PAST_DUE IS NULL) <> (kc.prev_dpd IS NULL)) )
+
+  -- --------- DATE KDEs ---------
+  UNION ALL
+  -- MATURITY_DATE
+  SELECT
+    kc.END_OF_MONTH_DATE,
+    'MATURITY_DATE' AS KDE,
+    kc.CURR_SSB,
+    0 AS bool_on,
+    0 AS bool_off,
+    CAST(NULL AS DOUBLE PRECISION) AS numeric_mag,
+    ABS((CAST(kc.MATURITY_DATE AS DATE) - CAST(kc.prev_mty AS DATE)))::DOUBLE PRECISION AS days_mag
+  FROM kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.MATURITY_DATE <> kc.prev_mty) OR ((kc.MATURITY_DATE IS NULL) <> (kc.prev_mty IS NULL)) )
+
+  UNION ALL
+  -- BOOK_DATE
+  SELECT
+    kc.END_OF_MONTH_DATE,
+    'BOOK_DATE' AS KDE,
+    kc.CURR_SSB,
+    0 AS bool_on,
+    0 AS bool_off,
+    CAST(NULL AS DOUBLE PRECISION) AS numeric_mag,
+    ABS((CAST(kc.BOOK_DATE AS DATE) - CAST(kc.prev_book AS DATE)))::DOUBLE PRECISION AS days_mag
+  FROM kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.BOOK_DATE <> kc.prev_book) OR ((kc.BOOK_DATE IS NULL) <> (kc.prev_book IS NULL)) )
+
+  -- --------- CATEGORICAL KDEs (count-only; exposure via CURR_SSB) ---------
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RISK_UNIT',               CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM kde_chg
+  WHERE prev_eom IS NOT NULL AND (RISK_UNIT <> prev_risk_unit OR ((RISK_UNIT IS NULL) <> (prev_risk_unit IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'FDIC_CALL_CODE',          CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM kde_chg
+  WHERE prev_eom IS NOT NULL AND (FDIC_CALL_CODE <> prev_fcc OR ((FDIC_CALL_CODE IS NULL) <> (prev_fcc IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'LIFESTAGE',               CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM kde_chg
+  WHERE prev_eom IS NOT NULL AND (LIFESTAGE <> prev_lifestage OR ((LIFESTAGE IS NULL) <> (prev_lifestage IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'NICHE_CD',                CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM kde_chg
+  WHERE prev_eom IS NOT NULL AND (NICHE_CD <> prev_niche OR ((NICHE_CD IS NULL) <> (prev_niche IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RBC_CODE',                CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM kde_chg
+  WHERE prev_eom IS NOT NULL AND (RBC_CODE <> prev_rbc OR ((RBC_CODE IS NULL) <> (prev_rbc IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'REVOLVING_NON_REVOLVING', CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM kde_chg
+  WHERE prev_eom IS NOT NULL AND (REVOLVING_NON_REVOLVING <> prev_revolver OR ((REVOLVING_NON_REVOLVING IS NULL) <> (prev_revolver IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RC_CODE',                 CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM kde_chg
+  WHERE prev_eom IS NOT NULL AND (RC_CODE <> prev_rc OR ((RC_CODE IS NULL) <> (prev_rc IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RATE_TYPE',               CURR_SSB, 0,0, NULL::DOUBLE PRECISION, NULL::DOUBLE PRECISION FROM kde_chg
+  WHERE prev_eom IS NOT NULL AND (RATE_TYPE <> prev_rate_type OR ((RATE_TYPE IS NULL) <> (prev_rate_type IS NULL)))
+),
+
+-- 6) Month × KDE rollup (type-aware metrics)
+kde_monthly AS (
+  SELECT
+    END_OF_MONTH_DATE,
+    KDE,
+    COUNT(*)                                      AS change_count,
+    SUM(CURR_SSB)                                 AS exposure_dollars,
+
+    SUM(bool_on)                                  AS flag_on_count,
+    SUM(bool_off)                                 AS flag_off_count,
+
+    SUM(numeric_mag)                               AS sum_numeric_magnitude,
+    AVG(CASE WHEN numeric_mag IS NOT NULL THEN numeric_mag END) AS avg_numeric_magnitude,
+
+    SUM(days_mag)                                  AS sum_days_moved,
+    AVG(CASE WHEN days_mag IS NOT NULL THEN days_mag END) AS avg_days_moved
+  FROM kde_changes
+  GROUP BY 1,2
+),
+
+-- 7) Add denominators and base rates/shares
+kde_with_denoms AS (
+  SELECT
+    m.END_OF_MONTH_DATE,
+    m.KDE,
+    m.change_count,
+    m.exposure_dollars,
+    t.month_total_accounts,
+    t.month_total_ssb,
+    CASE WHEN t.month_total_accounts > 0
+         THEN m.change_count / t.month_total_accounts::DOUBLE PRECISION END AS change_rate,
+    CASE WHEN t.month_total_ssb > 0
+         THEN m.exposure_dollars / t.month_total_ssb::DOUBLE PRECISION END AS exposure_share,
+    m.flag_on_count, m.flag_off_count,
+    m.sum_numeric_magnitude, m.avg_numeric_magnitude,
+    m.sum_days_moved,        m.avg_days_moved,
+    EXTRACT(MONTH FROM m.END_OF_MONTH_DATE) AS month_of_year
+  FROM kde_monthly m
+  JOIN month_totals t USING (END_OF_MONTH_DATE)
+),
+
+-- 8) Add MoM deltas & %
+with_mom AS (
+  SELECT
+    w.*,
+    LAG(w.change_count)     OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_change_count,
+    LAG(w.exposure_dollars) OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_exposure_dollars,
+
+    LAG(w.flag_on_count)    OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_flag_on_count,
+    LAG(w.flag_off_count)   OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_flag_off_count,
+
+    LAG(w.sum_numeric_magnitude) OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_sum_numeric_magnitude,
+    LAG(w.sum_days_moved)        OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_sum_days_moved,
+
+    (w.change_count     - LAG(w.change_count)     OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE)) AS mom_change_count_delta,
+    (w.exposure_dollars - LAG(w.exposure_dollars) OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE)) AS mom_exposure_dollars_delta,
+
+    CASE WHEN LAG(w.change_count) OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) > 0
+         THEN (w.change_count - LAG(w.change_count) OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE))
+              / LAG(w.change_count)::DOUBLE PRECISION OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) END AS mom_change_count_pct,
+
+    CASE WHEN LAG(w.exposure_dollars) OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) <> 0
+         THEN (w.exposure_dollars - LAG(w.exposure_dollars) OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE))
+              / LAG(w.exposure_dollars)::DOUBLE PRECISION OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) END AS mom_exposure_dollars_pct
+  FROM kde_with_denoms w
+),
+
+-- 9) Rolling trends (6 & 12 mo) & same-month seasonality (exclude current)
+baselines AS (
+  SELECT
+    x.*,
+
+    -- 6-mo and 12-mo trends (exclude current row)
+    AVG(change_rate)    OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN  6 PRECEDING AND 1 PRECEDING) AS trend_rate_6,
+    AVG(exposure_share) OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN  6 PRECEDING AND 1 PRECEDING) AS trend_share_6,
+
+    AVG(change_rate)    OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS trend_rate_12,
+    AVG(exposure_share) OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS trend_share_12,
+
+    -- same-month seasonality (up to 10y; exclude current)
+    AVG(change_rate)    OVER (PARTITION BY KDE, month_of_year ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 120 PRECEDING AND 1 PRECEDING) AS same_month_rate,
+    AVG(exposure_share) OVER (PARTITION BY KDE, month_of_year ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 120 PRECEDING AND 1 PRECEDING) AS same_month_share
+  FROM with_mom x
+),
+
+-- 10) Expected rates/shares (choose 6 or 12) + rolling stddevs; convert to expected count/$
+expected AS (
+  SELECT
+    b.*,
+
+    -- pick trend window
+    CASE WHEN (SELECT use_trend6 FROM params_flags)=1 THEN trend_rate_6  ELSE trend_rate_12  END AS trend_rate_sel,
+    CASE WHEN (SELECT use_trend6 FROM params_flags)=1 THEN trend_share_6 ELSE trend_share_12 END AS trend_share_sel,
+
+    -- expected rates/shares (weighted blend; fallback if one part missing)
+    COALESCE(
+      (SELECT weight_trend FROM params_flags)    * (CASE WHEN (SELECT use_trend6 FROM params_flags)=1 THEN trend_rate_6  ELSE trend_rate_12  END) +
+      (SELECT weight_seasonal FROM params_flags) *  same_month_rate,
+      (CASE WHEN (SELECT use_trend6 FROM params_flags)=1 THEN trend_rate_6  ELSE trend_rate_12  END),
+      same_month_rate
+    ) AS expected_rate,
+
+    COALESCE(
+      (SELECT weight_trend FROM params_flags)    * (CASE WHEN (SELECT use_trend6 FROM params_flags)=1 THEN trend_share_6 ELSE trend_share_12 END) +
+      (SELECT weight_seasonal FROM params_flags) *  same_month_share,
+      (CASE WHEN (SELECT use_trend6 FROM params_flags)=1 THEN trend_share_6 ELSE trend_share_12 END),
+      same_month_share
+    ) AS expected_share,
+
+    -- rolling std devs for standardization (exclude current)
+    STDDEV_SAMP(change_rate)    OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS std_rate_12,
+    STDDEV_SAMP(exposure_share) OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS std_share_12,
+
+    -- convert to expected count and expected $
+    CASE WHEN month_total_accounts IS NOT NULL THEN
+      COALESCE(
+        (SELECT weight_trend FROM params_flags)    * (CASE WHEN (SELECT use_trend6 FROM params_flags)=1 THEN trend_rate_6  ELSE trend_rate_12  END) +
+        (SELECT weight_seasonal FROM params_flags) *  same_month_rate,
+        (CASE WHEN (SELECT use_trend6 FROM params_flags)=1 THEN trend_rate_6  ELSE trend_rate_12  END),
+        same_month_rate
+      ) * month_total_accounts END AS expected_count,
+
+    CASE WHEN month_total_ssb IS NOT NULL THEN
+      COALESCE(
+        (SELECT weight_trend FROM params_flags)    * (CASE WHEN (SELECT use_trend6 FROM params_flags)=1 THEN trend_share_6 ELSE trend_share_12 END) +
+        (SELECT weight_seasonal FROM params_flags) *  same_month_share,
+        (CASE WHEN (SELECT use_trend6 FROM params_flags)=1 THEN trend_share_6 ELSE trend_share_12 END),
+        same_month_share
+      ) * month_total_ssb END AS expected_exposure
+  FROM baselines b
+)
+
+-- 11) Final output: actuals, MoM, expected, residuals, z-like, severity, flags
+SELECT
+  END_OF_MONTH_DATE,
+  KDE,
+
+  -- Core actuals
+  change_count,
+  exposure_dollars,
+  month_total_accounts,
+  month_total_ssb,
+  change_rate,
+  exposure_share,
+
+  -- Type-aware actuals
+  flag_on_count,
+  flag_off_count,
+  sum_numeric_magnitude,
+  avg_numeric_magnitude,
+  sum_days_moved,
+  avg_days_moved,
+
+  -- MoM actuals
+  prev_change_count,
+  mom_change_count_delta,
+  mom_change_count_pct,
+  prev_exposure_dollars,
+  mom_exposure_dollars_delta,
+  mom_exposure_dollars_pct,
+  prev_flag_on_count,
+  mom_flag_on_delta,
+  prev_flag_off_count,
+  mom_flag_off_delta,
+  prev_sum_numeric_magnitude,
+  mom_sum_numeric_mag_delta,
+  prev_sum_days_moved,
+  mom_sum_days_moved_delta,
+
+  -- Expected (forecast-like)
+  expected_count,
+  expected_exposure,
+  expected_rate,
+  expected_share,
+
+  -- Residuals
+  (change_count     - expected_count)    AS resid_count,
+  (exposure_dollars - expected_exposure) AS resid_exposure,
+
+  -- Standardized residuals (z-like)
+  CASE WHEN std_rate_12  IS NOT NULL AND std_rate_12  > 0 AND expected_rate  IS NOT NULL
+       THEN (change_rate    - expected_rate)  / std_rate_12  END AS std_resid_rate,
+  CASE WHEN std_share_12 IS NOT NULL AND std_share_12 > 0 AND expected_share IS NOT NULL
+       THEN (exposure_share - expected_share) / std_share_12 END AS std_resid_share,
+
+  -- Severity score (positive standardized residuals + MoM intensity + $ materiality)
+  (
+    COALESCE(GREATEST(0.0, CASE WHEN std_share_12 > 0 AND expected_share IS NOT NULL
+                                THEN (exposure_share - expected_share) / std_share_12 END), 0.0)
+    + COALESCE(GREATEST(0.0, CASE WHEN std_rate_12  > 0 AND expected_rate  IS NOT NULL
+                                  THEN (change_rate - expected_rate) / std_rate_12 END), 0.0)
+    + COALESCE(GREATEST(0.0, mom_exposure_dollars_pct), 0.0)
+    + (ABS(exposure_dollars - expected_exposure) / NULLIF(month_total_ssb,0)) * 5.0
+  ) AS severity_score,
+
+  -- Combined anomaly flag (stat surprise OR big $ delta OR big MoM)
+  CASE WHEN
+         ABS(CASE WHEN std_share_12 > 0 AND expected_share IS NOT NULL
+                  THEN (exposure_share - expected_share)/std_share_12 END) >= (SELECT z_threshold FROM params_flags)
+       OR ABS(exposure_dollars - expected_exposure) >= (SELECT abs_dollar_threshold FROM params_flags)
+       OR (expected_exposure IS NOT NULL AND ABS((exposure_dollars - expected_exposure)/NULLIF(expected_exposure,0)) >= (SELECT rel_vs_expected_threshold FROM params_flags))
+       OR ABS(COALESCE(mom_exposure_dollars_pct,0)) >= (SELECT mom_pct_threshold FROM params_flags)
+       OR ABS(COALESCE(mom_exposure_dollars_delta,0)) >= (SELECT abs_dollar_threshold FROM params_flags)
+       OR ABS(COALESCE(mom_change_count_pct,0)) >= (SELECT mom_pct_threshold FROM params_flags)
+       OR ABS(COALESCE(mom_change_count_delta,0)) >= 250  -- tune if needed
+       THEN 1 ELSE 0 END AS LIKELY_ANOMALY_FLAG
+
+FROM expected
+ORDER BY END_OF_MONTH_DATE DESC, severity_score DESC, KDE;
+
+
+
+
+
+-- ======================================================================
+-- KDE monthly (type-aware) + MoM deltas + Expected vs Actual (SQL-only)
+-- Netezza-friendly: DOUBLE PRECISION casts, fixed window frames, RC_CODE raw
 -- ======================================================================
 
 WITH params AS (
