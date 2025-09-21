@@ -1,3 +1,66 @@
+, kde_with_denoms AS (
+  SELECT
+    m.*,                              -- carries flag_on/off, magnitudes, etc.
+    t.month_total_accounts,
+    t.month_total_ssb,
+    CASE WHEN t.month_total_accounts > 0
+         THEN m.change_count / t.month_total_accounts::FLOAT8 END AS change_rate,
+    CASE WHEN t.month_total_ssb > 0
+         THEN m.exposure_dollars / t.month_total_ssb::FLOAT8 END AS exposure_share
+  FROM kde_monthly m
+  JOIN month_totals t USING (END_OF_MONTH_DATE)
+)
+
+
+
+, with_prev AS (
+  SELECT
+    w.*,
+    LAG(w.change_count)           OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_change_count,
+    LAG(w.exposure_dollars)       OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_exposure_dollars,
+    LAG(w.flag_on_count)          OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_flag_on_count,
+    LAG(w.flag_off_count)         OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_flag_off_count,
+    LAG(w.sum_numeric_magnitude)  OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_sum_numeric_magnitude,
+    LAG(w.sum_days_moved)         OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_sum_days_moved
+  FROM kde_with_denoms w
+),
+with_mom AS (
+  SELECT
+    p.*,
+    /* counts */
+    (p.change_count - p.prev_change_count) AS mom_change_count_delta,
+    CASE WHEN p.prev_change_count > 0
+         THEN (p.change_count - p.prev_change_count) / p.prev_change_count::FLOAT8 END AS mom_change_count_pct,
+    /* exposure $ */
+    (p.exposure_dollars - p.prev_exposure_dollars) AS mom_exposure_dollars_delta,
+    CASE WHEN p.prev_exposure_dollars <> 0
+         THEN (p.exposure_dollars - p.prev_exposure_dollars) / p.prev_exposure_dollars::FLOAT8 END AS mom_exposure_dollars_pct,
+    /* extras */
+    (p.flag_on_count  - p.prev_flag_on_count)  AS mom_flag_on_delta,
+    (p.flag_off_count - p.prev_flag_off_count) AS mom_flag_off_delta,
+    (p.sum_numeric_magnitude - p.prev_sum_numeric_magnitude) AS mom_sum_numeric_mag_delta,
+    (p.sum_days_moved        - p.prev_sum_days_moved)        AS mom_sum_days_moved_delta
+  FROM with_prev p
+)
+SELECT
+  END_OF_MONTH_DATE,
+  KDE,
+  change_count,      prev_change_count,      mom_change_count_delta,      mom_change_count_pct,
+  exposure_dollars,  prev_exposure_dollars,  mom_exposure_dollars_delta,  mom_exposure_dollars_pct,
+  flag_on_count,     prev_flag_on_count,     mom_flag_on_delta,
+  flag_off_count,    prev_flag_off_count,    mom_flag_off_delta,
+  sum_numeric_magnitude, prev_sum_numeric_magnitude, mom_sum_numeric_mag_delta,
+  sum_days_moved,        prev_sum_days_moved,        mom_sum_days_moved_delta,
+  month_total_accounts, month_total_ssb,
+  change_rate, exposure_share
+FROM with_mom
+ORDER BY END_OF_MONTH_DATE DESC, KDE
+LIMIT 200;
+
+
+
+
+
 , with_prev AS (
   SELECT
     w.*,
