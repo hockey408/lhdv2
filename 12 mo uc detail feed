@@ -8,6 +8,171 @@ cfg AS (
     1.5::FLOAT8  AS w_mom_cnt_pct,
     2.0::FLOAT8  AS z_thresh,
     0.25::FLOAT8 AS mom_pct_thresh,
+    50000000::FLOAT8 AS abs_dollar_thresh
+),
+latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME
+),
+measures AS (
+  SELECT t.END_OF_MONTH_DATE, t.CONTRACT_SOURCE_SYSTEM, t.ACCOUNT_KEY,
+         SUM(t.SOURCE_SYSTEM_BALANCE) AS SOURCE_SYSTEM_BALANCE
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t
+  GROUP BY 1,2,3
+  HAVING SUM(t.SOURCE_SYSTEM_BALANCE) > 0
+),
+month_totals AS (
+  SELECT m.END_OF_MONTH_DATE,
+         COUNT(DISTINCT (m.CONTRACT_SOURCE_SYSTEM || '|' || m.ACCOUNT_KEY)) AS month_total_accounts,
+         SUM(m.SOURCE_SYSTEM_BALANCE) AS month_total_ssb
+  FROM measures m
+  GROUP BY 1
+),
+kde_month AS (
+  SELECT m.END_OF_MONTH_DATE, m.CONTRACT_SOURCE_SYSTEM, m.ACCOUNT_KEY,
+         m.SOURCE_SYSTEM_BALANCE AS CURR_SSB,
+         MAX(t.DAYS_PAST_DUE) AS DAYS_PAST_DUE,
+         MAX(t.NON_ACCRUAL_FLAG) AS NON_ACCRUAL_FLAG,
+         MAX(t.CRE_FLAG) AS CRE_FLAG,
+         MAX(t.RISK_UNIT) AS RISK_UNIT,
+         MAX(t.FDIC_CALL_CODE) AS FDIC_CALL_CODE,
+         MAX(t.LIFESTAGE) AS LIFESTAGE,
+         MAX(t.NICHE_CD) AS NICHE_CD,
+         MAX(t.RBC_CODE) AS RBC_CODE,
+         MAX(t.REVOLVING_NON_REVOLVING) AS REVOLVING_NON_REVOLVING,
+         MAX(t.RC_CODE) AS RC_CODE,
+         MAX(t.RATE_TYPE) AS RATE_TYPE
+  FROM measures m
+  JOIN CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t
+    ON t.END_OF_MONTH_DATE      = m.END_OF_MONTH_DATE
+   AND t.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
+   AND t.ACCOUNT_KEY            = m.ACCOUNT_KEY
+  GROUP BY 1,2,3,4
+),
+kde_chg AS (
+  SELECT
+    k.*,
+    LAG(k.END_OF_MONTH_DATE)       OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_eom,
+    LAG(k.DAYS_PAST_DUE)           OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_dpd,
+    LAG(k.NON_ACCRUAL_FLAG)        OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_na,
+    LAG(k.CRE_FLAG)                OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_cre,
+    LAG(k.RISK_UNIT)               OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_risk_unit,
+    LAG(k.FDIC_CALL_CODE)          OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_fcc,
+    LAG(k.LIFESTAGE)               OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_lifestage,
+    LAG(k.NICHE_CD)                OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_niche,
+    LAG(k.RBC_CODE)                OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_rbc,
+    LAG(k.REVOLVING_NON_REVOLVING) OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_revolver,
+    LAG(k.RC_CODE)                 OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_rc,
+    LAG(k.RATE_TYPE)               OVER (PARTITION BY k.ACCOUNT_KEY, k.CONTRACT_SOURCE_SYSTEM ORDER BY k.END_OF_MONTH_DATE) AS prev_rate_type
+  FROM kde_month k
+),
+kde_changes AS (
+  SELECT kc.END_OF_MONTH_DATE, 'NON_ACCRUAL_FLAG' AS KDE, kc.CURR_SSB FROM kde_chg kc
+   WHERE kc.prev_eom IS NOT NULL AND (UPPER(TRIM(kc.NON_ACCRUAL_FLAG)) <> UPPER(TRIM(kc.prev_na)) OR ((kc.NON_ACCRUAL_FLAG IS NULL) <> (kc.prev_na IS NULL)))
+  UNION ALL SELECT kc.END_OF_MONTH_DATE, 'CRE_FLAG', kc.CURR_SSB FROM kde_chg kc
+   WHERE kc.prev_eom IS NOT NULL AND (UPPER(TRIM(kc.CRE_FLAG)) <> UPPER(TRIM(kc.prev_cre)) OR ((kc.CRE_FLAG IS NULL) <> (kc.prev_cre IS NULL)))
+  UNION ALL SELECT kc.END_OF_MONTH_DATE, 'DAYS_PAST_DUE', kc.CURR_SSB FROM kde_chg kc
+   WHERE kc.prev_eom IS NOT NULL AND ( (kc.DAYS_PAST_DUE <> kc.prev_dpd) OR ((kc.DAYS_PAST_DUE IS NULL) <> (kc.prev_dpd IS NULL)) )
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RISK_UNIT',               CURR_SSB FROM kde_chg WHERE prev_eom IS NOT NULL AND (RISK_UNIT <> prev_risk_unit OR ((RISK_UNIT IS NULL) <> (prev_risk_unit IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'FDIC_CALL_CODE',          CURR_SSB FROM kde_chg WHERE prev_eom IS NOT NULL AND (FDIC_CALL_CODE <> prev_fcc OR ((FDIC_CALL_CODE IS NULL) <> (prev_fcc IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'LIFESTAGE',               CURR_SSB FROM kde_chg WHERE prev_eom IS NOT NULL AND (LIFESTAGE <> prev_lifestage OR ((LIFESTAGE IS NULL) <> (prev_lifestage IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'NICHE_CD',                CURR_SSB FROM kde_chg WHERE prev_eom IS NOT NULL AND (NICHE_CD <> prev_niche OR ((NICHE_CD IS NULL) <> (prev_niche IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RBC_CODE',                CURR_SSB FROM kde_chg WHERE prev_eom IS NOT NULL AND (RBC_CODE <> prev_rbc OR ((RBC_CODE IS NULL) <> (prev_rbc IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'REVOLVING_NON_REVOLVING', CURR_SSB FROM kde_chg WHERE prev_eom IS NOT NULL AND (REVOLVING_NON_REVOLVING <> prev_revolver OR ((REVOLVING_NON_REVOLVING IS NULL) <> (prev_revolver IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RC_CODE',                 CURR_SSB FROM kde_chg WHERE prev_eom IS NOT NULL AND (RC_CODE <> prev_rc OR ((RC_CODE IS NULL) <> (prev_rc IS NULL)))
+  UNION ALL SELECT END_OF_MONTH_DATE, 'RATE_TYPE',               CURR_SSB FROM kde_chg WHERE prev_eom IS NOT NULL AND (RATE_TYPE <> prev_rate_type OR ((RATE_TYPE IS NULL) <> (prev_rate_type IS NULL)))
+),
+kde_monthly AS (
+  SELECT END_OF_MONTH_DATE, KDE,
+         COUNT(*) AS change_count,
+         SUM(CURR_SSB) AS exposure_dollars
+  FROM kde_changes
+  GROUP BY 1,2
+),
+kde_with_denoms AS (
+  SELECT m.END_OF_MONTH_DATE, m.KDE, m.change_count, m.exposure_dollars,
+         t.month_total_accounts, t.month_total_ssb,
+         CASE WHEN t.month_total_accounts > 0 THEN m.change_count / t.month_total_accounts::FLOAT8 END AS change_rate,
+         CASE WHEN t.month_total_ssb > 0      THEN m.exposure_dollars / t.month_total_ssb::FLOAT8 END AS exposure_share
+  FROM kde_monthly m
+  JOIN month_totals t USING (END_OF_MONTH_DATE)
+),
+with_prev AS (
+  SELECT w.*,
+         LAG(w.change_count)     OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_change_count,
+         LAG(w.exposure_dollars) OVER (PARTITION BY w.KDE ORDER BY w.END_OF_MONTH_DATE) AS prev_exposure_dollars
+  FROM kde_with_denoms w
+),
+with_mom AS (
+  SELECT p.*,
+         (p.change_count - p.prev_change_count) AS mom_change_count_delta,
+         CASE WHEN p.prev_change_count > 0
+              THEN (p.change_count - p.prev_change_count) / p.prev_change_count::FLOAT8 END AS mom_change_count_pct,
+         (p.exposure_dollars - p.prev_exposure_dollars) AS mom_exposure_dollars_delta,
+         CASE WHEN p.prev_exposure_dollars <> 0
+              THEN (p.exposure_dollars - p.prev_exposure_dollars) / p.prev_exposure_dollars::FLOAT8 END AS mom_exposure_dollars_pct
+  FROM with_prev p
+),
+trends AS (
+  SELECT m.*,
+         AVG(change_rate)    OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS trend_rate_N,
+         AVG(exposure_share) OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS trend_share_N,
+         STDDEV_SAMP(change_rate)    OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS std_rate_N,
+         STDDEV_SAMP(exposure_share) OVER (PARTITION BY KDE ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS std_share_N
+  FROM with_mom m
+),
+scored AS (
+  SELECT t.*,
+         CASE WHEN std_rate_N  IS NOT NULL AND std_rate_N  > 0 AND trend_rate_N  IS NOT NULL
+              THEN (change_rate    - trend_rate_N)  / std_rate_N  END AS z_rate,
+         CASE WHEN std_share_N IS NOT NULL AND std_share_N > 0 AND trend_share_N IS NOT NULL
+              THEN (exposure_share - trend_share_N) / std_share_N END AS z_share
+  FROM trends t
+),
+final_latest AS (
+  SELECT
+    s.*,
+    -- severity (using cfg weights)
+    (COALESCE(ABS(z_rate),0)  * c.w_z_rate)  +
+    (COALESCE(ABS(z_share),0) * c.w_z_share) +
+    (COALESCE(ABS(mom_exposure_dollars_pct),0) * c.w_mom_pct) +
+    (COALESCE(ABS(mom_change_count_pct),0)    * c.w_mom_cnt_pct) AS severity_score,
+    CASE WHEN
+         ABS(COALESCE(z_rate,0))  >= c.z_thresh OR
+         ABS(COALESCE(z_share,0)) >= c.z_thresh OR
+         ABS(COALESCE(mom_exposure_dollars_pct,0)) >= c.mom_pct_thresh OR
+         ABS(COALESCE(mom_exposure_dollars_delta,0)) >= c.abs_dollar_thresh OR
+         ABS(COALESCE(mom_change_count_pct,0)) >= c.mom_pct_thresh
+    THEN 1 ELSE 0 END AS likely_anomaly_flag
+  FROM scored s
+  CROSS JOIN cfg c
+  WHERE s.END_OF_MONTH_DATE = (SELECT max_eom FROM latest)
+)
+SELECT
+  END_OF_MONTH_DATE, KDE,
+  change_count, exposure_dollars, change_rate, exposure_share,
+  prev_change_count, mom_change_count_delta, mom_change_count_pct,
+  prev_exposure_dollars, mom_exposure_dollars_delta, mom_exposure_dollars_pct,
+  trend_rate_N, trend_share_N, z_rate, z_share,
+  severity_score, likely_anomaly_flag,
+  DENSE_RANK() OVER (PARTITION BY END_OF_MONTH_DATE ORDER BY severity_score DESC, KDE) AS severity_rank_in_month
+FROM final_latest
+ORDER BY severity_rank_in_month, KDE;
+
+
+
+
+
+WITH
+cfg AS (
+  SELECT
+    12::INTEGER  AS lookback_n,
+    1.0::FLOAT8  AS w_z_rate,
+    1.0::FLOAT8  AS w_z_share,
+    1.0::FLOAT8  AS w_mom_pct,
+    1.5::FLOAT8  AS w_mom_cnt_pct,
+    2.0::FLOAT8  AS z_thresh,
+    0.25::FLOAT8 AS mom_pct_thresh,
     50000000::FLOAT8 AS abs_$_thresh
 ),
 latest AS (
