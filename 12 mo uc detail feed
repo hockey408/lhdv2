@@ -1,3 +1,34 @@
+, -- Step 2: dates only
+kde_changes_dates AS (
+  -- MATURITY_DATE
+  SELECT
+    kc.END_OF_MONTH_DATE, 'MATURITY_DATE' AS KDE, kc.CURR_SSB,
+    0 AS bool_on, 0 AS bool_off,
+    NULL::FLOAT8 AS numeric_mag,
+    ABS((DATE(kc.MATURITY_DATE) - DATE(kc.prev_mty)))::FLOAT8 AS days_mag
+  FROM kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.MATURITY_DATE <> kc.prev_mty) OR ((kc.MATURITY_DATE IS NULL) <> (kc.prev_mty IS NULL)) )
+
+  UNION ALL
+  -- BOOK_DATE
+  SELECT
+    kc.END_OF_MONTH_DATE, 'BOOK_DATE', kc.CURR_SSB,
+    0, 0,
+    NULL::FLOAT8,
+    ABS((DATE(kc.BOOK_DATE) - DATE(kc.prev_book)))::FLOAT8
+  FROM kde_chg kc
+  WHERE kc.prev_eom IS NOT NULL
+    AND ( (kc.BOOK_DATE <> kc.prev_book) OR ((kc.BOOK_DATE IS NULL) <> (kc.prev_book IS NULL)) )
+)
+SELECT KDE, COUNT(*) AS change_rows, SUM(CURR_SSB) AS exposure_sum
+FROM kde_changes_dates
+GROUP BY KDE
+ORDER BY KDE;
+
+
+
+
 WITH
 /* ---------------- population: pos balance per acct x system ----- */
 measures AS (
