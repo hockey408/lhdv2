@@ -1,3 +1,43 @@
+MoM $ Change =
+VAR CurrentSystem = tblVariance[CONTRACT_SOURCE_SYSTEM]
+VAR CurrentDate   = tblVariance[period_date]
+VAR PriorActual   =
+    CALCULATE (
+        MAX ( tblVariance[actual] ),
+        FILTER (
+            tblVariance,
+            tblVariance[CONTRACT_SOURCE_SYSTEM] = CurrentSystem &&
+            tblVariance[period_date] = EOMONTH ( CurrentDate, -1 )
+        )
+    )
+RETURN
+IF ( NOT ISBLANK (PriorActual), tblVariance[actual] - PriorActual )
+
+
+
+
+MoM % Change =
+VAR CurrentSystem = tblVariance[CONTRACT_SOURCE_SYSTEM]
+VAR CurrentDate   = tblVariance[period_date]
+VAR PriorActual   =
+    CALCULATE (
+        MAX ( tblVariance[actual] ),
+        FILTER (
+            tblVariance,
+            tblVariance[CONTRACT_SOURCE_SYSTEM] = CurrentSystem &&
+            tblVariance[period_date] = EOMONTH ( CurrentDate, -1 )
+        )
+    )
+RETURN
+IF (
+    NOT ISBLANK (PriorActual) && PriorActual <> 0,
+    (tblVariance[actual] - PriorActual) / PriorActual
+)
+
+
+
+
+
 WITH
 measures AS (...),
 month_totals AS (...),
