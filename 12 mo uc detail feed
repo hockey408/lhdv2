@@ -1,3 +1,34 @@
+forecast AS (
+  SELECT
+    m.*,
+
+    -- one-step-ahead forecast
+    CASE
+      WHEN m.beta1_slope_18 IS NOT NULL AND m.beta0_int_18 IS NOT NULL
+      THEN m.beta0_int_18 + m.beta1_slope_18 * (m.x_idx + 1.0)
+      ELSE NULL
+    END AS yhat_t1,
+
+    -- PI around in-sample prediction (yhat_t)
+    CASE WHEN m.yhat_t  IS NOT NULL AND m.resid_std_18 IS NOT NULL
+         THEN m.yhat_t  - 1.9599 * m.resid_std_18 END AS pi95_lo_t,
+    CASE WHEN m.yhat_t  IS NOT NULL AND m.resid_std_18 IS NOT NULL
+         THEN m.yhat_t  + 1.9599 * m.resid_std_18 END AS pi95_hi_t,
+
+    -- PI around t+1 forecast: recompute yhat_t1 expression inline
+    CASE
+      WHEN m.beta1_slope_18 IS NOT NULL AND m.beta0_int_18 IS NOT NULL AND m.resid_std_18 IS NOT NULL
+      THEN (m.beta0_int_18 + m.beta1_slope_18 * (m.x_idx + 1.0)) - 1.9599 * m.resid_std_18
+    END AS pi95_lo_t1,
+    CASE
+      WHEN m.beta1_slope_18 IS NOT NULL AND m.beta0_int_18 IS NOT NULL AND m.resid_std_18 IS NOT NULL
+      THEN (m.beta0_int_18 + m.beta1_slope_18 * (m.x_idx + 1.0)) + 1.9599 * m.resid_std_18
+    END AS pi95_hi_t1
+  FROM mom_stats m
+)
+
+
+
 -- Master CONTRACT_SOURCE_SYSTEM anomaly detector:
 -- Rolling 18m regression + MoM Z + prediction intervals + unified severity.
 -- Netezza-safe: no analytic REGR_*, no nested windowed aggregates.
