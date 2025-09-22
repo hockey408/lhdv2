@@ -1,3 +1,103 @@
+WITH
+cfg AS (
+  SELECT
+    25000000::FLOAT8 AS per_kde_min_exposure,   -- Show KDEs ≥ $25MM
+    100000::FLOAT8   AS per_account_min_ssb     -- Ignore tiny accounts (<$100k)
+),
+
+-- Target month: latest month end
+target AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS eom
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME
+),
+
+-- Current month accounts with positive SSB
+measures AS (
+  SELECT t.CONTRACT_SOURCE_SYSTEM, t.ACCOUNT_KEY,
+         SUM(t.SOURCE_SYSTEM_BALANCE) AS SSB
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t, target tg
+  WHERE t.END_OF_MONTH_DATE = tg.eom
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  GROUP BY 1,2
+  HAVING SUM(t.SOURCE_SYSTEM_BALANCE) > 0
+),
+
+-- Bring rows for current month (filter small accounts early)
+base AS (
+  SELECT t.*
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t
+  JOIN measures m
+    ON m.CONTRACT_SOURCE_SYSTEM = t.CONTRACT_SOURCE_SYSTEM
+   AND m.ACCOUNT_KEY            = t.ACCOUNT_KEY
+  JOIN target tg ON tg.eom = t.END_OF_MONTH_DATE
+  JOIN cfg ON 1=1
+  WHERE t.SOURCE_SYSTEM_BALANCE >= cfg.per_account_min_ssb
+),
+
+-- Map accounts to previous month for comparison
+prev_map AS (
+  SELECT
+    b.CONTRACT_SOURCE_SYSTEM,
+    b.ACCOUNT_KEY,
+    b.END_OF_MONTH_DATE,
+    LAG(b.END_OF_MONTH_DATE) OVER (
+      PARTITION BY b.CONTRACT_SOURCE_SYSTEM, b.ACCOUNT_KEY
+      ORDER BY b.END_OF_MONTH_DATE
+    ) AS prev_eom
+  FROM (
+    SELECT DISTINCT CONTRACT_SOURCE_SYSTEM, ACCOUNT_KEY, END_OF_MONTH_DATE
+    FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME
+  ) b
+),
+
+-- Previous month rows
+base_prev AS (
+  SELECT p.*
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME p
+  JOIN prev_map mp
+    ON mp.prev_eom IS NOT NULL
+   AND mp.prev_eom = p.END_OF_MONTH_DATE
+   AND mp.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
+   AND mp.ACCOUNT_KEY = p.ACCOUNT_KEY
+  JOIN target tg ON 1=1
+  WHERE mp.END_OF_MONTH_DATE = tg.eom
+),
+
+/* ===== CHANGE EVENTS ===== */
+kde_changes AS (
+  SELECT DATE '1900-01-01'::DATE AS END_OF_MONTH_DATE,
+         ''::VARCHAR(1) AS KDE,
+         0::FLOAT8 AS CURR_SSB
+  WHERE 1=0
+
+  /* <<< PASTE ~8–12 UNION ALL SELECT lines from generator here,
+         comparing base (alias b) vs base_prev (alias p) >>> */
+),
+
+-- Aggregate to KDE totals
+kde_monthly AS (
+  SELECT END_OF_MONTH_DATE, KDE,
+         COUNT(*) AS change_count,
+         SUM(CURR_SSB) AS exposure_dollars
+  FROM kde_changes
+  GROUP BY 1,2
+)
+
+SELECT
+  END_OF_MONTH_DATE,
+  KDE,
+  change_count,
+  exposure_dollars
+FROM kde_monthly
+JOIN cfg ON 1=1
+WHERE exposure_dollars >= cfg.per_kde_min_exposure
+ORDER BY exposure_dollars DESC, KDE
+LIMIT 50;
+
+
+
+
+
 WITH cols AS (
   SELECT
     c.column_name,
