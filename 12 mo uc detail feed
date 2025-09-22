@@ -1,3 +1,128 @@
+WITH
+cfg AS (
+  SELECT
+    25000000::FLOAT8 AS per_kde_min_exposure,  -- Show KDEs with ≥ $25MM exposure
+    100000::FLOAT8   AS per_account_min_ssb    -- Ignore tiny accounts (<$100k)
+),
+
+-- Find last two month-ends
+bounds AS (
+  SELECT
+    MAX(END_OF_MONTH_DATE) AS curr_eom,
+    (SELECT MAX(END_OF_MONTH_DATE)
+       FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME
+      WHERE END_OF_MONTH_DATE <
+           (SELECT MAX(END_OF_MONTH_DATE) FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME)) AS prev_eom
+),
+
+-- Current month accounts with positive SSB
+measures_c AS (
+  SELECT t.CONTRACT_SOURCE_SYSTEM, t.ACCOUNT_KEY,
+         SUM(t.SOURCE_SYSTEM_BALANCE) AS SSB
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t, bounds b
+  WHERE t.END_OF_MONTH_DATE = b.curr_eom
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  GROUP BY 1,2 HAVING SUM(t.SOURCE_SYSTEM_BALANCE) > 0
+),
+
+-- Previous month accounts with positive SSB
+measures_p AS (
+  SELECT t.CONTRACT_SOURCE_SYSTEM, t.ACCOUNT_KEY,
+         SUM(t.SOURCE_SYSTEM_BALANCE) AS SSB
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t, bounds b
+  WHERE t.END_OF_MONTH_DATE = b.prev_eom
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  GROUP BY 1,2 HAVING SUM(t.SOURCE_SYSTEM_BALANCE) > 0
+),
+
+-- Bring in full rows for each month
+base_c AS (
+  SELECT t.*
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t
+  JOIN measures_c m
+    ON m.CONTRACT_SOURCE_SYSTEM = t.CONTRACT_SOURCE_SYSTEM
+   AND m.ACCOUNT_KEY = t.ACCOUNT_KEY
+  JOIN bounds b ON t.END_OF_MONTH_DATE = b.curr_eom
+  JOIN cfg ON 1=1
+  WHERE t.SOURCE_SYSTEM_BALANCE >= cfg.per_account_min_ssb
+),
+base_p AS (
+  SELECT t.*
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t
+  JOIN measures_p m
+    ON m.CONTRACT_SOURCE_SYSTEM = t.CONTRACT_SOURCE_SYSTEM
+   AND m.ACCOUNT_KEY = t.ACCOUNT_KEY
+  JOIN bounds b ON t.END_OF_MONTH_DATE = b.prev_eom
+),
+
+/* ==== CHANGE EVENTS: paste generated lines here ==== */
+kde_changes AS (
+  SELECT DATE '1900-01-01'::DATE AS END_OF_MONTH_DATE,
+         ''::VARCHAR(1) AS KDE,
+         0::FLOAT8 AS CURR_SSB
+  WHERE 1=0
+
+  /* <<< PASTE UNION ALL SELECT LINES FROM GENERATOR HERE >>> */
+),
+
+-- Aggregate by KDE for current month
+kde_monthly_curr AS (
+  SELECT END_OF_MONTH_DATE, KDE,
+         COUNT(*) AS change_count,
+         SUM(CURR_SSB) AS exposure_dollars
+  FROM kde_changes
+  GROUP BY 1,2
+),
+
+-- Repeat for previous month (swap base_c and base_p in the pasted lines!)
+kde_changes_prev AS (
+  SELECT DATE '1900-01-01'::DATE AS END_OF_MONTH_DATE,
+         ''::VARCHAR(1) AS KDE,
+         0::FLOAT8 AS CURR_SSB
+  WHERE 1=0
+
+  /* <<< PASTE THE SAME LINES, BUT REPLACE base_c → base_p AND base_p → base_c >>> */
+),
+kde_monthly_prev AS (
+  SELECT END_OF_MONTH_DATE, KDE,
+         COUNT(*) AS change_count,
+         SUM(CURR_SSB) AS exposure_dollars
+  FROM kde_changes_prev
+  GROUP BY 1,2
+),
+
+-- Join current vs previous for MoM deltas
+final AS (
+  SELECT
+    c.END_OF_MONTH_DATE,
+    c.KDE,
+    c.change_count,
+    c.exposure_dollars,
+    p.change_count AS prev_change_count,
+    p.exposure_dollars AS prev_exposure_dollars,
+    (c.change_count - p.change_count) AS mom_change_count_delta,
+    CASE WHEN p.change_count > 0
+         THEN (c.change_count - p.change_count) / p.change_count::FLOAT8 END AS mom_change_count_pct,
+    (c.exposure_dollars - p.exposure_dollars) AS mom_exposure_dollars_delta,
+    CASE WHEN p.exposure_dollars <> 0
+         THEN (c.exposure_dollars - p.exposure_dollars) / p.exposure_dollars::FLOAT8 END AS mom_exposure_dollars_pct
+  FROM kde_monthly_curr c
+  LEFT JOIN kde_monthly_prev p
+    ON p.KDE = c.KDE
+)
+
+-- Filter to large-$ KDEs, order by biggest impact first
+SELECT *
+FROM final
+JOIN cfg ON 1=1
+WHERE exposure_dollars >= cfg.per_kde_min_exposure
+ORDER BY exposure_dollars DESC, KDE
+FETCH FIRST 50 ROWS ONLY;
+
+
+
+
+
 WITH cols AS (
   SELECT
     c.column_name,
