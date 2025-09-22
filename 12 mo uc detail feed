@@ -1,3 +1,68 @@
+SELECT
+  CASE
+    /* TEXT-like types: compare with UPPER(TRIM(...)) and null-safety */
+    WHEN POSITION('CHAR' IN UPPER(data_type)) > 0
+         OR POSITION('VARCHAR' IN UPPER(data_type)) > 0
+         OR POSITION('NCHAR' IN UPPER(data_type)) > 0
+         OR POSITION('NVARCHAR' IN UPPER(data_type)) > 0
+    THEN
+      'UNION ALL SELECT mp.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, c.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+       FROM map_prev mp
+       JOIN base c ON c.END_OF_MONTH_DATE = mp.END_OF_MONTH_DATE
+                  AND c.CONTRACT_SOURCE_SYSTEM = mp.CONTRACT_SOURCE_SYSTEM
+                  AND c.ACCOUNT_KEY = mp.ACCOUNT_KEY
+       JOIN base p ON p.END_OF_MONTH_DATE = mp.prev_eom
+                  AND p.CONTRACT_SOURCE_SYSTEM = mp.CONTRACT_SOURCE_SYSTEM
+                  AND p.ACCOUNT_KEY = mp.ACCOUNT_KEY
+       WHERE mp.prev_eom IS NOT NULL
+         AND ( UPPER(TRIM(c."'||column_name||'")) <> UPPER(TRIM(p."'||column_name||'"))
+               OR ((c."'||column_name||'" IS NULL) <> (p."'||column_name||'" IS NULL)) )'
+
+    /* DATE / TIMESTAMP types */
+    WHEN UPPER(data_type) LIKE '%DATE%'
+         OR UPPER(data_type) LIKE '%TIMESTAMP%'
+    THEN
+      'UNION ALL SELECT mp.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, c.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+       FROM map_prev mp
+       JOIN base c ON c.END_OF_MONTH_DATE = mp.END_OF_MONTH_DATE
+                  AND c.CONTRACT_SOURCE_SYSTEM = mp.CONTRACT_SOURCE_SYSTEM
+                  AND c.ACCOUNT_KEY = mp.ACCOUNT_KEY
+       JOIN base p ON p.END_OF_MONTH_DATE = mp.prev_eom
+                  AND p.CONTRACT_SOURCE_SYSTEM = mp.CONTRACT_SOURCE_SYSTEM
+                  AND p.ACCOUNT_KEY = mp.ACCOUNT_KEY
+       WHERE mp.prev_eom IS NOT NULL
+         AND ( c."'||column_name||'" <> p."'||column_name||'"
+               OR ((c."'||column_name||'" IS NULL) <> (p."'||column_name||'" IS NULL)) )'
+
+    /* NUMERIC & everything else: direct compare with null-safety */
+    ELSE
+      'UNION ALL SELECT mp.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, c.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+       FROM map_prev mp
+       JOIN base c ON c.END_OF_MONTH_DATE = mp.END_OF_MONTH_DATE
+                  AND c.CONTRACT_SOURCE_SYSTEM = mp.CONTRACT_SOURCE_SYSTEM
+                  AND c.ACCOUNT_KEY = mp.ACCOUNT_KEY
+       JOIN base p ON p.END_OF_MONTH_DATE = mp.prev_eom
+                  AND p.CONTRACT_SOURCE_SYSTEM = mp.CONTRACT_SOURCE_SYSTEM
+                  AND p.ACCOUNT_KEY = mp.ACCOUNT_KEY
+       WHERE mp.prev_eom IS NOT NULL
+         AND ( c."'||column_name||'" <> p."'||column_name||'"
+               OR ((c."'||column_name||'" IS NULL) <> (p."'||column_name||'" IS NULL)) )'
+  END AS sql_line
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE UPPER(table_name) = 'V_DPRT_CREDIT_INSTRUMENTS_ME'
+  /* optional: narrow by schema if needed
+     AND UPPER(table_schema) IN ('CIDPR','DATAHUB')
+  */
+  AND UPPER(column_name) NOT IN (
+    'END_OF_MONTH_DATE','CONTRACT_SOURCE_SYSTEM','ACCOUNT_KEY',
+    'SOURCE_SYSTEM_BALANCE','GL_ACCOUNT_HIER_LEVEL_4'
+  )
+ORDER BY column_name;
+
+
+
+
+
 Eleanor:
 •	Two parts of the portfolio covered by SVB Special Assets Group (SAG) 1) Loans (covers majority of the portfolio), 2) Cards (small chunk)
 •	For Loans, the primary tool for managing Non-Accrual is the NPL Tool 
