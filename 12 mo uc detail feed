@@ -1,3 +1,152 @@
+/* === Fast MoM KDE summary without temp tables === */
+WITH
+params AS (
+  /* Tune this: set to 0 for everything, or e.g., 50000.0 to ignore tiny moves */
+  SELECT 0.0::FLOAT8 AS min_abs_bal_delta
+),
+latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -1) AS prev_eom, max_eom FROM latest
+),
+prev_base AS (
+  SELECT
+    t.ACCOUNT_IDENTIFIER,
+    CAST(t.SOURCE_SYSTEM_BALANCE AS FLOAT8) AS prev_bal,
+    t.BORROWER_RISK_RATING, t.PD_GRADE, t.STATUS_CODE_DESCRIPTION,
+    t.INSTRUMENT_TYPE, t.NON_ACCRUAL_FLAG, t.DAYS_PAST_DUE_BUCKET,
+    t.RC_CODE, t.RC_DESCRIPTION
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.END_OF_MONTH_DATE = r.prev_eom
+    AND t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    /* Optional narrowers (uncomment & edit):
+       AND t.CONTRACT_SOURCE_SYSTEM IN ('L-FCB','L-CIT')
+       AND t.SOURCE_SYSTEM_BALANCE >= 5000
+    */
+),
+curr_base AS (
+  SELECT
+    t.ACCOUNT_IDENTIFIER,
+    CAST(t.SOURCE_SYSTEM_BALANCE AS FLOAT8) AS curr_bal,
+    t.BORROWER_RISK_RATING, t.PD_GRADE, t.STATUS_CODE_DESCRIPTION,
+    t.INSTRUMENT_TYPE, t.NON_ACCRUAL_FLAG, t.DAYS_PAST_DUE_BUCKET,
+    t.RC_CODE, t.RC_DESCRIPTION
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.END_OF_MONTH_DATE = r.max_eom
+    AND t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    /* Optional narrowers:
+       AND t.CONTRACT_SOURCE_SYSTEM IN ('L-FCB','L-CIT')
+       AND t.SOURCE_SYSTEM_BALANCE >= 5000
+    */
+),
+joined_flags AS (
+  SELECT
+    c.ACCOUNT_IDENTIFIER,
+    p.prev_bal, c.curr_bal,
+
+    /* NULL-safe, text-based compare per KDE */
+    CASE WHEN NVL(CAST(c.BORROWER_RISK_RATING   AS VARCHAR(2000)),'#')
+           <> NVL(CAST(p.BORROWER_RISK_RATING   AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END AS chg_BRR,
+
+    CASE WHEN NVL(CAST(c.PD_GRADE               AS VARCHAR(2000)),'#')
+           <> NVL(CAST(p.PD_GRADE               AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END AS chg_PD,
+
+    CASE WHEN NVL(CAST(c.STATUS_CODE_DESCRIPTION AS VARCHAR(2000)),'#')
+           <> NVL(CAST(p.STATUS_CODE_DESCRIPTION AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END AS chg_STATUS,
+
+    CASE WHEN NVL(CAST(c.INSTRUMENT_TYPE        AS VARCHAR(2000)),'#')
+           <> NVL(CAST(p.INSTRUMENT_TYPE        AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END AS chg_INSTR,
+
+    CASE WHEN NVL(CAST(c.NON_ACCRUAL_FLAG       AS VARCHAR(2000)),'#')
+           <> NVL(CAST(p.NON_ACCRUAL_FLAG       AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END AS chg_NA,
+
+    CASE WHEN NVL(CAST(c.DAYS_PAST_DUE_BUCKET   AS VARCHAR(2000)),'#')
+           <> NVL(CAST(p.DAYS_PAST_DUE_BUCKET   AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END AS chg_DPD,
+
+    CASE WHEN NVL(CAST(c.RC_CODE                AS VARCHAR(2000)),'#')
+           <> NVL(CAST(p.RC_CODE                AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END AS chg_RC,
+
+    CASE WHEN NVL(CAST(c.RC_DESCRIPTION         AS VARCHAR(2000)),'#')
+           <> NVL(CAST(p.RC_DESCRIPTION         AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END AS chg_RC_DESC
+  FROM curr_base c
+  JOIN prev_base p
+    ON c.ACCOUNT_IDENTIFIER = p.ACCOUNT_IDENTIFIER
+  WHERE ABS(c.curr_bal - p.prev_bal) >= (SELECT min_abs_bal_delta FROM params)
+    /* BIG speedup: keep only rows where ANY KDE changed */
+    AND (
+         NVL(CAST(c.BORROWER_RISK_RATING AS VARCHAR(2000)),'#') <> NVL(CAST(p.BORROWER_RISK_RATING AS VARCHAR(2000)),'#')
+      OR NVL(CAST(c.PD_GRADE             AS VARCHAR(2000)),'#') <> NVL(CAST(p.PD_GRADE             AS VARCHAR(2000)),'#')
+      OR NVL(CAST(c.STATUS_CODE_DESCRIPTION AS VARCHAR(2000)),'#') <> NVL(CAST(p.STATUS_CODE_DESCRIPTION AS VARCHAR(2000)),'#')
+      OR NVL(CAST(c.INSTRUMENT_TYPE      AS VARCHAR(2000)),'#') <> NVL(CAST(p.INSTRUMENT_TYPE      AS VARCHAR(2000)),'#')
+      OR NVL(CAST(c.NON_ACCRUAL_FLAG     AS VARCHAR(2000)),'#') <> NVL(CAST(p.NON_ACCRUAL_FLAG     AS VARCHAR(2000)),'#')
+      OR NVL(CAST(c.DAYS_PAST_DUE_BUCKET AS VARCHAR(2000)),'#') <> NVL(CAST(p.DAYS_PAST_DUE_BUCKET AS VARCHAR(2000)),'#')
+      OR NVL(CAST(c.RC_CODE              AS VARCHAR(2000)),'#') <> NVL(CAST(p.RC_CODE              AS VARCHAR(2000)),'#')
+      OR NVL(CAST(c.RC_DESCRIPTION       AS VARCHAR(2000)),'#') <> NVL(CAST(p.RC_DESCRIPTION       AS VARCHAR(2000)),'#')
+    )
+)
+SELECT KDE, changed_count, exposure_change_dollars
+FROM (
+  SELECT 'BORROWER_RISK_RATING' AS KDE,
+         SUM(chg_BRR) AS changed_count,
+         SUM(CASE WHEN chg_BRR=1 THEN (curr_bal - prev_bal) ELSE 0 END) AS exposure_change_dollars
+  FROM joined_flags
+
+  UNION ALL
+  SELECT 'PD_GRADE',
+         SUM(chg_PD),
+         SUM(CASE WHEN chg_PD=1 THEN (curr_bal - prev_bal) ELSE 0 END)
+  FROM joined_flags
+
+  UNION ALL
+  SELECT 'STATUS_CODE_DESCRIPTION',
+         SUM(chg_STATUS),
+         SUM(CASE WHEN chg_STATUS=1 THEN (curr_bal - prev_bal) ELSE 0 END)
+  FROM joined_flags
+
+  UNION ALL
+  SELECT 'INSTRUMENT_TYPE',
+         SUM(chg_INSTR),
+         SUM(CASE WHEN chg_INSTR=1 THEN (curr_bal - prev_bal) ELSE 0 END)
+  FROM joined_flags
+
+  UNION ALL
+  SELECT 'NON_ACCRUAL_FLAG',
+         SUM(chg_NA),
+         SUM(CASE WHEN chg_NA=1 THEN (curr_bal - prev_bal) ELSE 0 END)
+  FROM joined_flags
+
+  UNION ALL
+  SELECT 'DAYS_PAST_DUE_BUCKET',
+         SUM(chg_DPD),
+         SUM(CASE WHEN chg_DPD=1 THEN (curr_bal - prev_bal) ELSE 0 END)
+  FROM joined_flags
+
+  UNION ALL
+  SELECT 'RC_CODE',
+         SUM(chg_RC),
+         SUM(CASE WHEN chg_RC=1 THEN (curr_bal - prev_bal) ELSE 0 END)
+  FROM joined_flags
+
+  UNION ALL
+  SELECT 'RC_DESCRIPTION',
+         SUM(chg_RC_DESC),
+         SUM(CASE WHEN chg_RC_DESC=1 THEN (curr_bal - prev_bal) ELSE 0 END)
+  FROM joined_flags
+) AS k
+ORDER BY ABS(exposure_change_dollars) DESC;
+
+
+
+
+
+
 /* Account × KDE change-only extract (slim) */
 WITH latest AS (
   SELECT MAX(END_OF_MONTH_DATE) AS max_eom
