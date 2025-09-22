@@ -1,3 +1,56 @@
+WITH
+-- latest month
+latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME
+),
+
+-- book population (positive SSB only)
+measures AS (
+  SELECT t.END_OF_MONTH_DATE, t.CONTRACT_SOURCE_SYSTEM, t.ACCOUNT_KEY,
+         SUM(t.SOURCE_SYSTEM_BALANCE) AS SOURCE_SYSTEM_BALANCE
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t
+  GROUP BY 1,2,3
+  HAVING SUM(t.SOURCE_SYSTEM_BALANCE) > 0
+),
+
+-- denominators per month
+month_totals AS (
+  SELECT m.END_OF_MONTH_DATE,
+         COUNT(DISTINCT (m.CONTRACT_SOURCE_SYSTEM || '|' || m.ACCOUNT_KEY)) AS month_total_accounts,
+         SUM(m.SOURCE_SYSTEM_BALANCE) AS month_total_ssb
+  FROM measures m
+  GROUP BY 1
+),
+
+-- monthly KDE snapshot for change detection (keep only fields we use)
+kde_month AS (
+  SELECT
+    m.END_OF_MONTH_DATE,
+    m.CONTRACT_SOURCE_SYSTEM,
+    m.ACCOUNT_KEY,
+    m.SOURCE_SYSTEM_BALANCE AS CURR_SSB,
+    MAX(t.DAYS_PAST_DUE) AS DAYS_PAST_DUE,
+    MAX(t.NON_ACCRUAL_FLAG) AS NON_ACCRUAL_FLAG,
+    MAX(t.CRE_FLAG) AS CRE_FLAG,
+    MAX(t.RISK_UNIT) AS RISK_UNIT,
+    MAX(t.FDIC_CALL_CODE) AS FDIC_CALL_CODE,
+    MAX(t.LIFESTAGE) AS LIFESTAGE,
+    MAX(t.NICHE_CD) AS NICHE_CD,
+    MAX(t.RBC_CODE) AS RBC_CODE,
+    MAX(t.REVOLVING_NON_REVOLVING) AS REVOLVING_NON_REVOLVING,
+    MAX(t.RC_CODE) AS RC_CODE,
+    MAX(t.RATE_TYPE) AS RATE_TYPE
+  FROM measures m
+  JOIN CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t
+    ON t.END_OF_MONTH_DATE      = m.END_OF_MONTH_DATE
+   AND t.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
+
+
+
+
+
+
 -- Master CONTRACT_SOURCE_SYSTEM anomaly detector:
 -- Rolling 18m regression + MoM Z + prediction intervals + unified severity.
 -- Netezza-safe: no analytic REGR_* calls, no nested window aggregates, no alias reuse in same SELECT.
