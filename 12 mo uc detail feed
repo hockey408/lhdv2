@@ -1,3 +1,151 @@
+/* Account × KDE change-only extract (slim) */
+WITH latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -1) AS prev_eom, max_eom FROM latest
+),
+
+prev AS (
+  SELECT
+    ACCOUNT_IDENTIFIER,
+    CAST(SOURCE_SYSTEM_BALANCE AS FLOAT8) AS prev_bal,
+    BORROWER_RISK_RATING,
+    PD_GRADE,
+    STATUS_CODE_DESCRIPTION,
+    INSTRUMENT_TYPE,
+    NON_ACCRUAL_FLAG,
+    DAYS_PAST_DUE_BUCKET,
+    RC_CODE,
+    RC_DESCRIPTION
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.END_OF_MONTH_DATE = r.prev_eom
+    AND t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+
+curr AS (
+  SELECT
+    ACCOUNT_IDENTIFIER,
+    CAST(SOURCE_SYSTEM_BALANCE AS FLOAT8) AS curr_bal,
+    BORROWER_RISK_RATING,
+    PD_GRADE,
+    STATUS_CODE_DESCRIPTION,
+    INSTRUMENT_TYPE,
+    NON_ACCRUAL_FLAG,
+    DAYS_PAST_DUE_BUCKET,
+    RC_CODE,
+    RC_DESCRIPTION
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.END_OF_MONTH_DATE = r.max_eom
+    AND t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+
+-- Join once (keeps it fast) 
+j AS (
+  SELECT
+    c.ACCOUNT_IDENTIFIER,
+    p.prev_bal,
+    c.curr_bal
+    ,p.BORROWER_RISK_RATING AS p_BRR, c.BORROWER_RISK_RATING AS c_BRR
+    ,p.PD_GRADE             AS p_PD,  c.PD_GRADE             AS c_PD
+    ,p.STATUS_CODE_DESCRIPTION AS p_STATUS, c.STATUS_CODE_DESCRIPTION AS c_STATUS
+    ,p.INSTRUMENT_TYPE      AS p_INSTR, c.INSTRUMENT_TYPE     AS c_INSTR
+    ,p.NON_ACCRUAL_FLAG     AS p_NA,  c.NON_ACCRUAL_FLAG      AS c_NA
+    ,p.DAYS_PAST_DUE_BUCKET AS p_DPD, c.DAYS_PAST_DUE_BUCKET  AS c_DPD
+    ,p.RC_CODE              AS p_RC,  c.RC_CODE               AS c_RC
+    ,p.RC_DESCRIPTION       AS p_RC_DESC, c.RC_DESCRIPTION    AS c_RC_DESC
+  FROM curr c
+  INNER JOIN prev p ON c.ACCOUNT_IDENTIFIER = p.ACCOUNT_IDENTIFIER
+),
+
+/* UNPIVOT into Account×KDE rows with prev/curr values and change flag.
+   We keep only changed rows in the final SELECT to shrink data. */
+kde_long AS (
+  SELECT ACCOUNT_IDENTIFIER, 'BORROWER_RISK_RATING' AS KDE,
+         CAST(p_BRR AS VARCHAR(2000)) AS prev_val, CAST(c_BRR AS VARCHAR(2000)) AS curr_val,
+         CASE WHEN NVL(CAST(p_BRR AS VARCHAR(2000)),'#') <> NVL(CAST(c_BRR AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END AS changed_flag,
+         prev_bal, curr_bal
+  FROM j
+  UNION ALL
+  SELECT ACCOUNT_IDENTIFIER, 'PD_GRADE',
+         CAST(p_PD AS VARCHAR(2000)), CAST(c_PD AS VARCHAR(2000)),
+         CASE WHEN NVL(CAST(p_PD AS VARCHAR(2000)),'#') <> NVL(CAST(c_PD AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END,
+         prev_bal, curr_bal
+  FROM j
+  UNION ALL
+  SELECT ACCOUNT_IDENTIFIER, 'STATUS_CODE_DESCRIPTION',
+         CAST(p_STATUS AS VARCHAR(2000)), CAST(c_STATUS AS VARCHAR(2000)),
+         CASE WHEN NVL(CAST(p_STATUS AS VARCHAR(2000)),'#') <> NVL(CAST(c_STATUS AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END,
+         prev_bal, curr_bal
+  FROM j
+  UNION ALL
+  SELECT ACCOUNT_IDENTIFIER, 'INSTRUMENT_TYPE',
+         CAST(p_INSTR AS VARCHAR(2000)), CAST(c_INSTR AS VARCHAR(2000)),
+         CASE WHEN NVL(CAST(p_INSTR AS VARCHAR(2000)),'#') <> NVL(CAST(c_INSTR AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END,
+         prev_bal, curr_bal
+  FROM j
+  UNION ALL
+  SELECT ACCOUNT_IDENTIFIER, 'NON_ACCRUAL_FLAG',
+         CAST(p_NA AS VARCHAR(2000)), CAST(c_NA AS VARCHAR(2000)),
+         CASE WHEN NVL(CAST(p_NA AS VARCHAR(2000)),'#') <> NVL(CAST(c_NA AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END,
+         prev_bal, curr_bal
+  FROM j
+  UNION ALL
+  SELECT ACCOUNT_IDENTIFIER, 'DAYS_PAST_DUE_BUCKET',
+         CAST(p_DPD AS VARCHAR(2000)), CAST(c_DPD AS VARCHAR(2000)),
+         CASE WHEN NVL(CAST(p_DPD AS VARCHAR(2000)),'#') <> NVL(CAST(c_DPD AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END,
+         prev_bal, curr_bal
+  FROM j
+  UNION ALL
+  SELECT ACCOUNT_IDENTIFIER, 'RC_CODE',
+         CAST(p_RC AS VARCHAR(2000)), CAST(c_RC AS VARCHAR(2000)),
+         CASE WHEN NVL(CAST(p_RC AS VARCHAR(2000)),'#') <> NVL(CAST(c_RC AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END,
+         prev_bal, curr_bal
+  FROM j
+  UNION ALL
+  SELECT ACCOUNT_IDENTIFIER, 'RC_DESCRIPTION',
+         CAST(p_RC_DESC AS VARCHAR(2000)), CAST(c_RC_DESC AS VARCHAR(2000)),
+         CASE WHEN NVL(CAST(p_RC_DESC AS VARCHAR(2000)),'#') <> NVL(CAST(c_RC_DESC AS VARCHAR(2000)),'#') THEN 1 ELSE 0 END,
+         prev_bal, curr_bal
+  FROM j
+)
+
+SELECT
+  ACCOUNT_IDENTIFIER,
+  KDE,
+  prev_val,
+  curr_val,
+  (curr_bal - prev_bal) AS bal_delta,     -- account $ change (useful for weighting)
+  prev_bal,
+  curr_bal
+FROM kde_long
+WHERE changed_flag = 1
+ORDER BY ABS(curr_bal - prev_bal) DESC;   -- optional for quick triage
+
+
+
+-- KDE summary (one row per KDE)
+SELECT
+  KDE,
+  COUNT(*)                          AS changed_accounts,
+  SUM(curr_bal - prev_bal)          AS exposure_change_dollars
+FROM kde_long
+WHERE changed_flag = 1
+GROUP BY KDE
+ORDER BY ABS(SUM(curr_bal - prev_bal)) DESC;
+
+
+
+
+
+
+
 WITH latest AS (
   SELECT MAX(END_OF_MONTH_DATE) AS max_eom
   FROM V_DPRT_CREDIT_INSTRUMENTS_ME
