@@ -1,3 +1,34 @@
+Eleanor:
+•	Two parts of the portfolio covered by SVB Special Assets Group (SAG) 1) Loans (covers majority of the portfolio), 2) Cards (small chunk)
+•	For Loans, the primary tool for managing Non-Accrual is the NPL Tool 
+o	Produces the automated NPL report used in managing / reconciling non-accruals
+o	sources data from FRDS.
+o	Only includes loans with a Risk Rating of 8, 9, and 10 (i.e., non-accruals)
+o	Report is generated automatically every Tuesday
+•	The NPL report is the primary monitoring / management tool for non-accruals 
+o	This report is routinely review by SAG as well as the relationships managers
+o	For month 1 and 2 of each quarter, it's reviewed bi-weekly
+o	For month 3 of each quarter, it's reviewed weekly
+•	Changes to Non-Accrual status are decided by Relationship Managers. 
+o	nCino packages are created for changes and once approved (e.g., changing risk rating or covenant etc.)
+o	Loan Ops updates the Loan Accounting System.
+o	nCino changes cascade down to FRDS and NPL Tool gets refreshed when FRDS is updated
+•	Changes in NPL report are shared with Global Loan Ops to double check everything is booked. Eleanor follows up with GLO to ensure changes occurred
+•	During the last 3 days of the month, Eleanor pays special attention to non-accrual reconciliation 
+o	A Charge-off log and a downgrade log is shared with Loan Ops
+o	While no specific log exists for upgrades, they are also handled during the last 3 business days (if any)
+•	Sub-segment of Wine NA loans managed by Brian Bell are not in NPL tool.
+•	A small sub-segment in Eleanor's queue managed by Casey
+•	For standalone cards (i.e., no associated loan) , Eleanor CCMT CCMT Team for validation 
+o	If it's a NA card with an associated charged-off loan, Eleanor checks with the CCMT Team as well
+
+
+
+
+
+
+
+
 WITH
 -- latest month
 latest AS (
