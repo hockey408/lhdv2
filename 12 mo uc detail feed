@@ -1,3 +1,182 @@
+SELECT
+  CASE
+    /* text-like */
+    WHEN POSITION('CHAR' IN UPPER(data_type))>0 OR POSITION('VARCHAR' IN UPPER(data_type))>0
+         OR POSITION('NCHAR' IN UPPER(data_type))>0 OR POSITION('NVARCHAR' IN UPPER(data_type))>0
+    THEN
+'UNION ALL SELECT mp.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, c.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+ FROM map_prev mp
+ JOIN base c ON c.END_OF_MONTH_DATE = mp.END_OF_MONTH_DATE
+            AND c.CONTRACT_SOURCE_SYSTEM = mp.CONTRACT_SOURCE_SYSTEM
+            AND c.ACCOUNT_KEY = mp.ACCOUNT_KEY
+ JOIN base p ON p.END_OF_MONTH_DATE = mp.prev_eom
+            AND p.CONTRACT_SOURCE_SYSTEM = mp.CONTRACT_SOURCE_SYSTEM
+            AND p.ACCOUNT_KEY = mp.ACCOUNT_KEY
+ WHERE mp.prev_eom IS NOT NULL
+   AND ( UPPER(TRIM(c."'||column_name||'")) <> UPPER(TRIM(p."'||column_name||'"))
+         OR ((c."'||column_name||'" IS NULL) <> (p."'||column_name||'" IS NULL)) )'
+
+    /* date/timestamp */
+    WHEN UPPER(data_type) LIKE '%DATE%' OR UPPER(data_type) LIKE '%TIMESTAMP%'
+    THEN
+'UNION ALL SELECT mp.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, c.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+ FROM map_prev mp
+ JOIN base c ON c.END_OF_MONTH_DATE = mp.END_OF_MONTH_DATE
+            AND c.CONTRACT_SOURCE_SYSTEM = mp.CONTRACT_SOURCE_SYSTEM
+            AND c.ACCOUNT_KEY = mp.ACCOUNT_KEY
+ JOIN base p ON p.END_OF_MONTH_DATE = mp.prev_eom
+            AND p.CONTRACT_SOURCE_SYSTEM = mp.CONTRACT_SOURCE_SYSTEM
+            AND p.ACCOUNT_KEY = mp.ACCOUNT_KEY
+ WHERE mp.prev_eom IS NOT NULL
+   AND ( c."'||column_name||'" <> p."'||column_name||'"
+         OR ((c."'||column_name||'" IS NULL) <> (p."'||column_name||'" IS NULL)) )'
+
+    /* numeric/other */
+    ELSE
+'UNION ALL SELECT mp.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, c.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+ FROM map_prev mp
+ JOIN base c ON c.END_OF_MONTH_DATE = mp.END_OF_MONTH_DATE
+            AND c.CONTRACT_SOURCE_SYSTEM = mp.CONTRACT_SOURCE_SYSTEM
+            AND c.ACCOUNT_KEY = mp.ACCOUNT_KEY
+ JOIN base p ON p.END_OF_MONTH_DATE = mp.prev_eom
+            AND p.CONTRACT_SOURCE_SYSTEM = mp.CONTRACT_SOURCE_SYSTEM
+            AND p.ACCOUNT_KEY = mp.ACCOUNT_KEY
+ WHERE mp.prev_eom IS NOT NULL
+   AND ( c."'||column_name||'" <> p."'||column_name||'"
+         OR ((c."'||column_name||'" IS NULL) <> (p."'||column_name||'" IS NULL)) )'
+  END AS sql_line
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE UPPER(table_name) = 'V_DPRT_CREDIT_INSTRUMENTS_ME'
+  -- optional schema filter: AND UPPER(table_schema) IN ('CIDPR','DATAHUB')
+  AND UPPER(column_name) NOT IN (
+    'END_OF_MONTH_DATE','CONTRACT_SOURCE_SYSTEM','ACCOUNT_KEY',
+    'SOURCE_SYSTEM_BALANCE','GL_ACCOUNT_HIER_LEVEL_4'
+  )
+  -- common noisy/audit fields to skip (edit as needed)
+  AND UPPER(column_name) NOT LIKE '%_TS'
+  AND UPPER(column_name) NOT LIKE '%_DT'
+  AND UPPER(column_name) NOT LIKE 'CREATED_%'
+  AND UPPER(column_name) NOT LIKE 'UPDATED_%'
+  AND UPPER(column_name) NOT LIKE '%_USER'
+  AND UPPER(column_name) NOT LIKE '%USER_ID%'
+  AND UPPER(column_name) NOT LIKE '%HASH%'
+  AND UPPER(column_name) NOT LIKE '%CHECKSUM%'
+  AND UPPER(column_name) NOT LIKE '%BATCH%'
+  AND UPPER(column_name) NOT LIKE '%RUN_ID%'
+  -- *** BATCH FILTER: adjust these two to split runs ***
+  AND UPPER(SUBSTR(column_name,1,1)) BETWEEN 'A' AND 'F'
+ORDER BY column_name;
+
+
+
+
+WITH
+cfg AS (
+  SELECT
+    25000000::FLOAT8 AS per_kde_min_exposure,  -- show KDEs with >= $25MM current change exposure
+    100000::FLOAT8   AS per_account_min_ssb    -- ignore tiny accounts (< $100k) when counting events
+),
+
+-- last two month-ends (curr & prev) and prevprev to allow the prev-month change calc
+bounds AS (
+  SELECT
+    MAX(END_OF_MONTH_DATE) AS curr_eom,
+    (SELECT MAX(END_OF_MONTH_DATE) FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME
+      WHERE END_OF_MONTH_DATE < (SELECT MAX(END_OF_MONTH_DATE) FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME)) AS prev_eom
+),
+-- bring 3 months of positive SSB accounts to keep sizes small
+measures AS (
+  SELECT t.END_OF_MONTH_DATE, t.CONTRACT_SOURCE_SYSTEM, t.ACCOUNT_KEY,
+         SUM(t.SOURCE_SYSTEM_BALANCE) AS SSB
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t
+  WHERE t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  GROUP BY 1,2,3
+  HAVING SUM(t.SOURCE_SYSTEM_BALANCE) > 0
+),
+base AS (
+  SELECT t.*
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t
+  JOIN measures m
+    ON m.END_OF_MONTH_DATE = t.END_OF_MONTH_DATE
+   AND m.CONTRACT_SOURCE_SYSTEM = t.CONTRACT_SOURCE_SYSTEM
+   AND m.ACCOUNT_KEY = t.ACCOUNT_KEY
+),
+-- map every (acct,system,month) to its prev month
+map_prev AS (
+  SELECT DISTINCT
+    b.END_OF_MONTH_DATE, b.CONTRACT_SOURCE_SYSTEM, b.ACCOUNT_KEY,
+    LAG(b.END_OF_MONTH_DATE) OVER (
+      PARTITION BY b.CONTRACT_SOURCE_SYSTEM, b.ACCOUNT_KEY
+      ORDER BY b.END_OF_MONTH_DATE
+    ) AS prev_eom
+  FROM base b
+),
+
+/* ==== CHANGE EVENTS for selected columns (paste block here) ==== */
+kde_changes AS (
+  SELECT DATE '1900-01-01'::DATE AS END_OF_MONTH_DATE, ''::VARCHAR(1) AS KDE, 0::FLOAT8 AS CURR_SSB
+  WHERE 1=0
+
+  /* <<< PASTE GENERATED UNION LINES HERE >>> */
+),
+
+/* roll up month×KDE (current-month changes and previous-month changes both present) */
+kde_monthly AS (
+  SELECT END_OF_MONTH_DATE, KDE,
+         COUNT(*) AS change_count,
+         SUM(CURR_SSB) AS exposure_dollars
+  FROM kde_changes
+  GROUP BY 1,2
+),
+
+/* isolate the two months we care about */
+two_months AS (
+  SELECT
+    km.END_OF_MONTH_DATE, km.KDE, km.change_count, km.exposure_dollars
+  FROM kde_monthly km
+  WHERE km.END_OF_MONTH_DATE IN (
+    (SELECT curr_eom FROM bounds),
+    (SELECT prev_eom FROM bounds)
+  )
+),
+
+/* self-join to compute MoM deltas (curr vs prev) */
+final AS (
+  SELECT
+    c.END_OF_MONTH_DATE,
+    c.KDE,
+    c.change_count,
+    c.exposure_dollars,
+    p.change_count      AS prev_change_count,
+    p.exposure_dollars  AS prev_exposure_dollars,
+    (c.change_count - p.change_count) AS mom_change_count_delta,
+    CASE WHEN p.change_count > 0
+         THEN (c.change_count - p.change_count) / p.change_count::FLOAT8 END AS mom_change_count_pct,
+    (c.exposure_dollars - p.exposure_dollars) AS mom_exposure_dollars_delta,
+    CASE WHEN p.exposure_dollars <> 0
+         THEN (c.exposure_dollars - p.exposure_dollars) / p.exposure_dollars::FLOAT8 END AS mom_exposure_dollars_pct
+  FROM two_months c
+  LEFT JOIN two_months p
+    ON p.KDE = c.KDE
+   AND p.END_OF_MONTH_DATE = (SELECT prev_eom FROM bounds)
+  WHERE c.END_OF_MONTH_DATE = (SELECT curr_eom FROM bounds)
+)
+
+SELECT *
+FROM final
+JOIN cfg ON 1=1
+WHERE exposure_dollars >= cfg.per_kde_min_exposure
+ORDER BY exposure_dollars DESC, KDE
+FETCH FIRST 50 ROWS ONLY;
+
+
+
+
+
+
+
+
+
 WITH
 cfg AS (
   SELECT
