@@ -1,3 +1,69 @@
+WITH latest AS (
+    SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+    FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+    WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+    SELECT ADD_MONTHS(max_eom, -1) AS prev_eom, max_eom
+    FROM latest
+),
+
+-- 1) Current month KDE exposure
+curr AS (
+    SELECT
+        t.KDE,
+        COUNT(*) AS curr_count,
+        SUM(t.SOURCE_SYSTEM_BALANCE) AS curr_exposure
+    FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+    CROSS JOIN rng r
+    WHERE t.END_OF_MONTH_DATE = r.max_eom
+      AND t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    GROUP BY t.KDE
+),
+
+-- 2) Previous month KDE exposure
+prev AS (
+    SELECT
+        t.KDE,
+        COUNT(*) AS prev_count,
+        SUM(t.SOURCE_SYSTEM_BALANCE) AS prev_exposure
+    FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+    CROSS JOIN rng r
+    WHERE t.END_OF_MONTH_DATE = r.prev_eom
+      AND t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    GROUP BY t.KDE
+),
+
+-- 3) Join & calculate MoM deltas
+mom AS (
+    SELECT
+        COALESCE(c.KDE, p.KDE) AS KDE,
+        COALESCE(c.curr_count, 0) AS curr_count,
+        COALESCE(p.prev_count, 0) AS prev_count,
+        COALESCE(c.curr_exposure, 0) AS curr_exposure,
+        COALESCE(p.prev_exposure, 0) AS prev_exposure,
+        COALESCE(c.curr_count, 0) - COALESCE(p.prev_count, 0) AS mom_count_change,
+        CASE WHEN COALESCE(p.prev_count, 0) <> 0
+             THEN (COALESCE(c.curr_count, 0) - COALESCE(p.prev_count, 0)) * 1.0 / p.prev_count
+             ELSE NULL END AS mom_count_change_pct,
+        COALESCE(c.curr_exposure, 0) - COALESCE(p.prev_exposure, 0) AS mom_exposure_change,
+        CASE WHEN COALESCE(p.prev_exposure, 0) <> 0
+             THEN (COALESCE(c.curr_exposure, 0) - COALESCE(p.prev_exposure, 0)) / p.prev_exposure
+             ELSE NULL END AS mom_exposure_change_pct
+    FROM curr c
+    FULL OUTER JOIN prev p ON c.KDE = p.KDE
+)
+
+-- 4) Rank & filter to top 10 by $ exposure change
+SELECT *
+FROM mom
+ORDER BY ABS(mom_exposure_change) DESC
+FETCH FIRST 10 ROWS ONLY;
+
+
+
+
+
 WITH sel AS (
   SELECT
     c.column_name,
