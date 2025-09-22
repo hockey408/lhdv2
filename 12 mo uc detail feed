@@ -1,3 +1,416 @@
+-- Master CONTRACT_SOURCE_SYSTEM anomaly detector:
+-- Rolling 18m regression + MoM Z + prediction intervals + unified severity.
+-- Netezza-safe: no analytic REGR_* calls, no nested window aggregates, no alias reuse in same SELECT.
+
+WITH
+/* ---- Latest close ---- */
+latest AS (
+  SELECT MAX(t.END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+
+/* ---- Pull 36 months to support 18m rolling windows ---- */
+base_raw AS (
+  SELECT
+    t.END_OF_MONTH_DATE::DATE AS END_OF_MONTH_DATE,
+    t.CONTRACT_SOURCE_SYSTEM,
+    CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8) AS SOURCE_SYSTEM_BALANCE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND t.CONTRACT_SOURCE_SYSTEM <> 'BPLN'
+    AND t.END_OF_MONTH_DATE BETWEEN ADD_MONTHS((SELECT max_eom FROM latest), -36)
+                                 AND (SELECT max_eom FROM latest)
+  GROUP BY 1,2
+),
+
+/* ---- Drop systems that were zero for the entire slice ---- */
+active_systems AS (
+  SELECT CONTRACT_SOURCE_SYSTEM
+  FROM base_raw
+  GROUP BY CONTRACT_SOURCE_SYSTEM
+  HAVING MAX(ABS(SOURCE_SYSTEM_BALANCE)) > 0
+),
+
+base AS (
+  SELECT b.*
+  FROM base_raw b
+  JOIN active_systems a
+    ON a.CONTRACT_SOURCE_SYSTEM = b.CONTRACT_SOURCE_SYSTEM
+),
+
+/* ---- Tag synthetic + overdraft (same logic as legacy) ---- */
+tagged AS (
+  SELECT
+    b.*,
+    CASE WHEN b.CONTRACT_SOURCE_SYSTEM IN (
+      'ACAR01-EXCPTN','HUBFSV-EXCPTN','INFL05-EXCPTN','INFL10-EXCPTN',
+      'LNIQ01-EXCPTN','SBO001-EXCPTN','STKY01-EXCPTN','STRAT1-EXCPTN',
+      'ALL','GL','LJ','SYN','FRDS_EXCPTN','ADJ'
+    ) THEN 1 ELSE 0 END AS is_synthetic,
+    CASE
+      WHEN b.CONTRACT_SOURCE_SYSTEM LIKE 'TA%' THEN 1
+      WHEN b.CONTRACT_SOURCE_SYSTEM LIKE 'UU%' THEN 1
+      WHEN b.CONTRACT_SOURCE_SYSTEM = 'US' THEN 1
+      ELSE 0
+    END AS is_overdraft
+  FROM base b
+),
+
+/* ---- Time index per system ---- */
+idx AS (
+  SELECT
+    t.*,
+    ROW_NUMBER() OVER (PARTITION BY t.CONTRACT_SOURCE_SYSTEM ORDER BY t.END_OF_MONTH_DATE)          AS rn,
+    CAST(ROW_NUMBER() OVER (PARTITION BY t.CONTRACT_SOURCE_SYSTEM ORDER BY t.END_OF_MONTH_DATE)
+         AS FLOAT8)                                                                                 AS x_idx
+  FROM tagged t
+),
+
+/* ---- Rolling OLS moments for 18m regression on y ~ x_idx ---- */
+moments AS (
+  SELECT
+    i.*,
+    COUNT(*) OVER (
+      PARTITION BY i.CONTRACT_SOURCE_SYSTEM
+      ORDER BY i.END_OF_MONTH_DATE
+      ROWS BETWEEN 17 PRECEDING AND CURRENT ROW
+    )                                                                                               AS n18,
+    SUM(i.x_idx) OVER (
+      PARTITION BY i.CONTRACT_SOURCE_SYSTEM
+      ORDER BY i.END_OF_MONTH_DATE
+      ROWS BETWEEN 17 PRECEDING AND CURRENT ROW
+    )                                                                                               AS sx18,
+    SUM(i.SOURCE_SYSTEM_BALANCE) OVER (
+      PARTITION BY i.CONTRACT_SOURCE_SYSTEM
+      ORDER BY i.END_OF_MONTH_DATE
+      ROWS BETWEEN 17 PRECEDING AND CURRENT ROW
+    )                                                                                               AS sy18,
+    SUM(i.x_idx * i.x_idx) OVER (
+      PARTITION BY i.CONTRACT_SOURCE_SYSTEM
+      ORDER BY i.END_OF_MONTH_DATE
+      ROWS BETWEEN 17 PRECEDING AND CURRENT ROW
+    )                                                                                               AS sxx18,
+    SUM(i.x_idx * i.SOURCE_SYSTEM_BALANCE) OVER (
+      PARTITION BY i.CONTRACT_SOURCE_SYSTEM
+      ORDER BY i.END_OF_MONTH_DATE
+      ROWS BETWEEN 17 PRECEDING AND CURRENT ROW
+    )                                                                                               AS sxy18
+  FROM idx i
+),
+
+/* ---- Rolling slope/intercept, in-sample fit (t), residuals ---- */
+reg AS (
+  SELECT
+    m.*,
+    (m.n18*m.sxx18 - m.sx18*m.sx18)                                                               AS denom18,
+
+    CASE
+      WHEN m.n18 >= 6 AND (m.n18*m.sxx18 - m.sx18*m.sx18) <> 0
+      THEN ((m.n18*m.sxy18 - m.sx18*m.sy18) / (m.n18*m.sxx18 - m.sx18*m.sx18))
+      ELSE NULL
+    END                                                                                           AS beta1_slope_18,
+
+    CASE
+      WHEN m.n18 >= 6 AND (m.n18*m.sxx18 - m.sx18*m.sx18) <> 0
+      THEN (m.sy18 - ((m.n18*m.sxy18 - m.sx18*m.sy18) / (m.n18*m.sxx18 - m.sx18*m.sx18)) * m.sx18) / m.n18
+      ELSE NULL
+    END                                                                                           AS beta0_int_18,
+
+    CASE
+      WHEN m.n18 >= 6 AND (m.n18*m.sxx18 - m.sx18*m.sx18) <> 0
+      THEN ((m.n18*m.sxy18 - m.sx18*m.sy18) / (m.n18*m.sxx18 - m.sx18*m.sx18)) * m.x_idx
+           + (m.sy18 - ((m.n18*m.sxy18 - m.sx18*m.sy18) / (m.n18*m.sxx18 - m.sx18*m.sx18)) * m.sx18) / m.n18
+      ELSE NULL
+    END                                                                                           AS yhat_t,
+
+    CASE
+      WHEN m.n18 >= 6 AND (m.n18*m.sxx18 - m.sx18*m.sx18) <> 0
+      THEN m.SOURCE_SYSTEM_BALANCE - (
+           ((m.n18*m.sxy18 - m.sx18*m.sy18) / (m.n18*m.sxx18 - m.sx18*m.sx18)) * m.x_idx
+           + (m.sy18 - ((m.n18*m.sxy18 - m.sx18*m.sy18) / (m.n18*m.sxx18 - m.sx18*m.sx18)) * m.sx18) / m.n18
+      )
+      ELSE NULL
+    END                                                                                           AS resid_t
+  FROM moments m
+),
+
+/* ---- Rolling residual mean/std for Z-score + PI around yhat_t ---- */
+resid_stats AS (
+  SELECT
+    r.*,
+    AVG(r.resid_t) OVER (
+      PARTITION BY r.CONTRACT_SOURCE_SYSTEM
+      ORDER BY r.END_OF_MONTH_DATE
+      ROWS BETWEEN 17 PRECEDING AND CURRENT ROW
+    )                                                                                             AS resid_mean_18,
+    STDDEV_SAMP(r.resid_t) OVER (
+      PARTITION BY r.CONTRACT_SOURCE_SYSTEM
+      ORDER BY r.END_OF_MONTH_DATE
+      ROWS BETWEEN 17 PRECEDING AND CURRENT ROW
+    )                                                                                             AS resid_std_18
+  FROM reg r
+),
+
+/* ---- MoM delta computed alone (no nesting) ---- */
+delta AS (
+  SELECT
+    s.*,
+    LAG(s.SOURCE_SYSTEM_BALANCE) OVER (
+      PARTITION BY s.CONTRACT_SOURCE_SYSTEM
+      ORDER BY s.END_OF_MONTH_DATE
+    )                                                                                             AS prev_balance,
+    s.SOURCE_SYSTEM_BALANCE
+      - LAG(s.SOURCE_SYSTEM_BALANCE) OVER (
+          PARTITION BY s.CONTRACT_SOURCE_SYSTEM
+          ORDER BY s.END_OF_MONTH_DATE
+        )                                                                                         AS mom_delta
+  FROM resid_stats s
+),
+
+/* ---- Rolling MoM baseline (exclude current) ---- */
+mom_stats AS (
+  SELECT
+    d.*,
+    AVG(d.mom_delta) OVER (
+      PARTITION BY d.CONTRACT_SOURCE_SYSTEM
+      ORDER BY d.END_OF_MONTH_DATE
+      ROWS BETWEEN 17 PRECEDING AND 1 PRECEDING
+    )                                                                                             AS mom_avg_18,
+    STDDEV_SAMP(d.mom_delta) OVER (
+      PARTITION BY d.CONTRACT_SOURCE_SYSTEM
+      ORDER BY d.END_OF_MONTH_DATE
+      ROWS BETWEEN 17 PRECEDING AND 1 PRECEDING
+    )                                                                                             AS mom_std_18
+  FROM delta d
+),
+
+/* ---- One-step-ahead forecast at t for t+1, plus PI using resid_std_18 ---- */
+forecast AS (
+  SELECT
+    m.*,
+
+    -- one-step-ahead forecast
+    CASE
+      WHEN m.beta1_slope_18 IS NOT NULL AND m.beta0_int_18 IS NOT NULL
+      THEN m.beta0_int_18 + m.beta1_slope_18 * (m.x_idx + 1.0)
+      ELSE NULL
+    END AS yhat_t1,
+
+    -- PI around in-sample prediction (yhat_t)
+    CASE WHEN m.yhat_t  IS NOT NULL AND m.resid_std_18 IS NOT NULL
+         THEN m.yhat_t  - 1.9599 * m.resid_std_18 END AS pi95_lo_t,
+    CASE WHEN m.yhat_t  IS NOT NULL AND m.resid_std_18 IS NOT NULL
+         THEN m.yhat_t  + 1.9599 * m.resid_std_18 END AS pi95_hi_t,
+
+    -- PI around t+1 forecast: recompute yhat_t1 expression inline (no alias reuse)
+    CASE
+      WHEN m.beta1_slope_18 IS NOT NULL AND m.beta0_int_18 IS NOT NULL AND m.resid_std_18 IS NOT NULL
+      THEN (m.beta0_int_18 + m.beta1_slope_18 * (m.x_idx + 1.0)) - 1.9599 * m.resid_std_18
+    END AS pi95_lo_t1,
+    CASE
+      WHEN m.beta1_slope_18 IS NOT NULL AND m.beta0_int_18 IS NOT NULL AND m.resid_std_18 IS NOT NULL
+      THEN (m.beta0_int_18 + m.beta1_slope_18 * (m.x_idx + 1.0)) + 1.9599 * m.resid_std_18
+    END AS pi95_hi_t1
+  FROM mom_stats m
+),
+
+/* ---- Next-period anchors to evaluate t→t+1 forecast error ---- */
+anchors AS (
+  SELECT
+    f.*,
+    LEAD(f.SOURCE_SYSTEM_BALANCE, 1) OVER (
+      PARTITION BY f.CONTRACT_SOURCE_SYSTEM ORDER BY f.END_OF_MONTH_DATE
+    )                                                                                             AS actual_next,
+    LEAD(f.END_OF_MONTH_DATE, 1) OVER (
+      PARTITION BY f.CONTRACT_SOURCE_SYSTEM ORDER BY f.END_OF_MONTH_DATE
+    )                                                                                             AS next_period
+  FROM forecast f
+),
+
+/* ---- Final scoring metrics (stage 1): compute z-scores & components ---- */
+scored_base AS (
+  SELECT
+    a.*,
+
+    -- Standardized surprises
+    CASE
+      WHEN a.resid_std_18 IS NOT NULL AND a.resid_std_18 > 0
+      THEN (a.resid_t - COALESCE(a.resid_mean_18, 0.0)) / a.resid_std_18
+      ELSE NULL
+    END                                           AS resid_z,
+
+    CASE
+      WHEN a.mom_std_18 IS NOT NULL AND a.mom_std_18 > 0
+      THEN (a.mom_delta - COALESCE(a.mom_avg_18, 0.0)) / a.mom_std_18
+      ELSE NULL
+    END                                           AS mom_z,
+
+    -- In-sample deviations (actual vs yhat_t)
+    (a.SOURCE_SYSTEM_BALANCE - a.yhat_t)          AS dev_abs_t,
+    CASE WHEN a.yhat_t IS NOT NULL AND a.yhat_t <> 0
+         THEN (a.SOURCE_SYSTEM_BALANCE - a.yhat_t) / a.yhat_t END
+                                                  AS dev_pct_t,
+
+    -- Flags vs 95% bands around yhat_t
+    CASE
+      WHEN a.pi95_lo_t IS NULL OR a.pi95_hi_t IS NULL THEN NULL
+      WHEN a.SOURCE_SYSTEM_BALANCE < a.pi95_lo_t OR a.SOURCE_SYSTEM_BALANCE > a.pi95_hi_t THEN TRUE
+      ELSE FALSE
+    END                                           AS outside_95_t
+  FROM anchors a
+),
+
+/* ---- Final scoring metrics (stage 2): compute severity using aliases from stage 1 ---- */
+scored AS (
+  SELECT
+    sb.*,
+    100.0 * (
+      0.50 * LEAST(ABS(COALESCE(sb.resid_z,0.0)) / 3.0, 1.0)
+    + 0.30 * LEAST(ABS(COALESCE(sb.mom_z,  0.0)) / 3.0, 1.0)
+    + 0.20 * (
+         0.5 * LEAST(ABS(COALESCE(sb.dev_pct_t,0.0)) / 0.10, 1.0)
+       + 0.5 * LEAST(ABS(COALESCE(sb.dev_abs_t,0.0)) / NULLIF(0.10*ABS(COALESCE(sb.yhat_t,0.0)),0), 1.0)
+      )
+    )
+    + CASE WHEN (sb.pi95_lo_t IS NOT NULL AND sb.pi95_hi_t IS NOT NULL
+                 AND (sb.SOURCE_SYSTEM_BALANCE < sb.pi95_lo_t OR sb.SOURCE_SYSTEM_BALANCE > sb.pi95_hi_t))
+           THEN 5.0 ELSE 0.0 END
+                                                  AS severity_0_100
+  FROM scored_base sb
+),
+
+/* ---- Backtest rows: forecast made at t, compared to actual at t+1 ---- */
+backtest AS (
+  SELECT
+    s.CONTRACT_SOURCE_SYSTEM,
+    s.END_OF_MONTH_DATE                 AS model_asof_period,   -- t
+    s.next_period                       AS forecast_period,     -- t+1
+    s.actual_next                       AS actual,              -- actual at t+1
+    s.yhat_t1                           AS forecast_val,        -- regression forecast t→t+1
+    s.resid_std_18                      AS sigma_est,           -- use rolling resid_std for PI
+    s.is_synthetic,
+    s.is_overdraft,
+    (SELECT max_eom FROM latest)        AS max_eom
+  FROM scored s
+  WHERE s.next_period IS NOT NULL
+)
+
+/* ===================== FINAL PANELS ===================== */
+SELECT * FROM (
+
+  /* 1) Latest-only diagnostics (actual vs yhat_t) */
+  SELECT
+    CASE
+      WHEN s.is_overdraft = 1 THEN 'HISTORY_LITE_OD'
+      WHEN s.is_synthetic = 1 THEN 'HISTORY_LITE_SYNTH'
+      ELSE 'HISTORY_LITE_MAIN'
+    END AS row_type,
+    s.CONTRACT_SOURCE_SYSTEM,
+    s.END_OF_MONTH_DATE                 AS period_date,
+    s.SOURCE_SYSTEM_BALANCE             AS actual,
+    s.yhat_t                            AS forecast_val,
+    s.resid_std_18                      AS sigma_est,
+    s.pi95_lo_t                         AS pi95_lo,
+    s.pi95_hi_t                         AS pi95_hi,
+    s.dev_abs_t                         AS dev_abs,
+    s.dev_pct_t                         AS dev_pct,
+    s.resid_z                           AS z_score_resid,
+    s.mom_z                             AS z_score_mom,
+    s.severity_0_100                    AS severity_0_100,
+    s.outside_95_t                      AS outside_95_band,
+    -- transparency
+    s.is_synthetic, s.is_overdraft,
+    s.beta1_slope_18                    AS regr_slope_18,
+    s.prev_balance, s.mom_delta, s.mom_avg_18, s.mom_std_18
+  FROM scored s
+  WHERE s.END_OF_MONTH_DATE = (SELECT max_eom FROM latest)
+
+  UNION ALL
+
+  /* 2) Historical error (backtest t→t+1 inside the slice, excluding latest) */
+  SELECT
+    CASE
+      WHEN b.is_overdraft = 1 THEN 'SUMMARY_HISTORICAL_ERROR_OD'
+      WHEN b.is_synthetic = 1 THEN 'SUMMARY_HISTORICAL_ERROR_SYNTH'
+      ELSE 'SUMMARY_HISTORICAL_ERROR_MAIN'
+    END AS row_type,
+    b.CONTRACT_SOURCE_SYSTEM,
+    b.forecast_period                   AS period_date,
+    b.actual,
+    b.forecast_val,
+    b.sigma_est,
+    (b.forecast_val - 1.9599 * b.sigma_est) AS pi95_lo,
+    (b.forecast_val + 1.9599 * b.sigma_est) AS pi95_hi,
+    (b.actual - b.forecast_val)             AS dev_abs,
+    CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val) / b.forecast_val END AS dev_pct,
+    CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0
+         THEN (b.actual - b.forecast_val) / b.sigma_est END                             AS z_score_resid,
+    NULL::FLOAT8                           AS z_score_mom,
+    100.0 * (
+      0.5 * LEAST(ABS(CASE WHEN b.sigma_est > 0 THEN (b.actual - b.forecast_val)/b.sigma_est ELSE 0 END) / 3.0, 1.0)
+    + 0.3 * LEAST(ABS(CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val)/b.forecast_val ELSE 0 END) / 0.10, 1.0)
+    + 0.2 * LEAST(ABS(b.actual - b.forecast_val) / NULLIF(0.10 * NULLIF(ABS(b.forecast_val),0), 0), 1.0)
+    )                                           AS severity_0_100,
+    CASE
+      WHEN b.sigma_est IS NULL THEN NULL
+      WHEN b.actual < (b.forecast_val - 1.9599 * b.sigma_est) THEN TRUE
+      WHEN b.actual > (b.forecast_val + 1.9599 * b.sigma_est) THEN TRUE
+      ELSE FALSE
+    END AS outside_95_band,
+    b.is_synthetic, b.is_overdraft,
+    NULL::FLOAT8 AS regr_slope_18,
+    NULL::FLOAT8 AS prev_balance, NULL::FLOAT8 AS mom_delta, NULL::FLOAT8 AS mom_avg_18, NULL::FLOAT8 AS mom_std_18
+  FROM backtest b
+  WHERE b.forecast_period < b.max_eom
+
+  UNION ALL
+
+  /* 3) Latest month anomaly view vs t→t+1 forecast */
+  SELECT
+    CASE
+      WHEN b.is_overdraft = 1 THEN 'SUMMARY_ANOMALY_DETECTION_OD'
+      WHEN b.is_synthetic = 1 THEN 'SUMMARY_ANOMALY_DETECTION_SYNTH'
+      ELSE 'SUMMARY_ANOMALY_DETECTION_MAIN'
+    END AS row_type,
+    b.CONTRACT_SOURCE_SYSTEM,
+    b.forecast_period                   AS period_date,
+    b.actual,
+    b.forecast_val,
+    b.sigma_est,
+    (b.forecast_val - 1.9599 * b.sigma_est) AS pi95_lo,
+    (b.forecast_val + 1.9599 * b.sigma_est) AS pi95_hi,
+    (b.actual - b.forecast_val)             AS dev_abs,
+    CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val) / b.forecast_val END AS dev_pct,
+    CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0
+         THEN (b.actual - b.forecast_val) / b.sigma_est END                             AS z_score_resid,
+    NULL::FLOAT8                           AS z_score_mom,
+    100.0 * (
+      0.5 * LEAST(ABS(CASE WHEN b.sigma_est > 0 THEN (b.actual - b.forecast_val)/b.sigma_est ELSE 0 END) / 3.0, 1.0)
+    + 0.3 * LEAST(ABS(CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val)/b.forecast_val ELSE 0 END) / 0.10, 1.0)
+    + 0.2 * LEAST(ABS(b.actual - b.forecast_val) / NULLIF(0.10 * NULLIF(ABS(b.forecast_val),0), 0), 1.0)
+    )                                           AS severity_0_100,
+    CASE
+      WHEN b.sigma_est IS NULL THEN NULL
+      WHEN b.actual < (b.forecast_val - 1.9599 * b.sigma_est) THEN TRUE
+      WHEN b.actual > (b.forecast_val + 1.9599 * b.sigma_est) THEN TRUE
+      ELSE FALSE
+    END AS outside_95_band,
+    b.is_synthetic, b.is_overdraft,
+    NULL::FLOAT8 AS regr_slope_18,
+    NULL::FLOAT8 AS prev_balance, NULL::FLOAT8 AS mom_delta, NULL::FLOAT8 AS mom_avg_18, NULL::FLOAT8 AS mom_std_18
+  FROM backtest b
+  WHERE b.forecast_period = b.max_eom
+
+) final
+ORDER BY CONTRACT_SOURCE_SYSTEM, period_date;
+
+
+
+
+
+
 forecast AS (
   SELECT
     m.*,
