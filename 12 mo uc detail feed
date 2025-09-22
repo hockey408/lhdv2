@@ -1,3 +1,213 @@
+-- Rolling regression + MoM anomaly scoring per CONTRACT_SOURCE_SYSTEM
+-- Notes:
+--  - Uses 18-month rolling window per system
+--  - Requires at least 6 observations in-window to score (configurable)
+--  - Casts to FLOAT8 early to avoid integer truncation
+--  - Adjust filters (e.g., GL_ACCOUNT_HIER_LEVEL_4) as needed
+
+WITH latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  -- Pull enough history to support an 18-mo window with buffer (e.g., 36 mo)
+  SELECT ADD_MONTHS(max_eom, -36) AS start_eom, max_eom FROM latest
+),
+
+-- 1) Monthly system totals (one row per system × month)
+base AS (
+  SELECT
+      t.END_OF_MONTH_DATE::DATE                           AS END_OF_MONTH_DATE
+    , t.CONTRACT_SOURCE_SYSTEM
+    , CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8)       AS SOURCE_SYSTEM_BALANCE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    -- Optional domain filters:
+    -- AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  GROUP BY 1,2
+),
+
+-- 2) Month index per system to use as the time regressor (monotonic)
+idx AS (
+  SELECT
+      b.*
+    , DENSE_RANK() OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM
+                         ORDER BY b.END_OF_MONTH_DATE)    AS month_idx
+  FROM base b
+),
+
+-- 3) Rolling (18-mo) time-trend regression per system
+--    REGR_* functions accept (y, x). We window by ROWS 17 PRECEDING..CURRENT.
+roll_regr AS (
+  SELECT
+      i.*
+    , COUNT(*) OVER (
+        PARTITION BY i.CONTRACT_SOURCE_SYSTEM
+        ORDER BY i.END_OF_MONTH_DATE
+        ROWS BETWEEN 17 PRECEDING AND CURRENT ROW
+      )                                                   AS win_n
+
+    , REGR_SLOPE(i.SOURCE_SYSTEM_BALANCE, i.month_idx) OVER (
+        PARTITION BY i.CONTRACT_SOURCE_SYSTEM
+        ORDER BY i.END_OF_MONTH_DATE
+        ROWS BETWEEN 17 PRECEDING AND CURRENT ROW
+      )                                                   AS beta1_slope
+
+    , REGR_INTERCEPT(i.SOURCE_SYSTEM_BALANCE, i.month_idx) OVER (
+        PARTITION BY i.CONTRACT_SOURCE_SYSTEM
+        ORDER BY i.END_OF_MONTH_DATE
+        ROWS BETWEEN 17 PRECEDING AND CURRENT ROW
+      )                                                   AS beta0_intercept
+  FROM idx i
+),
+
+-- 4) Predicted value and residual from the rolling regression
+pred AS (
+  SELECT
+      r.*
+    , CASE WHEN r.win_n >= 6 AND r.beta1_slope IS NOT NULL AND r.beta0_intercept IS NOT NULL
+           THEN (r.beta1_slope * r.month_idx) + r.beta0_intercept
+           ELSE NULL
+      END                                                AS yhat_pred
+    , CASE WHEN r.win_n >= 6 AND r.beta1_slope IS NOT NULL AND r.beta0_intercept IS NOT NULL
+           THEN (r.SOURCE_SYSTEM_BALANCE - ((r.beta1_slope * r.month_idx) + r.beta0_intercept))
+           ELSE NULL
+      END                                                AS resid
+  FROM roll_regr r
+),
+
+-- 5) Rolling residual dispersion to compute residual Z-scores
+resid_stats AS (
+  SELECT
+      p.*
+    , STDDEV_SAMP(p.resid) OVER (
+        PARTITION BY p.CONTRACT_SOURCE_SYSTEM
+        ORDER BY p.END_OF_MONTH_DATE
+        ROWS BETWEEN 17 PRECEDING AND CURRENT ROW
+      )                                                  AS resid_std
+    , AVG(p.resid) OVER (
+        PARTITION BY p.CONTRACT_SOURCE_SYSTEM
+        ORDER BY p.END_OF_MONTH_DATE
+        ROWS BETWEEN 17 PRECEDING AND CURRENT ROW
+      )                                                  AS resid_mean -- near 0 for OLS, but keep robust
+  FROM pred p
+),
+
+-- 6) MoM deltas + rolling MoM average & std (exclude current by ending at 1 PRECEDING)
+mom AS (
+  SELECT
+      s.*
+    , LAG(s.SOURCE_SYSTEM_BALANCE) OVER (
+        PARTITION BY s.CONTRACT_SOURCE_SYSTEM
+        ORDER BY s.END_OF_MONTH_DATE
+      )                                                  AS prev_balance
+    , (s.SOURCE_SYSTEM_BALANCE
+       - LAG(s.SOURCE_SYSTEM_BALANCE) OVER (
+           PARTITION BY s.CONTRACT_SOURCE_SYSTEM ORDER BY s.END_OF_MONTH_DATE
+         )
+      )                                                  AS mom_delta
+
+    , AVG( (s.SOURCE_SYSTEM_BALANCE
+             - LAG(s.SOURCE_SYSTEM_BALANCE) OVER (
+                 PARTITION BY s.CONTRACT_SOURCE_SYSTEM ORDER BY s.END_OF_MONTH_DATE
+               )
+           )
+        ) OVER (
+          PARTITION BY s.CONTRACT_SOURCE_SYSTEM
+          ORDER BY s.END_OF_MONTH_DATE
+          ROWS BETWEEN 17 PRECEDING AND 1 PRECEDING
+        )                                                AS mom_avg
+
+    , STDDEV_SAMP( (s.SOURCE_SYSTEM_BALANCE
+             - LAG(s.SOURCE_SYSTEM_BALANCE) OVER (
+                 PARTITION BY s.CONTRACT_SOURCE_SYSTEM ORDER BY s.END_OF_MONTH_DATE
+               )
+           )
+        ) OVER (
+          PARTITION BY s.CONTRACT_SOURCE_SYSTEM
+          ORDER BY s.END_OF_MONTH_DATE
+          ROWS BETWEEN 17 PRECEDING AND 1 PRECEDING
+        )                                                AS mom_std
+  FROM resid_stats s
+),
+
+-- 7) Z-scores and anomaly flags
+scored AS (
+  SELECT
+      m.*
+    , CASE
+        WHEN m.resid IS NOT NULL AND m.resid_std IS NOT NULL AND m.resid_std > 0
+        THEN (m.resid - COALESCE(m.resid_mean,0.0)) / m.resid_std
+        ELSE NULL
+      END                                                AS resid_z
+
+    , CASE
+        WHEN m.mom_delta IS NOT NULL AND m.mom_std IS NOT NULL AND m.mom_std > 0
+        THEN (m.mom_delta - COALESCE(m.mom_avg,0.0)) / m.mom_std
+        ELSE NULL
+      END                                                AS mom_z
+
+    , CASE WHEN ABS(
+            CASE
+              WHEN m.resid IS NOT NULL AND m.resid_std IS NOT NULL AND m.resid_std > 0
+              THEN (m.resid - COALESCE(m.resid_mean,0.0)) / m.resid_std
+              ELSE 0
+            END
+          ) >= 2.0
+          THEN 1 ELSE 0 END                              AS resid_anomaly_flag
+
+    , CASE WHEN ABS(
+            CASE
+              WHEN m.mom_delta IS NOT NULL AND m.mom_std IS NOT NULL AND m.mom_std > 0
+              THEN (m.mom_delta - COALESCE(m.mom_avg,0.0)) / m.mom_std
+              ELSE 0
+            END
+          ) >= 2.0
+          THEN 1 ELSE 0 END                              AS mom_anomaly_flag
+  FROM mom m
+),
+
+-- 8) Combined severity score (tunable weights)
+ranked AS (
+  SELECT
+      s.*
+    , (0.6 * COALESCE(ABS(s.resid_z), 0.0)
+       + 0.4 * COALESCE(ABS(s.mom_z),   0.0)
+       + CASE WHEN s.resid_anomaly_flag = 1 AND s.mom_anomaly_flag = 1 THEN 0.75 ELSE 0 END
+      )                                                  AS severity_score
+  FROM scored s
+)
+
+SELECT
+    END_OF_MONTH_DATE
+  , CONTRACT_SOURCE_SYSTEM
+  , SOURCE_SYSTEM_BALANCE
+  , yhat_pred                       AS REG_PRED_18M
+  , resid                           AS REG_RESID
+  , resid_z                         AS REG_RESID_Z
+  , resid_anomaly_flag              AS REG_ANOM_FLAG
+  , prev_balance
+  , mom_delta
+  , mom_avg
+  , mom_std
+  , mom_z                           AS MOM_Z
+  , mom_anomaly_flag                AS MOM_ANOM_FLAG
+  , severity_score
+  , win_n                           AS WINDOW_OBS
+  , beta1_slope                     AS TREND_SLOPE_18M
+  , beta0_intercept                 AS TREND_INTERCEPT_18M
+FROM ranked
+-- Optional: focus on the most recent N months
+-- WHERE END_OF_MONTH_DATE >= ADD_MONTHS((SELECT max_eom FROM latest), -6)
+ORDER BY END_OF_MONTH_DATE, CONTRACT_SOURCE_SYSTEM;
+
+
+
+
+
 WITH
 cfg AS (
   SELECT
