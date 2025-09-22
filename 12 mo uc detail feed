@@ -1,5 +1,76 @@
 WITH sel AS (
   SELECT
+    c.column_name,
+    c.data_type,
+    ROW_NUMBER() OVER (ORDER BY UPPER(c.column_name)) AS rn
+  FROM INFORMATION_SCHEMA.COLUMNS c
+  /* Anchor: cross-join a single row from a user object to avoid "system-only" window agg error */
+  CROSS JOIN (
+    SELECT 1 AS anchor
+    FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME
+    FETCH FIRST 1 ROW ONLY
+  ) a
+  WHERE UPPER(c.table_name) = 'V_DPRT_CREDIT_INSTRUMENTS_ME'
+    AND UPPER(c.column_name) NOT IN (
+      'END_OF_MONTH_DATE','CONTRACT_SOURCE_SYSTEM','ACCOUNT_KEY',
+      'SOURCE_SYSTEM_BALANCE','GL_ACCOUNT_HIER_LEVEL_4'
+    )
+    -- prune noisy/audit columns; adjust as needed
+    AND UPPER(c.column_name) NOT LIKE '%_TS'
+    AND UPPER(c.column_name) NOT LIKE '%_DT'
+    AND UPPER(c.column_name) NOT LIKE 'CREATED_%'
+    AND UPPER(c.column_name) NOT LIKE 'UPDATED_%'
+    AND UPPER(c.column_name) NOT LIKE '%_USER'
+    AND UPPER(c.column_name) NOT LIKE '%USER_ID%'
+    AND UPPER(c.column_name) NOT LIKE '%HASH%'
+    AND UPPER(c.column_name) NOT LIKE '%CHECKSUM%'
+    AND UPPER(c.column_name) NOT LIKE '%BATCH%'
+    AND UPPER(c.column_name) NOT LIKE '%RUN_ID%'
+),
+batch AS (
+  SELECT * FROM sel
+  WHERE rn BETWEEN 1 AND 25   -- <<< change this range each run (e.g., 26-50, 51-75, ...)
+)
+SELECT
+  CASE
+    WHEN POSITION('CHAR' IN UPPER(data_type))>0 OR POSITION('VARCHAR' IN UPPER(data_type))>0
+         OR POSITION('NCHAR' IN UPPER(data_type))>0 OR POSITION('NVARCHAR' IN UPPER(data_type))>0
+    THEN
+'UNION ALL SELECT c.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, c.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+ FROM base_c c
+ JOIN base_p p
+   ON p.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
+  AND p.ACCOUNT_KEY            = c.ACCOUNT_KEY
+ WHERE UPPER(TRIM(c."'||column_name||'")) <> UPPER(TRIM(p."'||column_name||'"))
+    OR ((c."'||column_name||'" IS NULL) <> (p."'||column_name||'" IS NULL))'
+    WHEN UPPER(data_type) LIKE '%DATE%' OR UPPER(data_type) LIKE '%TIMESTAMP%'
+    THEN
+'UNION ALL SELECT c.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, c.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+ FROM base_c c
+ JOIN base_p p
+   ON p.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
+  AND p.ACCOUNT_KEY            = c.ACCOUNT_KEY
+ WHERE (c."'||column_name||'" <> p."'||column_name||'")
+    OR ((c."'||column_name||'" IS NULL) <> (p."'||column_name||'" IS NULL))'
+    ELSE
+'UNION ALL SELECT c.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, c.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+ FROM base_c c
+ JOIN base_p p
+   ON p.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
+  AND p.ACCOUNT_KEY            = c.ACCOUNT_KEY
+ WHERE (c."'||column_name||'" <> p."'||column_name||'")
+    OR ((c."'||column_name||'" IS NULL) <> (p."'||column_name||'" IS NULL))'
+  END AS sql_line
+FROM batch
+ORDER BY rn;
+
+
+
+
+
+
+WITH sel AS (
+  SELECT
     column_name,
     data_type,
     ROW_NUMBER() OVER (ORDER BY UPPER(column_name)) AS rn
