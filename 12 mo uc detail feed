@@ -46,6 +46,134 @@ curr_base AS (
     AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
 ),
 
+-- Tall views for EXCEPT-based diff
+prev_long AS (
+  SELECT ACCOUNT_IDENTIFIER, 'BORROWER_RISK_RATING' AS kde, CAST(BORROWER_RISK_RATING AS VARCHAR(2000)) AS val FROM prev_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'PD_GRADE',               CAST(PD_GRADE               AS VARCHAR(2000)) FROM prev_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'STATUS_CODE_DESCRIPTION', CAST(STATUS_CODE_DESCRIPTION AS VARCHAR(2000)) FROM prev_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'INSTRUMENT_TYPE',         CAST(INSTRUMENT_TYPE         AS VARCHAR(2000)) FROM prev_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'NON_ACCRUAL_FLAG',        CAST(NON_ACCRUAL_FLAG        AS VARCHAR(2000)) FROM prev_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'DAYS_PAST_DUE_BUCKET',    CAST(DAYS_PAST_DUE_BUCKET    AS VARCHAR(2000)) FROM prev_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'RC_CODE',                 CAST(RC_CODE                 AS VARCHAR(2000)) FROM prev_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'RC_DESCRIPTION',          CAST(RC_DESCRIPTION          AS VARCHAR(2000)) FROM prev_base
+),
+curr_long AS (
+  SELECT ACCOUNT_IDENTIFIER, 'BORROWER_RISK_RATING' AS kde, CAST(BORROWER_RISK_RATING AS VARCHAR(2000)) AS val FROM curr_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'PD_GRADE',               CAST(PD_GRADE               AS VARCHAR(2000)) FROM curr_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'STATUS_CODE_DESCRIPTION', CAST(STATUS_CODE_DESCRIPTION AS VARCHAR(2000)) FROM curr_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'INSTRUMENT_TYPE',         CAST(INSTRUMENT_TYPE         AS VARCHAR(2000)) FROM curr_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'NON_ACCRUAL_FLAG',        CAST(NON_ACCRUAL_FLAG        AS VARCHAR(2000)) FROM curr_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'DAYS_PAST_DUE_BUCKET',    CAST(DAYS_PAST_DUE_BUCKET    AS VARCHAR(2000)) FROM curr_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'RC_CODE',                 CAST(RC_CODE                 AS VARCHAR(2000)) FROM curr_base
+  UNION ALL SELECT ACCOUNT_IDENTIFIER, 'RC_DESCRIPTION',          CAST(RC_DESCRIPTION          AS VARCHAR(2000)) FROM curr_base
+),
+
+-- Symmetric difference (with aliases)
+delta_rows AS (
+  SELECT ACCOUNT_IDENTIFIER, kde FROM (
+    SELECT ACCOUNT_IDENTIFIER, kde, val FROM curr_long
+    EXCEPT
+    SELECT ACCOUNT_IDENTIFIER, kde, val FROM prev_long
+  ) AS a
+  UNION
+  SELECT ACCOUNT_IDENTIFIER, kde FROM (
+    SELECT ACCOUNT_IDENTIFIER, kde, val FROM prev_long
+    EXCEPT
+    SELECT ACCOUNT_IDENTIFIER, kde, val FROM curr_long
+  ) AS b
+),
+
+changed AS (
+  SELECT DISTINCT ACCOUNT_IDENTIFIER, kde FROM delta_rows
+),
+
+-- RENAMED from "matched" -> "matched_set"
+matched_set AS (
+  SELECT COUNT(*)::FLOAT8 AS matched_accounts
+  FROM (
+    SELECT c.ACCOUNT_IDENTIFIER
+    FROM curr_base c
+    INNER JOIN prev_base p ON c.ACCOUNT_IDENTIFIER = p.ACCOUNT_IDENTIFIER
+  ) AS matchset
+),
+
+exposure AS (
+  SELECT
+    ch.kde,
+    COUNT(*)::FLOAT8 AS changed_count,
+    SUM(NVL(c.curr_bal,0) - NVL(p.prev_bal,0)) AS exposure_change_dollars,
+    SUM(NVL(c.curr_bal,0)) AS curr_exposure_on_changed,
+    SUM(NVL(p.prev_bal,0)) AS prev_exposure_on_changed
+  FROM changed ch
+  LEFT JOIN curr_base c ON ch.ACCOUNT_IDENTIFIER = c.ACCOUNT_IDENTIFIER
+  LEFT JOIN prev_base p ON ch.ACCOUNT_IDENTIFIER = p.ACCOUNT_IDENTIFIER
+  GROUP BY ch.kde
+)
+
+SELECT
+  e.kde,
+  e.changed_count                                      AS mom_change_count,
+  (e.changed_count / NULLIF(ms.matched_accounts,0))    AS mom_change_count_pct,
+  e.exposure_change_dollars                            AS mom_exposure_change_dollars,
+  CASE WHEN NULLIF(e.prev_exposure_on_changed,0) IS NOT NULL
+       THEN e.exposure_change_dollars / e.prev_exposure_on_changed
+       ELSE NULL END                                   AS mom_exposure_change_pct
+FROM exposure e
+CROSS JOIN matched_set ms
+ORDER BY ABS(e.exposure_change_dollars) DESC
+FETCH FIRST 10 ROWS ONLY;
+
+
+
+
+WITH latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -1) AS prev_eom, max_eom FROM latest
+),
+
+-- Trimmed snapshots
+prev_base AS (
+  SELECT
+    ACCOUNT_IDENTIFIER,
+    CAST(SOURCE_SYSTEM_BALANCE AS FLOAT8) AS prev_bal,
+    BORROWER_RISK_RATING,
+    PD_GRADE,
+    STATUS_CODE_DESCRIPTION,
+    INSTRUMENT_TYPE,
+    NON_ACCRUAL_FLAG,
+    DAYS_PAST_DUE_BUCKET,
+    RC_CODE,
+    RC_DESCRIPTION
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.END_OF_MONTH_DATE = r.prev_eom
+    AND t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+
+curr_base AS (
+  SELECT
+    ACCOUNT_IDENTIFIER,
+    CAST(SOURCE_SYSTEM_BALANCE AS FLOAT8) AS curr_bal,
+    BORROWER_RISK_RATING,
+    PD_GRADE,
+    STATUS_CODE_DESCRIPTION,
+    INSTRUMENT_TYPE,
+    NON_ACCRUAL_FLAG,
+    DAYS_PAST_DUE_BUCKET,
+    RC_CODE,
+    RC_DESCRIPTION
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.END_OF_MONTH_DATE = r.max_eom
+    AND t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+
 prev_long AS (
   SELECT ACCOUNT_IDENTIFIER, 'BORROWER_RISK_RATING' AS kde, CAST(BORROWER_RISK_RATING AS VARCHAR(2000)) AS val FROM prev_base
   UNION ALL SELECT ACCOUNT_IDENTIFIER, 'PD_GRADE',               CAST(PD_GRADE               AS VARCHAR(2000)) FROM prev_base
