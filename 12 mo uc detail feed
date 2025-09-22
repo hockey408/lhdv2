@@ -1,5 +1,50 @@
 WITH cols AS (
   SELECT
+    c.column_name,
+    ROW_NUMBER() OVER (ORDER BY UPPER(c.column_name)) AS rn
+  FROM INFORMATION_SCHEMA.COLUMNS c
+  /* anchor so it's not a system-only query */
+  CROSS JOIN (SELECT 1 FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME LIMIT 1) a
+  WHERE UPPER(c.table_name) = 'V_DPRT_CREDIT_INSTRUMENTS_ME'
+    -- exclude keys/utility used elsewhere
+    AND UPPER(c.column_name) NOT IN (
+      'END_OF_MONTH_DATE','CONTRACT_SOURCE_SYSTEM','ACCOUNT_KEY',
+      'SOURCE_SYSTEM_BALANCE','GL_ACCOUNT_HIER_LEVEL_4'
+    )
+    -- prune audit/noisy columns (tune as needed)
+    AND UPPER(c.column_name) NOT LIKE '%_TS'
+    AND UPPER(c.column_name) NOT LIKE '%_DT'
+    AND UPPER(c.column_name) NOT LIKE 'CREATED_%'
+    AND UPPER(c.column_name) NOT LIKE 'UPDATED_%'
+    AND UPPER(c.column_name) NOT LIKE '%_USER'
+    AND UPPER(c.column_name) NOT LIKE '%USER_ID%'
+    AND UPPER(c.column_name) NOT LIKE '%HASH%'
+    AND UPPER(c.column_name) NOT LIKE '%CHECKSUM%'
+    AND UPPER(c.column_name) NOT LIKE '%BATCH%'
+    AND UPPER(c.column_name) NOT LIKE '%RUN_ID%'
+),
+batch AS (
+  SELECT * FROM cols
+  WHERE rn BETWEEN 1 AND 20   -- <<< adjust this per run: 1-20, 21-40, 41-60, ...
+)
+SELECT
+  'UNION ALL SELECT c.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, c.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+   FROM base_c c
+   JOIN base_p p
+     ON p.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
+    AND p.ACCOUNT_KEY            = c.ACCOUNT_KEY
+   WHERE TRIM(COALESCE(c."'||column_name||'"::VARCHAR(4000), ''~NULL~'')) <>
+         TRIM(COALESCE(p."'||column_name||'"::VARCHAR(4000), ''~NULL~''))'
+  AS sql_line
+FROM batch
+ORDER BY rn;
+
+
+
+
+
+WITH cols AS (
+  SELECT
     sc.attname        AS column_name,
     ROW_NUMBER() OVER (ORDER BY UPPER(sc.attname)) AS rn
   FROM _V_SYS_COLUMNS sc
