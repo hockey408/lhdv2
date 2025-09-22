@@ -1,3 +1,51 @@
+WITH cols AS (
+  SELECT
+    c.column_name,
+    ROW_NUMBER() OVER (ORDER BY UPPER(c.column_name)) AS rn
+  FROM INFORMATION_SCHEMA.COLUMNS c
+  /* Anchor so NPS doesn't treat this as a system-only window query */
+  CROSS JOIN (SELECT 1 FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME LIMIT 1) a
+  WHERE UPPER(c.table_name) = 'V_DPRT_CREDIT_INSTRUMENTS_ME'
+    -- (Optional) tighten schema if needed:
+    -- AND UPPER(c.table_schema) = 'CIDPR'
+    -- Exclude key/utility columns used elsewhere
+    AND UPPER(c.column_name) NOT IN (
+      'END_OF_MONTH_DATE','CONTRACT_SOURCE_SYSTEM','ACCOUNT_KEY',
+      'SOURCE_SYSTEM_BALANCE','GL_ACCOUNT_HIER_LEVEL_4'
+    )
+    -- Exclude common audit/noise fields (edit as needed)
+    AND UPPER(c.column_name) NOT LIKE '%_TS'
+    AND UPPER(c.column_name) NOT LIKE '%_DT'
+    AND UPPER(c.column_name) NOT LIKE 'CREATED_%'
+    AND UPPER(c.column_name) NOT LIKE 'UPDATED_%'
+    AND UPPER(c.column_name) NOT LIKE '%_USER'
+    AND UPPER(c.column_name) NOT LIKE '%USER_ID%'
+    AND UPPER(c.column_name) NOT LIKE '%HASH%'
+    AND UPPER(c.column_name) NOT LIKE '%CHECKSUM%'
+    AND UPPER(c.column_name) NOT LIKE '%BATCH%'
+    AND UPPER(c.column_name) NOT LIKE '%RUN_ID%'
+),
+batch AS (
+  SELECT * FROM cols
+  WHERE rn BETWEEN 1 AND 12   -- <<< adjust per run (e.g., 13-24, 25-36, …)
+)
+SELECT
+  /* Paste these lines into the scaffold's kde_changes CTE */
+  'UNION ALL SELECT b.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, b.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+     FROM base b
+     JOIN base_prev p
+       ON p.CONTRACT_SOURCE_SYSTEM = b.CONTRACT_SOURCE_SYSTEM
+      AND p.ACCOUNT_KEY            = b.ACCOUNT_KEY
+    WHERE TRIM(COALESCE(b."'||column_name||'"::VARCHAR(4000), ''~NULL~'')) <>
+          TRIM(COALESCE(p."'||column_name||'"::VARCHAR(4000), ''~NULL~''))'
+  AS sql_line
+FROM batch
+ORDER BY rn;
+
+
+
+
+
 WITH
 cfg AS (
   SELECT
