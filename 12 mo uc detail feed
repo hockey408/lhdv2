@@ -1,3 +1,174 @@
+WITH
+cfg AS (
+  SELECT
+    100000::FLOAT8   AS per_account_min_ssb,   -- ignore tiny accounts in event scan (e.g., $100k)
+    25000000::FLOAT8 AS per_kde_min_exposure   -- show KDEs with ≥ $25MM exposure this month
+),
+-- find the last three month-ends
+month_bounds AS (
+  SELECT
+    MAX(END_OF_MONTH_DATE) AS max_eom,
+    (SELECT MAX(END_OF_MONTH_DATE) FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME
+      WHERE END_OF_MONTH_DATE < (SELECT MAX(END_OF_MONTH_DATE) FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME)) AS prev_eom,
+    (SELECT MAX(END_OF_MONTH_DATE) FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME
+      WHERE END_OF_MONTH_DATE < (SELECT MAX(END_OF_MONTH_DATE) FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME
+                                   WHERE END_OF_MONTH_DATE < (SELECT MAX(END_OF_MONTH_DATE) FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME))) AS prevprev_eom
+),
+-- positive SSB sets per month (keeps row volumes down)
+measures_c AS (
+  SELECT t.CONTRACT_SOURCE_SYSTEM, t.ACCOUNT_KEY, SUM(t.SOURCE_SYSTEM_BALANCE) AS SSB
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t, month_bounds mb
+  WHERE t.END_OF_MONTH_DATE = mb.max_eom
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  GROUP BY 1,2 HAVING SUM(t.SOURCE_SYSTEM_BALANCE) > 0
+),
+measures_p AS (
+  SELECT t.CONTRACT_SOURCE_SYSTEM, t.ACCOUNT_KEY, SUM(t.SOURCE_SYSTEM_BALANCE) AS SSB
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t, month_bounds mb
+  WHERE t.END_OF_MONTH_DATE = mb.prev_eom
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  GROUP BY 1,2 HAVING SUM(t.SOURCE_SYSTEM_BALANCE) > 0
+),
+measures_pp AS (
+  SELECT t.CONTRACT_SOURCE_SYSTEM, t.ACCOUNT_KEY, SUM(t.SOURCE_SYSTEM_BALANCE) AS SSB
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t, month_bounds mb
+  WHERE t.END_OF_MONTH_DATE = mb.prevprev_eom
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  GROUP BY 1,2 HAVING SUM(t.SOURCE_SYSTEM_BALANCE) > 0
+),
+
+-- bring full rows only for the intersected accounts we care about, and filter tiny SSB early
+base_c AS (
+  SELECT t.*
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t
+  JOIN measures_c m
+    ON m.CONTRACT_SOURCE_SYSTEM = t.CONTRACT_SOURCE_SYSTEM
+   AND m.ACCOUNT_KEY            = t.ACCOUNT_KEY
+  JOIN month_bounds mb ON t.END_OF_MONTH_DATE = mb.max_eom
+  JOIN cfg ON 1=1
+  WHERE t.SOURCE_SYSTEM_BALANCE >= cfg.per_account_min_ssb
+),
+base_p AS (
+  SELECT t.*
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t
+  JOIN measures_p m
+    ON m.CONTRACT_SOURCE_SYSTEM = t.CONTRACT_SOURCE_SYSTEM
+   AND m.ACCOUNT_KEY            = t.ACCOUNT_KEY
+  JOIN month_bounds mb ON t.END_OF_MONTH_DATE = mb.prev_eom
+),
+base_pp AS (
+  SELECT t.*
+  FROM CIDPR..V_DPRT_CREDIT_INSTRUMENTS_ME t
+  JOIN measures_pp m
+    ON m.CONTRACT_SOURCE_SYSTEM = t.CONTRACT_SOURCE_SYSTEM
+   AND m.ACCOUNT_KEY            = t.ACCOUNT_KEY
+  JOIN month_bounds mb ON t.END_OF_MONTH_DATE = mb.prevprev_eom
+),
+
+/* --------- CURRENT MONTH changes: (curr vs prev) ---------- */
+kde_changes_curr AS (
+  -- seed
+  SELECT DATE '1900-01-01'::DATE AS END_OF_MONTH_DATE, ''::VARCHAR(1) AS KDE, 0::FLOAT8 AS CURR_SSB WHERE 1=0
+
+  /* <<< PASTE GENERATED UNION LINES HERE (they reference base_c and base_p) >>> */
+),
+kde_monthly_curr AS (
+  SELECT END_OF_MONTH_DATE, KDE,
+         COUNT(*) AS change_count,
+         SUM(CURR_SSB) AS exposure_dollars
+  FROM kde_changes_curr
+  GROUP BY 1,2
+),
+
+/* --------- PREVIOUS MONTH changes: (prev vs prevprev) ---------- */
+-- reuse the *same* generator block, but it’s okay here because we alias
+-- the later month as "base_p" and the earlier month as "base_pp".
+kde_changes_prev AS (
+  -- seed
+  SELECT DATE '1900-01-01'::DATE AS END_OF_MONTH_DATE, ''::VARCHAR(1) AS KDE, 0::FLOAT8 AS CURR_SSB WHERE 1=0
+
+  /* <<< PASTE THE SAME GENERATED UNION LINES HERE, unchanged >>> */
+),
+kde_monthly_prev AS (
+  SELECT END_OF_MONTH_DATE, KDE,
+         COUNT(*) AS change_count,
+         SUM(CURR_SSB) AS exposure_dollars
+  FROM kde_changes_prev
+  GROUP BY 1,2
+),
+
+/* --------- Denominators for current month only ---------- */
+month_totals_c AS (
+  SELECT mb.max_eom AS END_OF_MONTH_DATE,
+         COUNT(DISTINCT ('x'||m.CONTRACT_SOURCE_SYSTEM||'|'||m.ACCOUNT_KEY)) AS month_total_accounts,
+         SUM(m.SSB) AS month_total_ssb
+  FROM measures_c m, month_bounds mb
+  GROUP BY mb.max_eom
+),
+
+/* --------- Join current to previous for MoM ---------- */
+joined AS (
+  SELECT
+    c.END_OF_MONTH_DATE,
+    c.KDE,
+    c.change_count,
+    c.exposure_dollars,
+    p.change_count     AS prev_change_count,
+    p.exposure_dollars AS prev_exposure_dollars
+  FROM kde_monthly_curr c
+  LEFT JOIN kde_monthly_prev p
+    ON p.KDE = c.KDE
+),
+
+/* --------- Normalize & compute MoM metrics ---------- */
+scored AS (
+  SELECT
+    j.END_OF_MONTH_DATE,
+    j.KDE,
+    j.change_count,
+    j.exposure_dollars,
+    j.prev_change_count,
+    j.prev_exposure_dollars,
+
+    (j.change_count - j.prev_change_count) AS mom_change_count_delta,
+    CASE WHEN j.prev_change_count > 0
+         THEN (j.change_count - j.prev_change_count) / j.prev_change_count::FLOAT8 END AS mom_change_count_pct,
+
+    (j.exposure_dollars - j.prev_exposure_dollars) AS mom_exposure_dollars_delta,
+    CASE WHEN j.prev_exposure_dollars <> 0
+         THEN (j.exposure_dollars - j.prev_exposure_dollars) / j.prev_exposure_dollars::FLOAT8 END AS mom_exposure_dollars_pct,
+
+    mt.month_total_accounts,
+    mt.month_total_ssb,
+    CASE WHEN mt.month_total_accounts > 0 THEN j.change_count    / mt.month_total_accounts::FLOAT8 END AS change_rate,
+    CASE WHEN mt.month_total_ssb      > 0 THEN j.exposure_dollars/ mt.month_total_ssb::FLOAT8      END AS exposure_share
+  FROM joined j
+  JOIN month_totals_c mt ON mt.END_OF_MONTH_DATE = j.END_OF_MONTH_DATE
+  JOIN cfg ON 1=1
+  WHERE j.exposure_dollars >= cfg.per_kde_min_exposure
+)
+
+SELECT
+  END_OF_MONTH_DATE,
+  KDE,
+  change_count,
+  exposure_dollars,
+  prev_change_count,
+  prev_exposure_dollars,
+  mom_change_count_delta,
+  mom_change_count_pct,
+  mom_exposure_dollars_delta,
+  mom_exposure_dollars_pct,
+  change_rate,
+  exposure_share
+FROM scored
+ORDER BY exposure_dollars DESC, KDE
+FETCH FIRST 50 ROWS ONLY;
+
+
+
+
+
 SELECT
   CASE
     /* TEXT-like: compare UPPER(TRIM(...)) with null-safety */
