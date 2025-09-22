@@ -1,3 +1,64 @@
+SELECT
+  CASE
+    /* TEXT-like: compare UPPER(TRIM(...)) with null-safety */
+    WHEN POSITION('CHAR' IN UPPER(data_type))  > 0
+      OR POSITION('VARCHAR' IN UPPER(data_type)) > 0
+      OR POSITION('NCHAR' IN UPPER(data_type))   > 0
+      OR POSITION('NVARCHAR' IN UPPER(data_type))> 0
+    THEN
+'UNION ALL SELECT c.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, c.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+ FROM base_c c
+ JOIN base_p p
+   ON p.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
+  AND p.ACCOUNT_KEY            = c.ACCOUNT_KEY
+ WHERE UPPER(TRIM(c."'||column_name||'")) <> UPPER(TRIM(p."'||column_name||'"))
+    OR ((c."'||column_name||'" IS NULL) <> (p."'||column_name||'" IS NULL))'
+
+    /* DATE/TIMESTAMP */
+    WHEN UPPER(data_type) LIKE '%DATE%' OR UPPER(data_type) LIKE '%TIMESTAMP%'
+    THEN
+'UNION ALL SELECT c.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, c.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+ FROM base_c c
+ JOIN base_p p
+   ON p.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
+  AND p.ACCOUNT_KEY            = c.ACCOUNT_KEY
+ WHERE (c."'||column_name||'" <> p."'||column_name||'")
+    OR ((c."'||column_name||'" IS NULL) <> (p."'||column_name||'" IS NULL))'
+
+    /* NUMERIC & the rest: direct compare with null-safety */
+    ELSE
+'UNION ALL SELECT c.END_OF_MONTH_DATE, '''||column_name||''' AS KDE, c.SOURCE_SYSTEM_BALANCE AS CURR_SSB
+ FROM base_c c
+ JOIN base_p p
+   ON p.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
+  AND p.ACCOUNT_KEY            = c.ACCOUNT_KEY
+ WHERE (c."'||column_name||'" <> p."'||column_name||'")
+    OR ((c."'||column_name||'" IS NULL) <> (p."'||column_name||'" IS NULL))'
+  END AS sql_line
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE UPPER(table_name) = 'V_DPRT_CREDIT_INSTRUMENTS_ME'
+  -- Optional: AND UPPER(table_schema) IN ('CIDPR','DATAHUB')
+  AND UPPER(column_name) NOT IN (
+    'END_OF_MONTH_DATE','CONTRACT_SOURCE_SYSTEM','ACCOUNT_KEY',
+    'SOURCE_SYSTEM_BALANCE','GL_ACCOUNT_HIER_LEVEL_4'
+  )
+  -- Common noisy/audit fields to skip (edit as needed)
+  AND UPPER(column_name) NOT LIKE '%_TS'
+  AND UPPER(column_name) NOT LIKE '%_DT'
+  AND UPPER(column_name) NOT LIKE 'CREATED_%'
+  AND UPPER(column_name) NOT LIKE 'UPDATED_%'
+  AND UPPER(column_name) NOT LIKE '%_USER'
+  AND UPPER(column_name) NOT LIKE '%USER_ID%'
+  AND UPPER(column_name) NOT LIKE '%HASH%'
+  AND UPPER(column_name) NOT LIKE '%CHECKSUM%'
+  AND UPPER(column_name) NOT LIKE '%BATCH%'
+  AND UPPER(column_name) NOT LIKE '%RUN_ID%'
+ORDER BY column_name;
+
+
+
+
+
 WITH
 latest AS (
   SELECT MAX(END_OF_MONTH_DATE) AS max_eom
