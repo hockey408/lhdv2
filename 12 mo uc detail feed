@@ -1,3 +1,176 @@
+/* Fast 2-month KDE summary (no temp tables), with DAYS_PAST_DUE and CRE_FLAG */
+WITH
+latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -1) AS prev_eom, max_eom FROM latest
+),
+
+/* 1) One scan for just two months, lean columns */
+two_mo AS (
+  SELECT
+    t.ACCOUNT_IDENTIFIER,
+    t.END_OF_MONTH_DATE,
+    CAST(t.SOURCE_SYSTEM_BALANCE AS FLOAT8) AS BAL,
+    t.BORROWER_RISK_RATING,
+    t.PD_GRADE,
+    t.STATUS_CODE_DESCRIPTION,
+    t.INSTRUMENT_TYPE,
+    t.NON_ACCRUAL_FLAG,
+    t.DAYS_PAST_DUE,        -- <-- corrected
+    t.RC_CODE,
+    t.RC_DESCRIPTION,
+    t.CRE_FLAG              -- <-- new KDE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND t.END_OF_MONTH_DATE IN (r.prev_eom, r.max_eom)
+    /* Optional narrowers to speed up:
+       AND t.CONTRACT_SOURCE_SYSTEM IN ('L-FCB','L-CIT')
+       AND t.SOURCE_SYSTEM_BALANCE >= 5000
+    */
+),
+
+/* 2) Per-account pivot: prev/curr into columns (no self-join) */
+per_acct AS (
+  SELECT
+    ACCOUNT_IDENTIFIER,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN BAL END) AS prev_bal,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN BAL END) AS curr_bal,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN CAST(BORROWER_RISK_RATING    AS VARCHAR(2000)) END) AS p_BRR,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN CAST(BORROWER_RISK_RATING    AS VARCHAR(2000)) END) AS c_BRR,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN CAST(PD_GRADE                AS VARCHAR(2000)) END) AS p_PD,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN CAST(PD_GRADE                AS VARCHAR(2000)) END) AS c_PD,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN CAST(STATUS_CODE_DESCRIPTION AS VARCHAR(2000)) END) AS p_STATUS,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN CAST(STATUS_CODE_DESCRIPTION AS VARCHAR(2000)) END) AS c_STATUS,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN CAST(INSTRUMENT_TYPE         AS VARCHAR(2000)) END) AS p_INSTR,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN CAST(INSTRUMENT_TYPE         AS VARCHAR(2000)) END) AS c_INSTR,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN CAST(NON_ACCRUAL_FLAG        AS VARCHAR(2000)) END) AS p_NA,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN CAST(NON_ACCRUAL_FLAG        AS VARCHAR(2000)) END) AS c_NA,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN CAST(DAYS_PAST_DUE           AS VARCHAR(2000)) END) AS p_DPD,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN CAST(DAYS_PAST_DUE           AS VARCHAR(2000)) END) AS c_DPD,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN CAST(RC_CODE                 AS VARCHAR(2000)) END) AS p_RC,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN CAST(RC_CODE                 AS VARCHAR(2000)) END) AS c_RC,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN CAST(RC_DESCRIPTION          AS VARCHAR(2000)) END) AS p_RC_DESC,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN CAST(RC_DESCRIPTION          AS VARCHAR(2000)) END) AS c_RC_DESC,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN CAST(CRE_FLAG                AS VARCHAR(2000)) END) AS p_CRE,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN CAST(CRE_FLAG                AS VARCHAR(2000)) END) AS c_CRE
+
+  FROM two_mo
+  GROUP BY ACCOUNT_IDENTIFIER
+  HAVING
+      MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN 1 ELSE 0 END) = 1
+  AND MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN 1 ELSE 0 END) = 1
+),
+
+/* 3) Change flags + optional $ threshold and “any-change” filter */
+acct_changes AS (
+  SELECT
+    ACCOUNT_IDENTIFIER,
+    prev_bal, curr_bal,
+    (NVL(c_BRR,'#')    <> NVL(p_BRR,'#'))       AS chg_BRR,
+    (NVL(c_PD,'#')     <> NVL(p_PD,'#'))        AS chg_PD,
+    (NVL(c_STATUS,'#') <> NVL(p_STATUS,'#'))    AS chg_STATUS,
+    (NVL(c_INSTR,'#')  <> NVL(p_INSTR,'#'))     AS chg_INSTR,
+    (NVL(c_NA,'#')     <> NVL(p_NA,'#'))        AS chg_NA,
+    (NVL(c_DPD,'#')    <> NVL(p_DPD,'#'))       AS chg_DPD,        -- uses DAYS_PAST_DUE
+    (NVL(c_RC,'#')     <> NVL(p_RC,'#'))        AS chg_RC,
+    (NVL(c_RC_DESC,'#')<> NVL(p_RC_DESC,'#'))   AS chg_RC_DESC,
+    (NVL(c_CRE,'#')    <> NVL(p_CRE,'#'))       AS chg_CRE         -- new KDE
+  FROM per_acct
+  WHERE
+        /* speed knob: ignore tiny balance moves; set to 0.0 to include all */
+        ABS(NVL(curr_bal,0) - NVL(prev_bal,0)) >= 50000.0
+    AND (
+         (NVL(c_BRR,'#')    <> NVL(p_BRR,'#'))
+      OR (NVL(c_PD,'#')     <> NVL(p_PD,'#'))
+      OR (NVL(c_STATUS,'#') <> NVL(p_STATUS,'#'))
+      OR (NVL(c_INSTR,'#')  <> NVL(p_INSTR,'#'))
+      OR (NVL(c_NA,'#')     <> NVL(p_NA,'#'))
+      OR (NVL(c_DPD,'#')    <> NVL(p_DPD,'#'))
+      OR (NVL(c_RC,'#')     <> NVL(p_RC,'#'))
+      OR (NVL(c_RC_DESC,'#')<> NVL(p_RC_DESC,'#'))
+      OR (NVL(c_CRE,'#')    <> NVL(p_CRE,'#'))
+    )
+)
+
+/* 4) Tiny KDE summary (now 9 rows incl. CRE_FLAG) */
+SELECT KDE, changed_count, exposure_change_dollars
+FROM (
+  SELECT 'BORROWER_RISK_RATING' AS KDE,
+         SUM(CASE WHEN chg_BRR     THEN 1 ELSE 0 END) AS changed_count,
+         SUM(CASE WHEN chg_BRR     THEN (NVL(curr_bal,0)-NVL(prev_bal,0)) ELSE 0 END) AS exposure_change_dollars
+  FROM acct_changes
+
+  UNION ALL
+  SELECT 'PD_GRADE',
+         SUM(CASE WHEN chg_PD      THEN 1 ELSE 0 END),
+         SUM(CASE WHEN chg_PD      THEN (NVL(curr_bal,0)-NVL(prev_bal,0)) ELSE 0 END)
+  FROM acct_changes
+
+  UNION ALL
+  SELECT 'STATUS_CODE_DESCRIPTION',
+         SUM(CASE WHEN chg_STATUS  THEN 1 ELSE 0 END),
+         SUM(CASE WHEN chg_STATUS  THEN (NVL(curr_bal,0)-NVL(prev_bal,0)) ELSE 0 END)
+  FROM acct_changes
+
+  UNION ALL
+  SELECT 'INSTRUMENT_TYPE',
+         SUM(CASE WHEN chg_INSTR   THEN 1 ELSE 0 END),
+         SUM(CASE WHEN chg_INSTR   THEN (NVL(curr_bal,0)-NVL(prev_bal,0)) ELSE 0 END)
+  FROM acct_changes
+
+  UNION ALL
+  SELECT 'NON_ACCRUAL_FLAG',
+         SUM(CASE WHEN chg_NA      THEN 1 ELSE 0 END),
+         SUM(CASE WHEN chg_NA      THEN (NVL(curr_bal,0)-NVL(prev_bal,0)) ELSE 0 END)
+  FROM acct_changes
+
+  UNION ALL
+  SELECT 'DAYS_PAST_DUE',
+         SUM(CASE WHEN chg_DPD     THEN 1 ELSE 0 END),
+         SUM(CASE WHEN chg_DPD     THEN (NVL(curr_bal,0)-NVL(prev_bal,0)) ELSE 0 END)
+  FROM acct_changes
+
+  UNION ALL
+  SELECT 'RC_CODE',
+         SUM(CASE WHEN chg_RC      THEN 1 ELSE 0 END),
+         SUM(CASE WHEN chg_RC      THEN (NVL(curr_bal,0)-NVL(prev_bal,0)) ELSE 0 END)
+  FROM acct_changes
+
+  UNION ALL
+  SELECT 'RC_DESCRIPTION',
+         SUM(CASE WHEN chg_RC_DESC THEN 1 ELSE 0 END),
+         SUM(CASE WHEN chg_RC_DESC THEN (NVL(curr_bal,0)-NVL(prev_bal,0)) ELSE 0 END)
+  FROM acct_changes
+
+  UNION ALL
+  SELECT 'CRE_FLAG',
+         SUM(CASE WHEN chg_CRE     THEN 1 ELSE 0 END),
+         SUM(CASE WHEN chg_CRE     THEN (NVL(curr_bal,0)-NVL(prev_bal,0)) ELSE 0 END)
+  FROM acct_changes
+) AS k
+ORDER BY ABS(exposure_change_dollars) DESC;
+
+
+
+
+
+
 /* === Fast MoM KDE summary without temp tables === */
 WITH
 params AS (
