@@ -1,3 +1,16 @@
+=IF(
+  [@t_num]=1,
+  NA(),
+  [@BAL_num] - SUMIFS(
+    t[BAL_num],
+    t[System_key],[@System_key],
+    t[t_num],[@t_num]-1
+  )
+)
+
+
+
+
 =COUNTIF(
   INDEX(T[System], MATCH([@System], T[System], 0)) : [@System],
   [@System]
