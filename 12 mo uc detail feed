@@ -1,3 +1,18 @@
+=LET(
+  sys, [@System_key],
+  t0,  [@t_num],
+  z0,  ABS([@Residual_Z_Cohort]),
+  z1,  ABS(XLOOKUP(1,(t[System_key]=sys)*(t[t_num]=t0-1),t[Residual_Z_Cohort],NA())),
+  z2,  ABS(XLOOKUP(1,(t[System_key]=sys)*(t[t_num]=t0-2),t[Residual_Z_Cohort],NA())),
+  count, 3 - COUNTIF({z0,z1,z2},NA()),
+  IF(count=0, NA(), (IFNA(z0,0)+IFNA(z1,0)+IFNA(z2,0))/count)
+)
+
+
+
+
+
+
 =IF(
   [@t_num]=1,
   NA(),
