@@ -1,3 +1,19 @@
+=LET(
+  sys, [@System],
+  s,   MATCH(sys, T[System], 0),
+  n,   COUNTIF(T[System], sys),
+  IF(n<2, NA(),
+     SLOPE(
+       N(INDEX(T[BAL], s):INDEX(T[BAL], s+n-1)),
+       N(INDEX(T[t],   s):INDEX(T[t],   s+n-1))
+     )
+  )
+)
+
+
+
+
+
 -- 1) Monthly totals by system (ONLY what you need)
 WITH m AS (
   SELECT
