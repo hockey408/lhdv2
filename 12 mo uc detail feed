@@ -1,3 +1,99 @@
+/* Fast MoM KDE summary (RC_CODE, RC_DESCRIPTION, CRE_FLAG only) */
+WITH
+params AS (
+  /* Raise during close to speed things up (e.g., 100000.0). Set to 0.0 to include all. */
+  SELECT 100000.0::FLOAT8 AS min_abs_bal_delta
+),
+latest AS (
+  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -1) AS prev_eom, max_eom FROM latest
+),
+
+/* 1) Single scan for just 2 months, lean columns */
+two_mo AS (
+  SELECT DISTINCT  -- helps if duplicates exist per account/month
+    t.ACCOUNT_IDENTIFIER,
+    t.END_OF_MONTH_DATE,
+    CAST(t.SOURCE_SYSTEM_BALANCE AS FLOAT8) AS BAL,
+    t.RC_CODE,
+    t.RC_DESCRIPTION,
+    t.CRE_FLAG
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND t.END_OF_MONTH_DATE IN (r.prev_eom, r.max_eom)
+),
+
+/* 2) Per-account pivot: prev/curr into columns (no self-join) */
+per_acct AS (
+  SELECT
+    ACCOUNT_IDENTIFIER,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN BAL END) AS prev_bal,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN BAL END) AS curr_bal,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN CAST(RC_CODE        AS VARCHAR(2000)) END) AS p_RC,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN CAST(RC_CODE        AS VARCHAR(2000)) END) AS c_RC,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN CAST(RC_DESCRIPTION AS VARCHAR(2000)) END) AS p_RC_DESC,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN CAST(RC_DESCRIPTION AS VARCHAR(2000)) END) AS c_RC_DESC,
+
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN CAST(CRE_FLAG       AS VARCHAR(2000)) END) AS p_CRE,
+    MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN CAST(CRE_FLAG       AS VARCHAR(2000)) END) AS c_CRE
+
+  FROM two_mo
+  GROUP BY ACCOUNT_IDENTIFIER
+  HAVING
+      MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT prev_eom FROM rng) THEN 1 ELSE 0 END) = 1
+  AND MAX(CASE WHEN END_OF_MONTH_DATE = (SELECT max_eom  FROM rng) THEN 1 ELSE 0 END) = 1
+),
+
+/* 3) Change flags + $ threshold + “any-change” filter */
+acct_changes AS (
+  SELECT
+    ACCOUNT_IDENTIFIER,
+    prev_bal, curr_bal,
+    (NVL(c_RC,'#')      <> NVL(p_RC,'#'))       AS chg_RC,
+    (NVL(c_RC_DESC,'#') <> NVL(p_RC_DESC,'#'))  AS chg_RC_DESC,
+    (NVL(c_CRE,'#')     <> NVL(p_CRE,'#'))      AS chg_CRE
+  FROM per_acct
+  WHERE ABS(NVL(curr_bal,0) - NVL(prev_bal,0)) >= (SELECT min_abs_bal_delta FROM params)
+    AND ( (NVL(c_RC,'#')      <> NVL(p_RC,'#'))
+       OR (NVL(c_RC_DESC,'#') <> NVL(p_RC_DESC,'#'))
+       OR (NVL(c_CRE,'#')     <> NVL(p_CRE,'#')) )
+)
+
+/* 4) Tiny 3-row KDE summary */
+SELECT KDE, changed_count, exposure_change_dollars
+FROM (
+  SELECT 'RC_CODE' AS KDE,
+         SUM(CASE WHEN chg_RC      THEN 1 ELSE 0 END) AS changed_count,
+         SUM(CASE WHEN chg_RC      THEN (NVL(curr_bal,0)-NVL(prev_bal,0)) ELSE 0 END) AS exposure_change_dollars
+  FROM acct_changes
+
+  UNION ALL
+  SELECT 'RC_DESCRIPTION',
+         SUM(CASE WHEN chg_RC_DESC THEN 1 ELSE 0 END),
+         SUM(CASE WHEN chg_RC_DESC THEN (NVL(curr_bal,0)-NVL(prev_bal,0)) ELSE 0 END)
+  FROM acct_changes
+
+  UNION ALL
+  SELECT 'CRE_FLAG',
+         SUM(CASE WHEN chg_CRE     THEN 1 ELSE 0 END),
+         SUM(CASE WHEN chg_CRE     THEN (NVL(curr_bal,0)-NVL(prev_bal,0)) ELSE 0 END)
+  FROM acct_changes
+) AS k
+ORDER BY ABS(exposure_change_dollars) DESC;
+
+
+
+
+
 /* Fast 2-month KDE summary (no temp tables), with DAYS_PAST_DUE and CRE_FLAG */
 WITH
 latest AS (
