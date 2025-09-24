@@ -1,3 +1,14 @@
+=IFERROR(
+  RSQ(
+    FILTER(t[BAL_num], (t[System_key]=[@System_key])*(t[t_num]>=[@Latest_t]-5)*(t[t_num]<=[@Latest_t])),
+    FILTER(t[t_num],   (t[System_key]=[@System_key])*(t[t_num]>=[@Latest_t]-5)*(t[t_num]<=[@Latest_t]))
+  ),
+  NA()
+)
+
+
+
+
 System_key	Latest_t	n_6	sumX_6	sumY_6	sumXY_6	sumX2_6	sumY2_6	denom_6	slope_6	intercept_6	r_6	R2_6
 AL	68.00	6	393	4294854040.04	237531760195.50	25759.00	2208937195310310000.00	17.50	-2501781681.55	164582509148.18	#NUM!	
 
