@@ -1,3 +1,22 @@
+R2_6 :=
+IF(
+  OR([@n_6]<2),
+  NA(),
+  LET(
+    n,[@n_6],
+    sx,[@sumX_6], sy,[@sumY_6], sxy,[@sumXY_6], sx2,[@sumX2_6], sy2,[@sumY2_6],
+    varX, MAX(n*sx2 - sx^2, 0),
+    varY, MAX(n*sy2 - sy^2, 0),
+    num,  (n*sxy - sx*sy)^2,
+    den,  varX * varY,
+    IF(den=0, NA(), num/den)
+  )
+)
+
+
+
+
+
 =IF(
   OR([@n_6]<2,
      ([@n_6]*[@sumX2_6]-[@sumX_6]^2)<=0,
