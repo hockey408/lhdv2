@@ -1,3 +1,19 @@
+Q1_Lift_6 :=
+AVERAGEIFS(
+  t[Residual_6],
+  t[System_key],[@System_key],
+  t[q],1,
+  t[t_num],">="&[@Latest_t]-5, t[t_num],"<="&[@Latest_t]
+)
+
+Q2_Lift_6 := (same, with t[q]=2)
+Q3_Lift_6 := (same, with t[q]=3)
+Q4_Lift_6 := (same, with t[q]=4)
+
+
+
+
+
 =IFERROR(
   RSQ(
     FILTER(t[BAL_num], (t[System_key]=[@System_key])*(t[t_num]>=[@Latest_t]-5)*(t[t_num]<=[@Latest_t])),
