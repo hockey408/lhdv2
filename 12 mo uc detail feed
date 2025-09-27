@@ -1,3 +1,10 @@
+System | Cohort | BestWindow | R²_Reg_Selected | R²_MA | ΔR² | RMSE_Reg_Selected | RMSE_MA | ΔRMSE | MAPE_Reg | MAPE_MA | ΔMAPE |
+
+
+
+
+
+
 Q1_Lift_6 :=
 AVERAGEIFS(
   t[Residual_6],
