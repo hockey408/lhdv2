@@ -1,3 +1,59 @@
+let
+  // 0) Source: reference your existing table/query
+  Source = #"T",
+
+  // 1) Ensure types are correct (adjust names/types to match your columns)
+  Typed =
+    Table.TransformColumnTypes(
+      Source,
+      {
+        {"System_key", type text},
+        {"t_num", Int64.Type},
+        {"Severity", type number}
+      }
+    ),
+
+  // 2) Add a numeric Flag column (1 if Severity >= 70, else 0)
+  AddedFlag =
+    Table.AddColumn(
+      Typed, "Flagged",
+      each if [Severity] >= 70 then 1 else 0,
+      Int64.Type
+    ),
+
+  // 3) Find the latest month (from rows that actually exist)
+  LatestMonth = List.Max( AddedFlag[t_num] ),
+
+  // 4) Filter to latest month only
+  LatestOnly =
+    Table.SelectRows( AddedFlag, each [t_num] = LatestMonth ),
+
+  // 5) Distinct counts at latest month
+  DistinctSystemsLatest = List.Count( List.Distinct( LatestOnly[System_key] ) ),
+  DistinctFlaggedLatest =
+    List.Count( List.Distinct(
+      Table.SelectRows(LatestOnly, each [Flagged] = 1)[System_key]
+    )),
+
+  // 6) Percent (safe divide)
+  Pct_Systems_Flagged =
+    if DistinctSystemsLatest = 0
+    then 0
+    else Number.From(DistinctFlaggedLatest) / Number.From(DistinctSystemsLatest),
+
+  // 7) Return a tiny 1-row table you can use as a KPI source
+  Out =
+    #table(
+      type table [t_num=Int64.Type, FlaggedSystems=Int64.Type, TotalSystems=Int64.Type, Pct_Systems_Flagged=number],
+      { { LatestMonth, DistinctFlaggedLatest, DistinctSystemsLatest, Pct_Systems_Flagged } }
+    )
+in
+  Out
+
+
+
+
+
 = Table.AddColumn(T, "Flagged", each if [Severity] >= 70 then 1 else 0, Int64.Type)
 
 = Table.Group(
