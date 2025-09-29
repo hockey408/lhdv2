@@ -1,4 +1,52 @@
 let
+  Source = T,
+  Typed =
+    Table.TransformColumnTypes(
+      Source,
+      {
+        {"System_key", type text},
+        {"t_num", Int64.Type},
+        {"Severity", type number},
+        {"Cohort", type text}
+      }
+    ),
+  SeverityThreshold = 70,
+  AddedFlag =
+    Table.AddColumn(Typed, "Flagged",
+      each if [Severity] >= SeverityThreshold then 1 else 0,
+      Int64.Type),
+
+  LatestMonth = List.Max( AddedFlag[t_num] ),
+  LatestOnly  = Table.SelectRows( AddedFlag, each [t_num] = LatestMonth ),
+
+  Grouped =
+    Table.Group(
+      LatestOnly,
+      {"Cohort"},
+      {
+        {"FlaggedSystems",
+          each List.Count( List.Distinct( Table.SelectRows(_, each [Flagged]=1)[System_key] ) ),
+          Int64.Type},
+        {"TotalSystems",
+          each List.Count( List.Distinct( _[System_key] ) ),
+          Int64.Type}
+      }
+    ),
+
+  WithPct =
+    Table.AddColumn(
+      Grouped, "Pct_Systems_Flagged",
+      each if [TotalSystems]=0 then 0 else Number.From([FlaggedSystems]) / Number.From([TotalSystems]),
+      type number
+    )
+in
+  WithPct
+
+
+
+
+
+let
   Source = #"T",
   Typed =
     Table.TransformColumnTypes(
