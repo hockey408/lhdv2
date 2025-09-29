@@ -1,4 +1,30 @@
 DimMonth =
+VAR MinMonth = MINX ( ALL ( T ), T[MonthStart] )
+VAR MaxMonth = MAXX ( ALL ( T ), T[MonthStart] )
+VAR Base =
+    ADDCOLUMNS (
+        CALENDAR ( MinMonth, MaxMonth ),
+        "MonthStart", DATE ( YEAR ( [Date] ), MONTH ( [Date] ), 1 ),
+        "MonthEnd",   EOMONTH ( [Date], 0 ),
+        "Year",       YEAR ( [Date] ),
+        "MonthName",  FORMAT ( [Date], "MMMM" ),
+        "YearMonth",  FORMAT ( [Date], "YYYY-MM" )
+    )
+RETURN
+SELECTCOLUMNS (
+    Base,
+    "MonthStart", [MonthStart],
+    "MonthEnd",   [MonthEnd],
+    "Year",       [Year],
+    "MonthName",  [MonthName],
+    "YearMonth",  [YearMonth]
+)
+
+
+
+
+
+DimMonth =
 VAR MinMonth =
     CALCULATE ( MIN ( DATE ( YEAR ( T[MonthStart] ), MONTH ( T[MonthStart] ), 1 ) ), ALL ( T ) )
 VAR MaxMonth =
