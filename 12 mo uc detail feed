@@ -1,3 +1,45 @@
+1. Review of the Quarter
+
+Let’s start by reflecting on the past quarter:
+	•	Career & Projects – Did you make meaningful progress on the corporate dashboards, anomaly detection, and model performance KPIs? Any new wins in automating processes or creating impactful visualizations?
+	•	Side Hustles – How many PuckIQ posts did you get live? Did you experiment with reels or content calendars? Did EnduroFacts move forward at all?
+	•	Trading & Finance – How did your core/satellite portfolio perform? Did you stick to your rebalancing rules? How did your futures trading go (bull flag strategy + ATR stops)?
+	•	Fitness & Health – Were you consistent with triathlon training or hockey? Any new PRs or habits?
+	•	Relationships & Lifestyle – Did you and Sharon make progress on Costa Rica/elopement plans, wedding planning, or quality time goals?
+	•	Spirituality & Inner Peace – Have you added reflection, journaling, or mindfulness into your routine?
+
+⸻
+
+2. Alignment Check
+
+Ask yourself:
+	•	Are these actions moving you toward your 5-year vision (entrepreneurial freedom, healthy body/mind, strong relationships)?
+	•	Which areas feel most in alignment? (e.g., health and relationships)
+	•	Which feel out of alignment or underinvested? (e.g., career fulfillment, spirituality)
+
+⸻
+
+3. Next-Quarter Goals
+
+We can then set SMART goals (specific, measurable, achievable, relevant, time-bound). Here are examples based on what I know about you:
+	•	Career: Deliver a fully functional, two-page Power BI dashboard (with R², RMSE, MoM trends, system SD bands). Automate data pulls where possible.
+	•	Side Hustles: Publish 4–6 PuckIQ posts, experiment with first reel, and capture 20+ email leads via opt-in.
+	•	Trading/Finance: Execute at least 20 backtested trades with strict risk management. Reassess satellite holdings and rebalance if drift >5%.
+	•	Fitness: Maintain 4–5 workouts/week, including hockey skill work and at least one brick session for triathlon.
+	•	Relationships: Finalize Costa Rica lodging and vendors, set April 2026 save-the-dates.
+	•	Personal Growth: Daily 5-min mindfulness practice, monthly journaling on alignment.
+
+⸻
+
+4. Metrics & Check-Ins
+	•	Monthly Review: Brief check-in each month on each pillar — green/yellow/red score.
+	•	Quarter-End: Do another deep-dive like this one and adjust for next quarter.
+
+
+
+
+
+
 SELECT
     RC_CODE,
     RC_DESCRIPTION,
