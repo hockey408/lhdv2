@@ -2,6 +2,42 @@ SELECT
     RC_CODE,
     RC_DESCRIPTION,
     END_OF_MONTH_DATE,
+    
+    -- Numeric month index (t)
+    ROW_NUMBER() OVER (
+        PARTITION BY RC_CODE
+        ORDER BY END_OF_MONTH_DATE
+    ) AS t,
+
+    -- Quarter number within each RC_CODE’s timeline
+    CEIL(
+        ROW_NUMBER() OVER (
+            PARTITION BY RC_CODE
+            ORDER BY END_OF_MONTH_DATE
+        ) / 3.0
+    ) AS q,
+
+    SUM(SOURCE_SYSTEM_BALANCE) AS BAL_num
+FROM V_SECURE_PORTFOLIO_LOANHUB_ME
+WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+GROUP BY
+    RC_CODE,
+    RC_DESCRIPTION,
+    END_OF_MONTH_DATE
+ORDER BY
+    RC_CODE,
+    END_OF_MONTH_DATE;
+
+
+
+
+
+
+
+SELECT
+    RC_CODE,
+    RC_DESCRIPTION,
+    END_OF_MONTH_DATE,
     -- create numeric month index (optional, for Excel t_num)
     ROW_NUMBER() OVER (
         PARTITION BY RC_CODE
