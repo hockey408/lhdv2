@@ -1,3 +1,28 @@
+Systems_Flagged :=
+CALCULATE (
+    DISTINCTCOUNT ( T[System_key] ),
+    FILTER (
+        ALL ( T ),
+        T[t_num] = [Latest_t]
+            && T[Severity] >= 70      -- or use a flag column if you prefer
+    )
+)
+
+
+
+Pct_Systems_Flagged :=
+VAR totalSystemsAtLatest =
+    CALCULATE (
+        DISTINCTCOUNT ( T[System_key] ),
+        FILTER ( ALL ( T ), T[t_num] = [Latest_t] )
+    )
+RETURN
+DIVIDE ( [Systems_Flagged], totalSystemsAtLatest, 0 )
+
+
+
+
+
 System | Cohort | BestWindow | R²_Reg_Selected | R²_MA | ΔR² | RMSE_Reg_Selected | RMSE_MA | ΔRMSE | MAPE_Reg | MAPE_MA | ΔMAPE |
 
 
