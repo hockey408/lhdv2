@@ -1,3 +1,41 @@
+-- 1) Actual & Forecast lines (use SUM or AVERAGE as you do today)
+Actual :=
+SUM ( T[BAL_num] )
+
+Forecast :=
+SUM ( T[Forecast_Final] )
+
+-- 2) One SD per system, fixed across the chart (computed from residuals)
+Residual_SD_System_Fixed :=
+VAR sys = SELECTEDVALUE ( T[System_key] )
+RETURN
+IF (
+    ISBLANK ( sys ),
+    BLANK(),
+    CALCULATE (
+        STDEVX.S ( 
+            FILTER ( T, T[System_key] = sys && NOT ISBLANK ( T[Residual_Final] ) ),
+            T[Residual_Final]
+        ),
+        REMOVEFILTERS ( DimMonth )   -- ignore month so SD stays constant across the line
+    )
+)
+
+-- 3) ±2σ band around Forecast
+Band_Upper := [Forecast] + 2 * [Residual_SD_System_Fixed]
+Band_Lower := [Forecast] - 2 * [Residual_SD_System_Fixed]
+
+-- (optional) Build a shaded band with stacked areas:
+Band_Base  := [Band_Lower]
+Band_Width := [Band_Upper] - [Band_Lower]
+
+
+
+
+
+
+
+
 DimMonth =
 VAR MinMonth = MINX ( ALL ( T ), T[MonthStart] )
 VAR MaxMonth = MAXX ( ALL ( T ), T[MonthStart] )
