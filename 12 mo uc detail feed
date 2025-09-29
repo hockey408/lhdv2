@@ -1,3 +1,32 @@
+-- 2) # systems flagged at that latest month (respects slicers)
+Systems_Flagged :=
+VAR latest = [Latest_t_in_context]
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( T[System_key] ),
+    KEEPFILTERS ( T[t_num] = latest ),
+    KEEPFILTERS ( T[Severity] >= 70 )   -- or use T[Severity_Flag] IN {"High","Critical"}
+)
+
+
+
+-- 3) % of systems flagged (denominator = total systems at that latest month in current context)
+Pct_Systems_Flagged :=
+VAR latest = [Latest_t_in_context]
+VAR totalAtLatest :=
+    CALCULATE (
+        DISTINCTCOUNT ( T[System_key] ),
+        KEEPFILTERS ( T[t_num] = latest )
+    )
+RETURN
+DIVIDE ( [Systems_Flagged], totalAtLatest, 0 )
+
+
+
+
+
+
+
 Systems_Flagged :=
 CALCULATE (
     DISTINCTCOUNT ( T[System_key] ),
