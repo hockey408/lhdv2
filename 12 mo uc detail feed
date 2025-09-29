@@ -1,3 +1,22 @@
+DimMonth =
+VAR MinMonth =
+    CALCULATE ( MIN ( DATE ( YEAR ( T[MonthStart] ), MONTH ( T[MonthStart] ), 1 ) ), ALL ( T ) )
+VAR MaxMonth =
+    CALCULATE ( MAX ( DATE ( YEAR ( T[MonthStart] ), MONTH ( T[MonthStart] ), 1 ) ), ALL ( T ) )
+RETURN
+ADDCOLUMNS (
+    CALENDAR ( MinMonth, EOMONTH ( MaxMonth, 0 ) ),
+    "MonthStart", DATE ( YEAR ( [Date] ), MONTH ( [Date] ), 1 ),
+    "MonthEnd",   EOMONTH ( [Date], 0 ),
+    "Year",       YEAR ( [Date] ),
+    "Month",      FORMAT ( [Date], "MMMM" ),
+    "YearMonth",  FORMAT ( [Date], "YYYY-MM" )
+)
+
+
+
+
+
 let
   Source = T,
   Typed =
