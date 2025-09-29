@@ -1,3 +1,33 @@
+= Table.AddColumn(T, "Flagged", each if [Severity] >= 70 then 1 else 0, Int64.Type)
+
+= Table.Group(
+    #"Added Flagged",
+    {"t_num"},
+    {
+      {"FlaggedSystems",
+        each List.Count(List.Distinct(
+               Table.SelectRows(_, each [Flagged]=1)[System_key] )),
+        Int64.Type},
+      {"TotalSystems",
+        each List.Count(List.Distinct(_[System_key])),
+        Int64.Type}
+    }
+)
+
+
+= Table.AddColumn(#"Grouped Rows", "Pct_Systems_Flagged",
+    each if [TotalSystems]=0 then 0 else Number.From([FlaggedSystems])/[TotalSystems],
+    type number)
+
+
+= Table.SelectRows(#"Added Pct", each [t_num] = List.Max(#"Added Pct"[t_num]))
+
+
+
+
+
+
+
 Pct_Systems_Flagged :=
 VAR latest_t =
     MAX ( T[t_num] )                     -- latest month within current filters
