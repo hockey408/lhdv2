@@ -1,3 +1,24 @@
+-- SSE per cohort/system
+SSE :=
+SUMX ( T, T[Residual_Final] * T[Residual_Final] )
+
+-- Mean per cohort/system (context-sensitive)
+MeanCohortSystem :=
+AVERAGE ( T[BAL_num] )
+
+-- SST per cohort/system
+SST :=
+SUMX ( T, ( T[BAL_num] - [MeanCohortSystem] ) ^ 2 )
+
+-- R²
+R2 :=
+VAR sst = [SST]
+RETURN IF ( sst = 0, BLANK(), 1 - DIVIDE( [SSE], sst ) )
+
+
+
+
+
 -- 1) Actual & Forecast lines (use SUM or AVERAGE as you do today)
 Actual :=
 SUM ( T[BAL_num] )
