@@ -1,3 +1,28 @@
+Pct_Systems_Flagged :=
+VAR latest_t =
+    MAX ( T[t_num] )                     -- latest month within current filters
+VAR vt_latest =
+    FILTER (
+        ALLSELECTED ( T ),               -- respect page slicers (cohort, region, etc.)
+        T[t_num] = latest_t
+    )
+VAR flaggedSystemsAtLatest :=
+    CALCULATE (
+        DISTINCTCOUNT ( T[System_key] ),
+        vt_latest,
+        T[Severity] >= 70                -- or use T[Severity_Flag] IN {"High","Critical"}
+    )
+VAR totalSystemsAtLatest :=
+    CALCULATE (
+        DISTINCTCOUNT ( T[System_key] ),
+        vt_latest
+    )
+RETURN
+DIVIDE ( flaggedSystemsAtLatest, totalSystemsAtLatest, 0 )
+
+
+
+
 -- 2) # systems flagged at that latest month (respects slicers)
 Systems_Flagged :=
 VAR latest = [Latest_t_in_context]
