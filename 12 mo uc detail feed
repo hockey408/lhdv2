@@ -1,3 +1,210 @@
+WITH
+-- (optional) list RC_CODEs expected to be structurally negative (overdraft/chargeoff)
+rc_struct_neg AS (
+  SELECT '___PUT_CODE_HERE___'::VARCHAR(100) AS rc_code, 1 AS is_struct_neg
+  UNION ALL SELECT '___EXAMPLE2___', 1
+  -- Or keep empty; later join will default to 0
+),
+
+base AS (
+  SELECT
+      RC_CODE,
+      RC_DESCRIPTION,
+      DATE_TRUNC('month', END_OF_MONTH_DATE)::DATE AS month_end,
+      SUM(SOURCE_SYSTEM_BALANCE)                   AS bal_num
+  FROM V_SECURE_PORTFOLIO_LOANHUB_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+  GROUP BY RC_CODE, RC_DESCRIPTION, DATE_TRUNC('month', END_OF_MONTH_DATE)
+),
+
+idx AS (
+  SELECT
+      RC_CODE,
+      RC_DESCRIPTION,
+      month_end,
+      bal_num,
+      ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY month_end)             AS t,
+      CEIL(EXTRACT(MONTH FROM month_end)/3.0)                                  AS qoy  -- 1..4 quarter-of-year
+  FROM base
+),
+
+with_lags AS (
+  SELECT
+      *,
+      LAG(bal_num) OVER (PARTITION BY RC_CODE ORDER BY month_end) AS prev_bal
+  FROM idx
+),
+
+with_ma AS (
+  SELECT
+      *,
+      AVG(bal_num) OVER (
+        PARTITION BY RC_CODE ORDER BY month_end
+        ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+      ) AS ma_12,
+
+      AVG(bal_num) OVER (
+        PARTITION BY RC_CODE ORDER BY month_end
+        ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+      ) AS ma_6,
+
+      AVG(bal_num) OVER (
+        PARTITION BY RC_CODE ORDER BY month_end
+        ROWS BETWEEN 35 PRECEDING AND CURRENT ROW
+      ) AS ma_36
+  FROM with_lags
+),
+
+ratio_for_lifts AS (
+  -- Use MA_12 as seasonal baseline to estimate quarter lifts
+  SELECT
+      RC_CODE, RC_DESCRIPTION, month_end, bal_num, prev_bal, t, qoy,
+      ma_6, ma_12, ma_36,
+      CASE WHEN ma_12 IS NULL OR ma_12 = 0 THEN NULL ELSE bal_num / ma_12 END AS ratio_ma12
+  FROM with_ma
+),
+
+q_lifts_raw AS (
+  SELECT
+      RC_CODE, qoy,
+      AVG(ratio_ma12) AS qlift_ma12_raw
+  FROM ratio_for_lifts
+  WHERE ratio_ma12 IS NOT NULL
+  GROUP BY RC_CODE, qoy
+),
+
+q_lifts_norm AS (
+  -- Normalize lifts so the average over 4 quarters = 1.0 per RC_CODE
+  SELECT
+      r.RC_CODE,
+      r.qoy,
+      CASE
+        WHEN a.avg_all IS NULL OR a.avg_all = 0 THEN 1.0
+        ELSE r.qlift_ma12_raw / a.avg_all
+      END AS qlift_ma12_norm
+  FROM q_lifts_raw r
+  JOIN (
+    SELECT RC_CODE, AVG(qlift_ma12_raw) AS avg_all
+    FROM q_lifts_raw
+    GROUP BY RC_CODE
+  ) a ON a.RC_CODE = r.RC_CODE
+),
+
+joined AS (
+  SELECT
+      f.*,
+      COALESCE(l.qlift_ma12_norm, 1.0) AS qlift_ma12_norm
+  FROM ratio_for_lifts f
+  LEFT JOIN q_lifts_norm l
+    ON l.RC_CODE = f.RC_CODE AND l.qoy = f.qoy
+),
+
+signals AS (
+  SELECT
+      j.*,
+      -- Seasonally adjusted MA-12 forecast
+      (j.ma_12 * j.qlift_ma12_norm)                                 AS forecast_ma12_adj,
+
+      -- Residual (actual - forecast)
+      (j.bal_num - (j.ma_12 * j.qlift_ma12_norm))                   AS resid_ma12_adj,
+
+      -- Absolute MoM % with epsilon=1 to avoid div/0 when |prev|<1
+      CASE
+        WHEN j.prev_bal IS NULL THEN NULL
+        WHEN ABS(j.prev_bal) < 1 THEN ABS(j.bal_num - j.prev_bal) / 1.0
+        ELSE ABS(j.bal_num - j.prev_bal) / ABS(j.prev_bal)
+      END                                                          AS mom_pct_abs,
+
+      -- Sign function (avoid SIGN() portability issues)
+      CASE WHEN j.prev_bal IS NULL THEN 0
+           WHEN (CASE WHEN j.prev_bal<0 THEN -1 WHEN j.prev_bal>0 THEN 1 ELSE 0 END)
+              <> (CASE WHEN j.bal_num <0 THEN -1 WHEN j.bal_num >0 THEN 1 ELSE 0 END)
+           THEN 1 ELSE 0 END                                       AS sign_flip
+  FROM joined j
+),
+
+active3 AS (
+  -- "Include if ANY of last 3 months had positive balance"
+  SELECT
+      s.*,
+      SUM(CASE WHEN bal_num > 0 THEN 1 ELSE 0 END)
+        OVER (PARTITION BY RC_CODE ORDER BY month_end ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)
+        AS pos3_count
+  FROM signals s
+),
+
+with_struct AS (
+  SELECT
+      a.*,
+      COALESCE(rsn.is_struct_neg, 0) AS is_struct_neg
+  FROM active3 a
+  LEFT JOIN rc_struct_neg rsn
+    ON UPPER(TRIM(rsn.rc_code)) = UPPER(TRIM(a.RC_CODE))
+),
+
+stats AS (
+  -- Per-RC_CODE means/SDs for |residual| and MoM%
+  SELECT
+      RC_CODE,
+      AVG(ABS(resid_ma12_adj)) AS mean_abs_resid,
+      STDDEV_SAMP(ABS(resid_ma12_adj)) AS sd_abs_resid,
+      AVG(mom_pct_abs) AS mean_mom_pct,
+      STDDEV_SAMP(mom_pct_abs) AS sd_mom_pct
+  FROM with_struct
+  GROUP BY RC_CODE
+)
+
+SELECT
+    w.RC_CODE,
+    w.RC_DESCRIPTION,
+    w.month_end,
+    w.t,
+    w.qoy,
+    w.bal_num,
+    w.prev_bal,
+    w.ma_6, w.ma_12, w.ma_36,
+    w.qlift_ma12_norm,
+    w.forecast_ma12_adj,
+    w.resid_ma12_adj,
+    w.mom_pct_abs,
+    CASE WHEN w.is_struct_neg=1 THEN 0 ELSE w.sign_flip END AS sign_flip,  -- suppress flip penalty if structurally negative
+    CASE WHEN w.pos3_count >= 1 THEN 1 ELSE 0 END AS include3_anypos,
+
+    -- Per-RC stats
+    s.mean_abs_resid,
+    s.sd_abs_resid,
+    s.mean_mom_pct,
+    s.sd_mom_pct,
+
+    -- Z-scores (guard against sd=0)
+    CASE WHEN s.sd_abs_resid IS NULL OR s.sd_abs_resid = 0 THEN 0
+         ELSE (ABS(w.resid_ma12_adj) - s.mean_abs_resid) / s.sd_abs_resid END AS z_resid,
+
+    CASE WHEN s.sd_mom_pct IS NULL OR s.sd_mom_pct = 0 THEN 0
+         ELSE (w.mom_pct_abs - s.mean_mom_pct) / s.sd_mom_pct END            AS z_mom,
+
+    -- Severity_Raw = 0.7*|z_resid| + 0.3*|z_mom| + 0.25*sign_flip (tunable)
+    (0.7*ABS(
+        CASE WHEN s.sd_abs_resid IS NULL OR s.sd_abs_resid = 0 THEN 0
+             ELSE (ABS(w.resid_ma12_adj) - s.mean_abs_resid)/s.sd_abs_resid END
+     )
+     +
+     0.3*ABS(
+        CASE WHEN s.sd_mom_pct IS NULL OR s.sd_mom_pct = 0 THEN 0
+             ELSE (w.mom_pct_abs - s.mean_mom_pct)/s.sd_mom_pct END
+     )
+     +
+     0.25* (CASE WHEN w.is_struct_neg=1 THEN 0 ELSE w.sign_flip END)
+    ) AS severity_raw
+FROM with_struct w
+LEFT JOIN stats s
+  ON s.RC_CODE = w.RC_CODE
+ORDER BY w.RC_CODE, w.month_end;
+
+
+
+
+
 CREATE OR REPLACE VIEW rc_base_with_signals AS
 WITH base AS (
   SELECT
