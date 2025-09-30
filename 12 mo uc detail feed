@@ -1,4 +1,214 @@
 WITH
+-- Optional: list RC_CODEs expected to be structurally negative (overdraft/chargeoff).
+-- Leave empty (LIMIT 0) if you don't want to use this feature now.
+rc_struct_neg AS (
+  SELECT '___PUT_CODE_HERE___'::VARCHAR(100) AS rc_code, 1 AS is_struct_neg
+  LIMIT 0
+),
+
+/* 1) Base: certified month-end and aggregated balance */
+base AS (
+  SELECT
+      RC_CODE,
+      RC_DESCRIPTION,
+      CAST(END_OF_MONTH_DATE AS DATE)           AS month_end,   -- use certified EOM date
+      SUM(SOURCE_SYSTEM_BALANCE)::FLOAT8        AS bal_num      -- cast early to float8
+  FROM V_SECURE_PORTFOLIO_LOANHUB_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+  GROUP BY RC_CODE, RC_DESCRIPTION, CAST(END_OF_MONTH_DATE AS DATE)
+),
+
+/* 2) Indexing per RC + quarter-of-year (1..4) */
+idx AS (
+  SELECT
+      RC_CODE,
+      RC_DESCRIPTION,
+      month_end,
+      bal_num,
+      ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY month_end) AS t,
+      CEIL(EXTRACT(MONTH FROM month_end)/3.0)::INT                AS qoy
+  FROM base
+),
+
+/* 3) Lag for MoM */
+with_lags AS (
+  SELECT
+      *,
+      LAG(bal_num) OVER (PARTITION BY RC_CODE ORDER BY month_end) AS prev_bal
+  FROM idx
+),
+
+/* 4) Moving averages (6/12/36) */
+with_ma AS (
+  SELECT
+      *,
+      AVG(bal_num) OVER (
+        PARTITION BY RC_CODE ORDER BY month_end
+        ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+      )::FLOAT8 AS ma_12,
+      AVG(bal_num) OVER (
+        PARTITION BY RC_CODE ORDER BY month_end
+        ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+      )::FLOAT8 AS ma_6,
+      AVG(bal_num) OVER (
+        PARTITION BY RC_CODE ORDER BY month_end
+        ROWS BETWEEN 35 PRECEDING AND CURRENT ROW
+      )::FLOAT8 AS ma_36
+  FROM with_lags
+),
+
+/* 5) Ratio vs MA_12 for quarter lifts (seasonality) */
+ratio_for_lifts AS (
+  SELECT
+      RC_CODE, RC_DESCRIPTION, month_end, bal_num, prev_bal, t, qoy,
+      ma_6, ma_12, ma_36,
+      CASE
+        WHEN ma_12 IS NULL THEN NULL
+        ELSE bal_num / NULLIF(ma_12, 0.0)
+      END::FLOAT8 AS ratio_ma12
+  FROM with_ma
+),
+
+/* 6) Quarter lifts (raw) per RC_CODE × QoY */
+q_lifts_raw AS (
+  SELECT
+      RC_CODE, qoy,
+      AVG(ratio_ma12)::FLOAT8 AS qlift_ma12_raw
+  FROM ratio_for_lifts
+  WHERE ratio_ma12 IS NOT NULL
+  GROUP BY RC_CODE, qoy
+),
+
+/* 7) Normalize quarter lifts to mean 1.00 per RC_CODE */
+q_lifts_norm AS (
+  SELECT
+      r.RC_CODE,
+      r.qoy,
+      CASE
+        WHEN a.avg_all IS NULL OR a.avg_all = 0.0 THEN 1.0::FLOAT8
+        ELSE r.qlift_ma12_raw / a.avg_all
+      END AS qlift_ma12_norm
+  FROM q_lifts_raw r
+  JOIN (
+    SELECT RC_CODE, AVG(qlift_ma12_raw)::FLOAT8 AS avg_all
+    FROM q_lifts_raw
+    GROUP BY RC_CODE
+  ) a ON a.RC_CODE = r.RC_CODE
+),
+
+/* 8) Attach normalized lifts */
+joined AS (
+  SELECT
+      f.*,
+      COALESCE(l.qlift_ma12_norm, 1.0)::FLOAT8 AS qlift_ma12_norm
+  FROM ratio_for_lifts f
+  LEFT JOIN q_lifts_norm l
+    ON l.RC_CODE = f.RC_CODE
+   AND l.qoy     = f.qoy
+),
+
+/* 9) Signals: forecast, residual, MoM%, sign flip */
+signals AS (
+  SELECT
+      j.*,
+      (j.ma_12 * j.qlift_ma12_norm)::FLOAT8                 AS forecast_ma12_adj,
+      (j.bal_num - (j.ma_12 * j.qlift_ma12_norm))::FLOAT8   AS resid_ma12_adj,
+      CASE
+        WHEN j.prev_bal IS NULL THEN NULL
+        WHEN ABS(j.prev_bal) < 1.0 THEN ABS(j.bal_num - j.prev_bal) / 1.0
+        ELSE ABS(j.bal_num - j.prev_bal) / ABS(j.prev_bal)
+      END::FLOAT8                                           AS mom_pct_abs,
+      CASE WHEN j.prev_bal IS NULL THEN 0
+           WHEN (CASE WHEN j.prev_bal<0 THEN -1 WHEN j.prev_bal>0 THEN 1 ELSE 0 END)
+              <> (CASE WHEN j.bal_num <0 THEN -1 WHEN j.bal_num >0 THEN 1 ELSE 0 END)
+           THEN 1 ELSE 0 END                                AS sign_flip
+  FROM joined j
+),
+
+/* 10) Active-in-last-3 (any positive in the 3-month window) */
+active3 AS (
+  SELECT
+      s.*,
+      SUM(CASE WHEN bal_num > 0 THEN 1 ELSE 0 END)
+        OVER (PARTITION BY RC_CODE ORDER BY month_end ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)
+        AS pos3_count
+  FROM signals s
+),
+
+/* 11) Optional structural negatives */
+with_struct AS (
+  SELECT
+      a.*,
+      COALESCE(rsn.is_struct_neg, 0) AS is_struct_neg
+  FROM active3 a
+  LEFT JOIN rc_struct_neg rsn
+    ON UPPER(TRIM(rsn.rc_code)) = UPPER(TRIM(a.RC_CODE))
+),
+
+/* 12) Per-RC stats for z-scores */
+stats AS (
+  SELECT
+      RC_CODE,
+      AVG(ABS(resid_ma12_adj))::FLOAT8 AS mean_abs_resid,
+      STDDEV_SAMP(ABS(resid_ma12_adj)) AS sd_abs_resid,
+      AVG(mom_pct_abs)::FLOAT8         AS mean_mom_pct,
+      STDDEV_SAMP(mom_pct_abs)         AS sd_mom_pct
+  FROM with_struct
+  GROUP BY RC_CODE
+)
+
+/* 13) Final output */
+SELECT
+    w.RC_CODE,
+    w.RC_DESCRIPTION,
+    w.month_end,
+    w.t,
+    w.qoy,
+    w.bal_num,
+    w.prev_bal,
+    w.ma_6, w.ma_12, w.ma_36,
+    w.qlift_ma12_norm,
+    w.forecast_ma12_adj,
+    w.resid_ma12_adj,
+    w.mom_pct_abs,
+    CASE WHEN w.is_struct_neg=1 THEN 0 ELSE w.sign_flip END AS sign_flip,   -- suppress flip penalty for structural negatives
+    CASE WHEN w.pos3_count >= 1 THEN 1 ELSE 0 END           AS include3_anypos,
+
+    s.mean_abs_resid,
+    s.sd_abs_resid,
+    s.mean_mom_pct,
+    s.sd_mom_pct,
+
+    /* Z-scores (guard against sd=0) */
+    CASE WHEN s.sd_abs_resid IS NULL OR s.sd_abs_resid = 0 THEN 0
+         ELSE (ABS(w.resid_ma12_adj) - s.mean_abs_resid) / s.sd_abs_resid END AS z_resid,
+
+    CASE WHEN s.sd_mom_pct IS NULL OR s.sd_mom_pct = 0 THEN 0
+         ELSE (w.mom_pct_abs - s.mean_mom_pct) / s.sd_mom_pct END            AS z_mom,
+
+    /* Severity (raw): 0.7*|z_resid| + 0.3*|z_mom| + 0.25*flip */
+    (0.7*ABS(
+        CASE WHEN s.sd_abs_resid IS NULL OR s.sd_abs_resid = 0 THEN 0
+             ELSE (ABS(w.resid_ma12_adj) - s.mean_abs_resid)/s.sd_abs_resid END
+     )
+     +
+     0.3*ABS(
+        CASE WHEN s.sd_mom_pct IS NULL OR s.sd_mom_pct = 0 THEN 0
+             ELSE (w.mom_pct_abs - s.mean_mom_pct)/s.sd_mom_pct END
+     )
+     +
+     0.25*(CASE WHEN w.is_struct_neg=1 THEN 0 ELSE w.sign_flip END)
+    )::FLOAT8 AS severity_raw
+FROM with_struct w
+LEFT JOIN stats s
+  ON s.RC_CODE = w.RC_CODE
+ORDER BY w.RC_CODE, w.month_end;
+
+
+
+
+
+WITH
 rc_struct_neg AS (
   -- optional; leave empty if not used
   SELECT '___PUT_CODE_HERE___'::VARCHAR(100) AS rc_code, 1 AS is_struct_neg
