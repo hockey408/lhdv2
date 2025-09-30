@@ -1,3 +1,81 @@
+DECLARE @CUST_LINE_NBR VARCHAR(50) = '<<PUT_LINE_NUMBER_HERE>>';
+
+WITH target_dates AS (
+    SELECT CAST('2024-06-30' AS date) AS loaddt UNION ALL
+    SELECT CAST('2024-09-30' AS date) UNION ALL
+    SELECT CAST('2024-12-31' AS date)
+),
+creditline AS (
+    SELECT
+        cl.LOADDT,
+        cl.CUST_LINE_NBR,
+        /* Handle possible misspelling: prefer correct name, else fallback */
+        COALESCE(cl.AMORTIZED_COST_BASIS, cl.ANORTIZED_COST_BASIS) AS AMORTIZED_COST_BASIS,
+        CAST(NULL AS VARCHAR(100)) AS ACCTNBR,
+        CAST(NULL AS DECIMAL(38, 6)) AS DERIVED_AMORTIZED_COST_BASIS,
+        'CREDITLINE' AS SOURCE_TYPE
+    FROM [CRDADMPRD].[dbo].[CDM_CREDITLINES_TOPSIDED] cl
+    INNER JOIN target_dates d
+        ON cl.LOADDT = d.loaddt
+    WHERE cl.CUST_LINE_NBR = @CUST_LINE_NBR
+),
+instrument AS (
+    SELECT
+        i.LOADDT,
+        i.CUST_LINE_NBR,
+        CAST(NULL AS DECIMAL(38, 6)) AS AMORTIZED_COST_BASIS,
+        i.ACCTNBR,
+        i.DERIVED_AMORTIZED_COST_BASIS,
+        'INSTRUMENT' AS SOURCE_TYPE
+    FROM [CRDADMPRD].[dbo].[CDM_INSTRUMENTS_ALL_TOPSIDED] i
+    INNER JOIN target_dates d
+        ON i.LOADDT = d.loaddt
+    WHERE i.CUST_LINE_NBR = @CUST_LINE_NBR
+),
+combined AS (
+    SELECT * FROM creditline
+    UNION ALL
+    SELECT * FROM instrument
+)
+SELECT
+    c.LOADDT,
+    c.CUST_LINE_NBR,
+    c.ACCTNBR,
+    c.SOURCE_TYPE,
+    c.AMORTIZED_COST_BASIS,
+    c.DERIVED_AMORTIZED_COST_BASIS,
+
+    /* Total across BOTH sources for this CUST_LINE_NBR × LOADDT */
+    SUM(COALESCE(c.AMORTIZED_COST_BASIS, 0) + COALESCE(c.DERIVED_AMORTIZED_COST_BASIS, 0))
+        OVER (PARTITION BY c.CUST_LINE_NBR, c.LOADDT) AS TOTAL_AMORTIZED_COST_BASIS_ALL_SOURCES,
+
+    /* Same total, but only displayed on the CREDITLINE rows */
+    CASE WHEN c.SOURCE_TYPE = 'CREDITLINE' THEN
+        SUM(COALESCE(c.AMORTIZED_COST_BASIS, 0) + COALESCE(c.DERIVED_AMORTIZED_COST_BASIS, 0))
+            OVER (PARTITION BY c.CUST_LINE_NBR, c.LOADDT)
+    END AS TOTAL_AMORTIZED_COST_BASIS_AT_CREDITLINE_LEVEL,
+
+    /* Explicit sum: (Creditline AMORTIZED_COST_BASIS) + (Instruments DERIVED_AMORTIZED_COST_BASIS),
+       computed at the CUST_LINE_NBR × LOADDT level and shown only on CREDITLINE rows. */
+    CASE WHEN c.SOURCE_TYPE = 'CREDITLINE' THEN
+        /* Sum only the creditline contribution */
+        SUM(COALESCE(c.AMORTIZED_COST_BASIS, 0))
+            OVER (PARTITION BY c.CUST_LINE_NBR, c.LOADDT)
+        +
+        /* Plus the instruments contribution */
+        SUM(COALESCE(c.DERIVED_AMORTIZED_COST_BASIS, 0))
+            OVER (PARTITION BY c.CUST_LINE_NBR, c.LOADDT)
+    END AS CREDITLINE_PLUS_INSTRUMENT_BASIS_AT_CREDITLINE_LEVEL
+
+FROM combined c
+ORDER BY c.LOADDT, c.SOURCE_TYPE, c.ACCTNBR;
+
+
+
+
+
+
+
 =LET(
   rc, [@RC_CODE],
   mask, (T[RC_CODE]=rc)*(ISNUMBER(T[AbsResidual])),
