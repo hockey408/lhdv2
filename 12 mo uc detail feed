@@ -1,4 +1,18 @@
 =LET(
+  rc, [@RC_CODE],
+  mask, (T[RC_CODE]=rc)*(ISNUMBER(T[AbsResidual])),
+  n,   SUMPRODUCT(--mask),
+  vals, N(T[AbsResidual]),
+  s,   SUMPRODUCT(--mask, vals),
+  ss,  SUMPRODUCT(--mask, vals^2),
+  IF(n>1, SQRT( (n*ss - s^2) / (n*(n-1)) ), 0)
+
+
+
+
+
+
+=LET(
   rc,[@RC_CODE],
   n,  COUNTIFS(T[RC_CODE],rc),
   s,  SUMIFS(T[AbsResidual],T[RC_CODE],rc),
