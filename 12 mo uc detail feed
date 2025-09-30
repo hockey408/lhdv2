@@ -1,3 +1,156 @@
+CREATE OR REPLACE VIEW rc_base_with_signals AS
+WITH base AS (
+  SELECT
+      RC_CODE,
+      RC_DESCRIPTION,
+      DATE_TRUNC('month', END_OF_MONTH_DATE)::date AS month_end,
+      SUM(SOURCE_SYSTEM_BALANCE)                    AS bal_num
+  FROM V_SECURE_PORTFOLIO_LOANHUB_ME
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+  GROUP BY RC_CODE, RC_DESCRIPTION, DATE_TRUNC('month', END_OF_MONTH_DATE)
+),
+idx AS (
+  SELECT
+      RC_CODE,
+      RC_DESCRIPTION,
+      month_end,
+      bal_num,
+      ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY month_end) AS t,
+      CEIL(EXTRACT(MONTH FROM month_end)/3.0)                      AS qoy
+  FROM base
+),
+with_lags AS (
+  SELECT
+      *,
+      LAG(bal_num) OVER (PARTITION BY RC_CODE ORDER BY month_end) AS prev_bal
+  FROM idx
+),
+with_ma AS (
+  SELECT
+      *,
+      AVG(bal_num) OVER (
+        PARTITION BY RC_CODE
+        ORDER BY month_end
+        ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+      ) AS ma_12,
+      AVG(bal_num) OVER (
+        PARTITION BY RC_CODE
+        ORDER BY month_end
+        ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+      ) AS ma_6,
+      AVG(bal_num) OVER (
+        PARTITION BY RC_CODE
+        ORDER BY month_end
+        ROWS BETWEEN 35 PRECEDING AND CURRENT ROW
+      ) AS ma_36
+  FROM with_lags
+),
+ratio_for_lifts AS (
+  -- Use MA_12 as the seasonal baseline; build ratios by RC_CODE × quarter-of-year
+  SELECT
+      RC_CODE, month_end, bal_num, prev_bal, t, qoy,
+      ma_6, ma_12, ma_36,
+      CASE WHEN ma_12 IS NULL OR ma_12 = 0 THEN NULL ELSE bal_num / ma_12 END AS ratio_ma12
+  FROM with_ma
+),
+q_lifts_raw AS (
+  SELECT
+      RC_CODE,
+      qoy,
+      AVG(ratio_ma12) AS qlift_ma12_raw
+  FROM ratio_for_lifts
+  WHERE ratio_ma12 IS NOT NULL
+  GROUP BY RC_CODE, qoy
+),
+q_lifts_norm AS (
+  -- Normalize quarter lifts to mean 1.00 per RC_CODE
+  SELECT
+      r.RC_CODE,
+      r.qoy,
+      CASE
+        WHEN avg_all = 0 OR avg_all IS NULL THEN 1.0
+        ELSE r.qlift_ma12_raw / avg_all
+      END AS qlift_ma12_norm
+  FROM (
+    SELECT RC_CODE, AVG(qlift_ma12_raw) AS avg_all
+    FROM q_lifts_raw
+    GROUP BY RC_CODE
+  ) a
+  JOIN q_lifts_raw r
+    ON a.RC_CODE = r.RC_CODE
+),
+joined AS (
+  SELECT
+      f.RC_CODE,
+      f.RC_DESCRIPTION,
+      f.month_end,
+      f.t,
+      f.qoy,
+      f.bal_num,
+      f.prev_bal,
+      f.ma_6, f.ma_12, f.ma_36,
+      COALESCE(l.qlift_ma12_norm, 1.0) AS qlift_ma12_norm
+  FROM ratio_for_lifts f
+  LEFT JOIN q_lifts_norm l
+    ON l.RC_CODE = f.RC_CODE
+   AND l.qoy     = f.qoy
+),
+final AS (
+  SELECT
+      j.*,
+      -- Seasonally adjusted MA_12 forecast
+      (j.ma_12 * j.qlift_ma12_norm) AS forecast_ma12_adj,
+
+      -- Residual (actual - forecast)
+      (j.bal_num - (j.ma_12 * j.qlift_ma12_norm)) AS resid_ma12_adj,
+
+      -- Absolute MoM % (with epsilon to avoid div/0)
+      CASE
+        WHEN j.prev_bal IS NULL THEN NULL
+        WHEN ABS(j.prev_bal) < 1 THEN ABS(j.bal_num - j.prev_bal) / 1.0
+        ELSE ABS(j.bal_num - j.prev_bal) / ABS(j.prev_bal)
+      END AS mom_pct_abs,
+
+      -- Sign flip (1 if sign changes; 0 otherwise)
+      CASE
+        WHEN j.prev_bal IS NULL THEN 0
+        WHEN SIGN(j.prev_bal) <> SIGN(j.bal_num) THEN 1
+        ELSE 0
+      END AS sign_flip
+  FROM joined j
+),
+active AS (
+  -- "Active in last 3 months" = any positive balance in window of current & 2 prev months
+  SELECT
+      f.*,
+      SUM(CASE WHEN bal_num > 0 THEN 1 ELSE 0 END)
+        OVER (PARTITION BY RC_CODE ORDER BY month_end ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)
+        AS pos3_count
+  FROM final f
+)
+SELECT
+    RC_CODE,
+    RC_DESCRIPTION,
+    month_end,
+    t,
+    qoy,
+    bal_num,
+    prev_bal,
+    ma_6, ma_12, ma_36,
+    qlift_ma12_norm,
+    forecast_ma12_adj,
+    resid_ma12_adj,
+    mom_pct_abs,
+    sign_flip,
+    CASE WHEN pos3_count >= 1 THEN 1 ELSE 0 END AS include3_anypos
+FROM active;
+
+
+
+
+
+
+
 DECLARE @CUST_LINE_NBR VARCHAR(50) = '<<PUT_LINE_NUMBER_HERE>>';
 
 WITH target_dates AS (
