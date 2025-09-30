@@ -1,3 +1,15 @@
+=LET(
+  rc,[@RC_CODE],
+  n,  COUNTIFS(T[RC_CODE],rc),
+  s,  SUMIFS(T[AbsResidual],T[RC_CODE],rc),
+  ss, SUMPRODUCT((T[RC_CODE]=rc)*(T[AbsResidual]^2)),
+  IF(n>1, SQRT((n*ss - s^2)/(n*(n-1))), NA())
+)
+
+
+
+
+
 SELECT
     RC_CODE,
     RC_DESCRIPTION,
