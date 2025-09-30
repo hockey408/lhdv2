@@ -1,3 +1,37 @@
+SELECT
+    RC_CODE,
+    RC_DESCRIPTION,
+    END_OF_MONTH_DATE,
+
+    /* Month index per RC_CODE (for regression) */
+    ROW_NUMBER() OVER (
+        PARTITION BY RC_CODE
+        ORDER BY END_OF_MONTH_DATE
+    ) AS t,
+
+    /* Sequential quarter index per RC_CODE (keeps increasing: 1,2,3,4,5,...) */
+    CEIL(
+        ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY END_OF_MONTH_DATE) / 3.0
+    ) AS q_seq,
+
+    /* Quarter-of-year 1..4 (use this for seasonality) */
+    CEIL(EXTRACT(MONTH FROM END_OF_MONTH_DATE) / 3.0) AS qoy,
+
+    SUM(SOURCE_SYSTEM_BALANCE) AS BAL_num
+FROM V_SECURE_PORTFOLIO_LOANHUB_ME
+WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+GROUP BY
+    RC_CODE,
+    RC_DESCRIPTION,
+    END_OF_MONTH_DATE
+ORDER BY
+    RC_CODE,
+    END_OF_MONTH_DATE;
+
+
+
+
+
 1. Review of the Quarter
 
 Let’s start by reflecting on the past quarter:
