@@ -1,3 +1,12 @@
+R² (Latest, Active) :=
+VAR sse = [SSE (Latest, Active)]
+VAR sst = [SST (Latest, Active)]
+RETURN IF ( sst > 0, MAX ( 0, MIN ( 1, 1 - sse / sst ) ), BLANK () )
+
+
+
+
+
 SSE (Latest, Active) :=
 VAR lm = [Latest Month]
 RETURN
@@ -26618,32 +26627,4 @@ Tab2_PersistingMovers_Long AS (
     Delta                        AS Value,
     SystemName                   AS Dim2       -- optional: color by system in small multiples
   FROM Tab2_PersistingMovers_Ranked
-  WHERE rn <= 25
-),
-
--- Detailed ADDs and REMOVALs (account-level tables)
-Tab2_AddsDetail AS (
-  SELECT
-    'Tab2_AddsDetail'            AS Dataset,
-    a.CurrMonth                  AS MonthEnd,
-    a.ACCOUNT_IDENTIFIER         AS Dim1,      -- account id
-    'Add_Balance'                AS Metric,
-    SUM(a.CurrBal)               AS Value,
-    a.CONTRACT_SOURCE_SYSTEM     AS Dim2
-  FROM Tab2_CurrVsPrev_Account a
-  WHERE a.PrevBal IS NULL
-  GROUP BY a.CurrMonth, a.ACCOUNT_IDENTIFIER, a.CONTRACT_SOURCE_SYSTEM
-),
-Tab2_RemovalsDetail AS (
-  SELECT
-    'Tab2_RemovalsDetail'        AS Dataset,
-    r.CurrMonth                  AS MonthEnd,
-    r.ACCOUNT_IDENTIFIER         AS Dim1,
-    'Removal_Balance'            AS Metric,
-    SUM(r.PrevBal)               AS Value,     -- positive amount (you can flip sign in PBI if desired)
-    r.CONTRACT_SOURCE_SYSTEM     AS Dim2
-  FROM Tab2_PrevNotCurr_Account r
-  GROUP BY r.CurrMonth, r.ACCOUNT_IDENTIFIER, r.CONTRACT_SOURCE_SYSTEM
-),
-
-/* ===================== TAB 4 – Risk & Concentration (Non-Accrual) =========
+  WHERE 
