@@ -1,3 +1,188 @@
+WITH
+/* 1) Base: certified month-end for Total Loans */
+base AS (
+  SELECT
+      RC_CODE,
+      RC_DESCRIPTION,
+      CAST(END_OF_MONTH_DATE AS DATE)           AS month_end,
+      SUM(SOURCE_SYSTEM_BALANCE)::FLOAT8        AS bal_num
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  GROUP BY RC_CODE, RC_DESCRIPTION, CAST(END_OF_MONTH_DATE AS DATE)
+),
+
+/* 2) Indexing, prior balance, quarter-of-year, and MA windows */
+idx_ma AS (
+  SELECT
+      b.RC_CODE,
+      b.RC_DESCRIPTION,
+      b.month_end,
+      b.bal_num,
+      ROW_NUMBER() OVER (PARTITION BY b.RC_CODE ORDER BY b.month_end) AS t,
+      CEIL(EXTRACT(MONTH FROM b.month_end)/3.0)::INTEGER              AS qoy,
+      LAG(b.bal_num) OVER (PARTITION BY b.RC_CODE ORDER BY b.month_end) AS prev_bal,
+
+      /* MAs (use only MA-12 for forecast to keep query compact) */
+      AVG(b.bal_num) OVER (
+        PARTITION BY b.RC_CODE ORDER BY b.month_end
+        ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+      )::FLOAT8 AS ma_12
+  FROM base b
+),
+
+/* 3) Simple quarterly lifts from ratio = actual / MA12, then normalize+shrink+cap */
+lifts AS (
+  /* raw mean ratio per RC×quarter */
+  SELECT
+      r.RC_CODE,
+      r.qoy,
+      /* mean ratio vs MA12 */
+      AVG(r.ratio_ma12)::FLOAT8 AS qlift_raw
+  FROM (
+    SELECT
+      i.RC_CODE,
+      i.qoy,
+      CASE WHEN i.ma_12 IS NULL OR i.ma_12 = 0 THEN NULL
+           ELSE (i.bal_num / i.ma_12)::FLOAT8
+      END AS ratio_ma12
+    FROM idx_ma i
+    WHERE i.ma_12 IS NOT NULL
+  ) r
+  WHERE r.ratio_ma12 IS NOT NULL
+  GROUP BY r.RC_CODE, r.qoy
+),
+lifts_norm AS (
+  /* normalize each RC’s 4 quarter lifts to mean 1.0, then shrink 50% toward 1 and cap to [0.80,1.20] */
+  SELECT
+      l.RC_CODE,
+      l.qoy,
+      /* normalize to RC mean */
+      CASE
+        WHEN a.avg_all IS NULL OR a.avg_all = 0 THEN 1.0
+        ELSE l.qlift_raw / a.avg_all
+      END::FLOAT8 AS qlift_norm
+  FROM lifts l
+  JOIN (
+    SELECT RC_CODE, AVG(qlift_raw)::FLOAT8 AS avg_all
+    FROM lifts
+    GROUP BY RC_CODE
+  ) a ON a.RC_CODE = l.RC_CODE
+),
+lifts_final AS (
+  SELECT
+      RC_CODE,
+      qoy,
+      /* shrinkage alpha = 0.5; caps = [0.80, 1.20] (tunable) */
+      LEAST(1.20, GREATEST(0.80, 1.0 + 0.5*(qlift_norm - 1.0)))::FLOAT8 AS qlift_final
+  FROM lifts_norm
+),
+
+/* 4) Join lifts → forecast (MA12 × lift) → residuals & MoM signals */
+signals AS (
+  SELECT
+      i.RC_CODE,
+      i.RC_DESCRIPTION,
+      i.month_end,
+      i.t,
+      i.qoy,
+      i.bal_num,
+      i.prev_bal,
+
+      COALESCE(f.qlift_final, 1.0)::FLOAT8 AS qlift_final,
+      i.ma_12,
+
+      /* seasonally adjusted forecast from MA-12 */
+      (i.ma_12 * COALESCE(f.qlift_final,1.0))::FLOAT8 AS forecast_ma12_adj,
+
+      /* residuals and MoM */
+      (i.bal_num - (i.ma_12 * COALESCE(f.qlift_final,1.0)))::FLOAT8 AS resid_ma12_adj,
+      ABS(i.bal_num - (i.ma_12 * COALESCE(f.qlift_final,1.0)))::FLOAT8 AS abs_resid,
+
+      CASE WHEN i.prev_bal IS NULL THEN NULL ELSE ABS(i.bal_num - i.prev_bal) END::FLOAT8 AS mom_abs,
+      CASE
+        WHEN i.prev_bal IS NULL THEN NULL
+        WHEN ABS(i.prev_bal) < 1.0 THEN ABS(i.bal_num - i.prev_bal) / 1.0
+        ELSE ABS(i.bal_num - i.prev_bal) / ABS(i.prev_bal)
+      END::FLOAT8 AS mom_pct_abs,
+
+      /* include if any positive in last 3 months */
+      SUM(CASE WHEN i.bal_num > 0 THEN 1 ELSE 0 END)
+        OVER (PARTITION BY i.RC_CODE ORDER BY i.month_end ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS pos3_count
+  FROM idx_ma i
+  LEFT JOIN lifts_final f
+    ON f.RC_CODE = i.RC_CODE AND f.qoy = i.qoy
+),
+
+/* 5) RC-level means & stddevs for z-scores (per RC_CODE across time) */
+rc_stats AS (
+  SELECT
+      RC_CODE,
+      AVG(abs_resid)::FLOAT8   AS mean_abs_resid,
+      STDDEV_SAMP(abs_resid)   AS sd_abs_resid,
+      AVG(mom_abs)::FLOAT8     AS mean_mom_abs,
+      STDDEV_SAMP(mom_abs)     AS sd_mom_abs,
+      AVG(mom_pct_abs)::FLOAT8 AS mean_mom_pct,
+      STDDEV_SAMP(mom_pct_abs) AS sd_mom_pct
+  FROM signals
+  GROUP BY RC_CODE
+),
+
+/* 6) Portfolio scale for the dollar-boost component */
+port_max AS (
+  SELECT MAX(abs_resid) AS max_abs_resid FROM signals
+)
+
+/* 7) Final output with z-scores and severity */
+SELECT
+  s.RC_CODE,
+  s.RC_DESCRIPTION,
+  s.month_end,
+  s.t,
+  s.qoy,
+  s.bal_num,
+  s.prev_bal,
+
+  s.qlift_final,
+  s.ma_12,
+  s.forecast_ma12_adj,
+  s.resid_ma12_adj,
+  s.abs_resid,
+  s.mom_abs,
+  s.mom_pct_abs,
+
+  CASE WHEN s.pos3_count >= 1 THEN 1 ELSE 0 END AS include3_anypos,
+
+  /* z-scores (guarded) */
+  CASE WHEN r.sd_abs_resid IS NULL OR r.sd_abs_resid = 0 THEN 0
+       ELSE (s.abs_resid - r.mean_abs_resid) / r.sd_abs_resid END AS z_resid,
+
+  CASE WHEN r.sd_mom_abs IS NULL OR r.sd_mom_abs = 0 THEN 0
+       ELSE (s.mom_abs - r.mean_mom_abs) / r.sd_mom_abs END       AS z_mom_abs,
+
+  CASE WHEN r.sd_mom_pct IS NULL OR r.sd_mom_pct = 0 THEN 0
+       ELSE (s.mom_pct_abs - r.mean_mom_pct) / r.sd_mom_pct END   AS z_mom_pct,
+
+  /* severity: emphasize $ residuals, still keep unusualness and MoM spikes */
+  (
+    0.60 * ABS( CASE WHEN r.sd_abs_resid IS NULL OR r.sd_abs_resid = 0 THEN 0
+                     ELSE (s.abs_resid - r.mean_abs_resid) / r.sd_abs_resid END )
+  + 0.35 * ABS( CASE WHEN r.sd_mom_abs   IS NULL OR r.sd_mom_abs   = 0 THEN 0
+                     ELSE (s.mom_abs - r.mean_mom_abs) / r.sd_mom_abs END )
+  + 0.05 * ABS( CASE WHEN r.sd_mom_pct   IS NULL OR r.sd_mom_pct   = 0 THEN 0
+                     ELSE (s.mom_pct_abs - r.mean_mom_pct) / r.sd_mom_pct END )
+  + 0.40 * ( s.abs_resid / NULLIF(p.max_abs_resid,0) )
+  )::FLOAT8 AS severity_raw_v3
+
+FROM signals s
+LEFT JOIN rc_stats r ON r.RC_CODE = s.RC_CODE
+CROSS JOIN port_max p
+ORDER BY s.RC_CODE, s.month_end;
+
+
+
+
+
 /* A) Ratios vs MA_12 with quarter */
 ratio_for_lifts AS (
   SELECT
@@ -26572,107 +26757,4 @@ scored AS (
     SELECT
         f.*,
         p.w_zscore, p.w_pct, p.w_abs, p.w_share,
-        p.z_cap, p.pct_cap, p.abs_cap, p.share_cap
-    FROM flagged f
-    CROSS JOIN params p
-),
-assembled AS (
-    SELECT
-        EOM                               AS END_OF_MONTH_DATE,
-        RC_CODE,
-        RC_DESCRIPTION,
-        GL_BALANCE,
-        PREV_GL_BALANCE,
-        MOM_ABS_CHANGE,
-        MOM_PCT_CHANGE,
-        ROLL_MEAN_12_EXCL,
-        ROLL_STD_12_EXCL,
-        Z_SCORE_12_EXCL,
-        CURR_TOT_GL,
-        PREV_TOT_GL,
-        CURR_SHARE,
-        PREV_SHARE,
-        SHARE_DELTA,
-        IS_ANOMALY,
-
-        /* Normalized components 0..1 (capped) */
-        CASE WHEN Z_SCORE_12_EXCL IS NULL THEN 0 ELSE LEAST(ABS(Z_SCORE_12_EXCL) / NULLIF(z_cap,0), 1) END AS z_norm,
-        CASE WHEN MOM_PCT_CHANGE IS NULL THEN 0 ELSE LEAST(ABS(MOM_PCT_CHANGE) / NULLIF(pct_cap,0), 1) END AS pct_norm,
-        LEAST(ABS(COALESCE(MOM_ABS_CHANGE,0)) / NULLIF(abs_cap,0), 1) AS abs_norm,
-        CASE WHEN SHARE_DELTA IS NULL THEN 0 ELSE LEAST(ABS(SHARE_DELTA) / NULLIF(share_cap,0), 1) END AS share_norm,
-
-        w_zscore, w_pct, w_abs, w_share
-    FROM scored
-),
-final AS (
-    SELECT
-        *,
-        100 * (w_zscore * z_norm
-             + w_pct    * pct_norm
-             + w_abs    * abs_norm
-             + w_share  * share_norm)     AS SEVERITY_SCORE_RAW
-    FROM assembled
-)
-
-SELECT
-    END_OF_MONTH_DATE,
-    RC_CODE,
-    RC_DESCRIPTION,
-    GL_BALANCE,
-    PREV_GL_BALANCE,
-    MOM_ABS_CHANGE,
-    MOM_PCT_CHANGE,
-    ROLL_MEAN_12_EXCL,
-    ROLL_STD_12_EXCL,
-    Z_SCORE_12_EXCL,
-    CURR_TOT_GL,
-    PREV_TOT_GL,
-    CURR_SHARE,
-    PREV_SHARE,
-    SHARE_DELTA,
-    IS_ANOMALY,
-
-    GREATEST(0, LEAST(100, ROUND(SEVERITY_SCORE_RAW,1))) AS SEVERITY_SCORE,
-
-    DENSE_RANK() OVER (PARTITION BY END_OF_MONTH_DATE
-                       ORDER BY SEVERITY_SCORE_RAW DESC) AS MONTHLY_RANK,
-
-    CASE
-        WHEN SEVERITY_SCORE_RAW >= 85 THEN 'CRITICAL'
-        WHEN SEVERITY_SCORE_RAW >= 70 THEN 'HIGH'
-        WHEN SEVERITY_SCORE_RAW >= 50 THEN 'MEDIUM'
-        WHEN SEVERITY_SCORE_RAW >= 30 THEN 'LOW'
-        ELSE 'INFO'
-    END AS SEVERITY_TIER
-
-FROM final
-ORDER BY END_OF_MONTH_DATE, MONTHLY_RANK, RC_CODE;
-
-
-
-
-
-
--- =====================================================================
--- MASTER RC_CODE VARIANCE + ANOMALY + SEVERITY (Run as a single query)
--- =====================================================================
-
-WITH
-/* ========================== 1) PARAMETERS =========================== */
-params AS (
-    SELECT
-        12::INTEGER  AS lookback_months,   -- months of history (e.g., 12)
-        /* Severity weighting (roughly sum to 1.0) */
-        0.40::FLOAT  AS w_zscore,          -- weight for Z-score
-        0.30::FLOAT  AS w_pct,             -- weight for MoM % change
-        0.20::FLOAT  AS w_abs,             -- weight for MoM $ change
-        0.10::FLOAT  AS w_share,           -- weight for portfolio share shift
-        /* Normalization caps for 0..1 scaling */
-        2.00::FLOAT  AS z_cap,             -- cap for |Z| (e.g., 2σ)
-        0.25::FLOAT  AS pct_cap,           -- cap for |MoM %| (e.g., 25%)
-        100000::FLOAT AS abs_cap,          -- cap for |MoM $| (materiality)
-        0.02::FLOAT  AS share_cap,         -- cap for |share delta| (2% of total)
-        /* Anomaly trip wires for IS_ANOMALY */
-        2.00::FLOAT  AS z_thresh,          -- flag if |Z| >= 2.0
-        0.25::FLOAT  AS pct_thresh,        -- with $ threshold
-        100000::FLOAT AS abs_thresh        -- with
+  
