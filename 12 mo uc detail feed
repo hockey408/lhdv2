@@ -1,3 +1,51 @@
+//@version=5
+strategy("QQQ 5m Momentum Trend Strategy", overlay=true, margin_long=100, margin_short=100)
+
+// Inputs
+emaLen     = input.int(50,  "Trend EMA Length")
+adxLen     = input.int(14,  "ADX Length")
+adxThresh  = input.float(20,"ADX Threshold")
+atrMult    = input.float(2.0,"ATR Stop Multiplier")
+atrLen     = input.int(14,  "ATR Length")
+
+// Indicators
+ema        = ta.ema(close, emaLen)
+adx        = ta.adx(adxLen)
+plusDI     = ta.plusdi(adxLen)
+minusDI    = ta.minusdi(adxLen)
+atr        = ta.atr(atrLen)
+
+// Momentum filters
+longCond   = close > ema and plusDI > minusDI and adx > adxThresh
+shortCond  = close < ema and minusDI > plusDI and adx > adxThresh
+
+// Dynamic stop levels
+longStop   = close - atr * atrMult
+shortStop  = close + atr * atrMult
+
+// Strategy execution
+if (longCond)
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit", "Long", stop=longStop)
+
+if (shortCond)
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit", "Short", stop=shortStop)
+
+// Plotting
+plot(ema, color=color.orange, title="EMA Trend")
+plotshape(longCond,  title="Long Signal",  style=shape.triangleup,   color=color.green, size=size.small, location=location.belowbar)
+plotshape(shortCond, title="Short Signal", style=shape.triangledown, color=color.red,   size=size.small, location=location.abovebar)
+
+// Alerts
+alertcondition(longCond,  title="Long Alert",  message="Momentum Long Signal on QQQ")
+alertcondition(shortCond, title="Short Alert", message="Momentum Short Signal on QQQ")
+
+
+
+
+
+
 WITH
 /* 1) Base: certified month-end for Total Loans */
 base AS (
@@ -26613,148 +26661,4 @@ for sys,g in df.groupby('CONTRACT_SOURCE_SYSTEM',sort=False):
     last_d=g['END_OF_MONTH_DATE'].iloc[-1]; last_a=float(y.iloc[-1]); med=float(np.nanmedian(y.values)) if len(y) else 1.0
     for step in range(len(fc)):
         f=float(fc.iloc[step]); next_d=last_d+pd.offsets.MonthEnd(step+1)
-        if sig is not None and np.isfinite(sig):
-            lo80,hi80=f-Z80*sig,f+Z80*sig; lo95,hi95=f-Z95*sig,f+Z95*sig
-        else:
-            lo80=hi80=lo95=hi95=np.nan
-        dev=f-last_a; pct=(dev/f) if f!=0 else np.nan; z=(dev/sig) if (sig is not None and np.isfinite(sig) and sig>0) else np.nan
-        zt=min(abs(z)/3.0,1.0) if pd.notna(z) else 0.0; pt=min(abs(pct)/0.1,1.0) if pd.notna(pct) else 0.0; it=min((abs(dev)/(med*0.1)) if med>0 else 0.0,1.0)
-        sev=100.0*(WZ*zt+WP*pt+WI*it); flag95=(pd.notna(last_a) and pd.notna(lo95) and (last_a<lo95 or last_a>hi95))
-        rows.append({'CONTRACT_SOURCE_SYSTEM':sys,'MODEL':name,'LAST_PERIOD':last_d,'NEXT_PERIOD':next_d,'STEP_AHEAD':step+1,'ACTUAL_LAST':last_a,'FORECAST':f,'PI80_LO':lo80,'PI80_HI':hi80,'PI95_LO':lo95,'PI95_HI':hi95,'DEV_ABS_vs_LAST':last_a-f,'DEV_PCT_vs_LAST':(last_a-f)/f if f!=0 else np.nan,'Z_SCORE_vs_LAST':(last_a-f)/sig if (sig is not None and np.isfinite(sig) and sig>0) else np.nan,'SEVERITY_0_100':sev,'OUTSIDE_95_BAND_vs_LAST':bool(flag95)})
-res=pd.DataFrame(rows).sort_values(['STEP_AHEAD','SEVERITY_0_100'],ascending=[True,False])
-return res
-", tblSSB[#All])
-
-
-
-
-
--- =====================================================================
--- MASTER RC_CODE VARIANCE + ANOMALY + SEVERITY (fixed PREV_TOT_GL and RC_DESCRIPTION)
--- =====================================================================
-
-WITH
-/* ========================== 1) PARAMETERS =========================== */
-params AS (
-    SELECT
-        12::INTEGER  AS lookback_months,
-        0.40::FLOAT  AS w_zscore,
-        0.30::FLOAT  AS w_pct,
-        0.20::FLOAT  AS w_abs,
-        0.10::FLOAT  AS w_share,
-        2.00::FLOAT  AS z_cap,
-        0.25::FLOAT  AS pct_cap,
-        100000::FLOAT AS abs_cap,
-        0.02::FLOAT  AS share_cap,
-        2.00::FLOAT  AS z_thresh,
-        0.25::FLOAT  AS pct_thresh,
-        100000::FLOAT AS abs_thresh
-),
-
-/* ====== 2) BASE RC_CODE MONTHLY AGGREGATE (GL_BALANCE > 0) ========= */
-base AS (
-    SELECT
-        CAST(END_OF_MONTH_DATE AS DATE)          AS EOM,
-        RC_CODE,
-        RC_DESCRIPTION,                          -- <-- renamed
-        SUM(GL_BALANCE)                          AS GL_BALANCE
-    FROM V_DPRT_CREDIT_INSTRUMENTS_ME
-    WHERE GL_BALANCE > 0
-      AND END_OF_MONTH_DATE >= ADD_MONTHS(DATE_TRUNC('month', CURRENT_DATE),
-                                          - (SELECT lookback_months FROM params))
-    GROUP BY 1,2,3
-),
-
-/* ========== 3) PORTFOLIO TOTALS & PRIOR-MONTH TOTAL AT MONTH GRAIN ======== */
-tot AS (
-    SELECT EOM, SUM(GL_BALANCE) AS TOT_GL
-    FROM base
-    GROUP BY 1
-),
-tot_with_prev AS (
-    SELECT
-        EOM,
-        TOT_GL AS CURR_TOT_GL,
-        LAG(TOT_GL) OVER (ORDER BY EOM) AS PREV_TOT_GL
-    FROM tot
-),
-
-/* ====== 4) MOM DELTAS + ROLLING STATS (excluding current month) ========== */
-calc AS (
-    SELECT
-        b.EOM,
-        b.RC_CODE,
-        b.RC_DESCRIPTION,
-        b.GL_BALANCE,
-        LAG(b.GL_BALANCE) OVER (PARTITION BY b.RC_CODE ORDER BY b.EOM) AS PREV_GL_BALANCE,
-
-        /* absolute change */
-        b.GL_BALANCE - LAG(b.GL_BALANCE) OVER (PARTITION BY b.RC_CODE ORDER BY b.EOM)
-            AS MOM_ABS_CHANGE,
-
-        /* percent change (NULL if prev = 0) */
-        CASE
-            WHEN NULLIF(LAG(b.GL_BALANCE) OVER (PARTITION BY b.RC_CODE ORDER BY b.EOM),0) IS NULL
-                THEN NULL
-            ELSE (b.GL_BALANCE - LAG(b.GL_BALANCE) OVER (PARTITION BY b.RC_CODE ORDER BY b.EOM))
-                 / NULLIF(LAG(b.GL_BALANCE) OVER (PARTITION BY b.RC_CODE ORDER BY b.EOM),0)
-        END AS MOM_PCT_CHANGE,
-
-        /* rolling mean/std over prior 12 rows (exclude current) */
-        AVG(b.GL_BALANCE) OVER (
-            PARTITION BY b.RC_CODE
-            ORDER BY b.EOM
-            ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
-        ) AS ROLL_MEAN_12_EXCL,
-
-        /* If STDDEV_SAMP isn't available in your Netezza version, use STDDEV */
-        STDDEV_SAMP(b.GL_BALANCE) OVER (
-            PARTITION BY b.RC_CODE
-            ORDER BY b.EOM
-            ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
-        ) AS ROLL_STD_12_EXCL
-    FROM base b
-),
-
-/* ====== 5) ENRICH WITH MONTH TOTALS, Z-SCORE, SHARE METRICS ============== */
-enriched AS (
-    SELECT
-        c.*,
-        t.CURR_TOT_GL,
-        t.PREV_TOT_GL,
-        CASE
-            WHEN c.ROLL_STD_12_EXCL IS NULL OR c.ROLL_STD_12_EXCL = 0 THEN NULL
-            ELSE (c.GL_BALANCE - c.ROLL_MEAN_12_EXCL) / c.ROLL_STD_12_EXCL
-        END AS Z_SCORE_12_EXCL,
-        CASE WHEN t.CURR_TOT_GL > 0 THEN c.GL_BALANCE / t.CURR_TOT_GL ELSE NULL END AS CURR_SHARE,
-        CASE WHEN t.PREV_TOT_GL > 0 THEN COALESCE(c.PREV_GL_BALANCE,0) / t.PREV_TOT_GL ELSE NULL END AS PREV_SHARE,
-        CASE
-            WHEN t.CURR_TOT_GL > 0 AND t.PREV_TOT_GL > 0 THEN
-                (c.GL_BALANCE / t.CURR_TOT_GL) - (COALESCE(c.PREV_GL_BALANCE,0) / t.PREV_TOT_GL)
-            ELSE NULL
-        END AS SHARE_DELTA
-    FROM calc c
-    JOIN tot_with_prev t
-      ON t.EOM = c.EOM
-),
-
-/* ====== 6) ANOMALY FLAG (trip rules) ===================================== */
-flagged AS (
-    SELECT
-        e.*,
-        CASE
-            WHEN (e.ROLL_STD_12_EXCL IS NOT NULL AND e.ROLL_STD_12_EXCL > 0
-                  AND ABS(e.Z_SCORE_12_EXCL) >= (SELECT z_thresh FROM params))
-              OR (COALESCE(ABS(e.MOM_PCT_CHANGE),0) >= (SELECT pct_thresh FROM params)
-                  AND COALESCE(ABS(e.MOM_ABS_CHANGE),0) >= (SELECT abs_thresh FROM params))
-            THEN 1 ELSE 0
-        END AS IS_ANOMALY
-    FROM enriched e
-),
-
-/* ====== 7) SEVERITY SCORE (0..100), RANKS, TIERS ========================= */
-scored AS (
-    SELECT
-        f.*,
-        p.w_zscore, p.w_pct, p.w_abs, p.w_share,
-  
+ 
