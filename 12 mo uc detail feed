@@ -67,6 +67,116 @@ means AS (
 residuals AS (
     SELECT
         f.RC_CODE,
+        SUM( (f.bal_num - f.forecast_reg) * (f.bal_num - f.forecast_reg) )::FLOAT8 AS sse_reg,
+        SUM( (m.bal_num - m.forecast_ma12) * (m.bal_num - m.forecast_ma12) )::FLOAT8 AS sse_ma12,
+        SUM( (f.bal_num - mn.mean_y) * (f.bal_num - mn.mean_y) )::FLOAT8 AS sst,
+        COUNT(*) AS n_obs
+    FROM regression_fit f
+    JOIN ma12_fit m
+      ON f.RC_CODE = m.RC_CODE AND f.month_end = m.month_end
+    JOIN means mn
+      ON f.RC_CODE = mn.RC_CODE
+    GROUP BY f.RC_CODE, mn.mean_y
+)
+
+SELECT
+    r.RC_CODE,
+
+    -- Regression fit
+    (1.0 - r.sse_reg / NULLIF(r.sst,0))::FLOAT8 AS r2_reg,
+    SQRT(r.sse_reg / r.n_obs)::FLOAT8 AS rmse_reg,
+    (SUM(ABS(f.bal_num - f.forecast_reg)) / NULLIF(SUM(ABS(f.bal_num)),0))::FLOAT8 AS mape_reg,
+
+    -- MA12 fit
+    (1.0 - r.sse_ma12 / NULLIF(r.sst,0))::FLOAT8 AS r2_ma12,
+    SQRT(r.sse_ma12 / r.n_obs)::FLOAT8 AS rmse_ma12,
+    (SUM(ABS(m.bal_num - m.forecast_ma12)) / NULLIF(SUM(ABS(m.bal_num)),0))::FLOAT8 AS mape_ma12,
+
+    CASE
+        WHEN (1.0 - r.sse_reg/NULLIF(r.sst,0)) < 0.5 THEN 'MA12'
+        WHEN r.sse_reg <= r.sse_ma12 THEN 'REGRESSION'
+        ELSE 'MA12'
+    END AS Best_Model
+
+FROM residuals r
+JOIN regression_fit f ON f.RC_CODE = r.RC_CODE
+JOIN ma12_fit m       ON m.RC_CODE = r.RC_CODE AND m.month_end = f.month_end
+GROUP BY r.RC_CODE, r.sse_reg, r.sse_ma12, r.sst, r.n_obs
+ORDER BY r.RC_CODE;
+
+
+
+
+
+WITH base AS (
+    SELECT
+        RC_CODE,
+        RC_DESCRIPTION,
+        CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+        SUM(SOURCE_SYSTEM_BALANCE)::FLOAT8 AS bal_num
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+    WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+      AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    GROUP BY RC_CODE, RC_DESCRIPTION, CAST(END_OF_MONTH_DATE AS DATE)
+),
+
+idx AS (
+    SELECT
+        b.*,
+        ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY month_end) AS t
+    FROM base b
+),
+
+-- regression params
+regression_params AS (
+    SELECT
+        RC_CODE,
+        COUNT(*) AS n,
+        SUM(t)::FLOAT8 AS sum_t,
+        SUM(bal_num)::FLOAT8 AS sum_y,
+        SUM(t*bal_num)::FLOAT8 AS sum_ty,
+        SUM(t*t)::FLOAT8 AS sum_t2
+    FROM idx
+    GROUP BY RC_CODE
+),
+
+regression_fit AS (
+    SELECT
+        i.RC_CODE,
+        i.month_end,
+        i.bal_num,
+        ( (r.sum_y - ((r.n*r.sum_ty - r.sum_t*r.sum_y) 
+             / NULLIF(r.n*r.sum_t2 - r.sum_t*r.sum_t,0))*r.sum_t) / r.n )::FLOAT8
+        + ( (r.n*r.sum_ty - r.sum_t*r.sum_y) 
+             / NULLIF(r.n*r.sum_t2 - r.sum_t*r.sum_t,0) )::FLOAT8 * i.t
+        AS forecast_reg
+    FROM idx i
+    JOIN regression_params r ON i.RC_CODE = r.RC_CODE
+),
+
+ma12_fit AS (
+    SELECT
+        i.RC_CODE,
+        i.month_end,
+        i.bal_num,
+        AVG(i.bal_num) OVER (
+            PARTITION BY i.RC_CODE ORDER BY i.month_end
+            ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+        )::FLOAT8 AS forecast_ma12
+    FROM idx i
+),
+
+-- per RC_CODE mean of bal_num (needed for SST in R²)
+means AS (
+    SELECT RC_CODE, AVG(bal_num)::FLOAT8 AS mean_y
+    FROM idx
+    GROUP BY RC_CODE
+),
+
+-- collect residual sums
+residuals AS (
+    SELECT
+        f.RC_CODE,
         SUM(POWER(f.bal_num - f.forecast_reg, 2.0::FLOAT8)) AS sse_reg,
         SUM(POWER(m.bal_num - m.forecast_ma12, 2.0::FLOAT8)) AS sse_ma12,
         SUM(POWER(f.bal_num - mn.mean_y, 2.0::FLOAT8)) AS sst,
@@ -26773,78 +26883,4 @@ def fit_and_forecast(y: pd.Series, h: int, sp: int) -> Tuple[str, pd.Series, pd.
 
         if fit is not None:
             fitted_vals = pd.Series(fit.fittedvalues, index=y.index, dtype=float)
-            fcast = pd.Series(fit.forecast(h).values, index=range(h), dtype=float)
-            return model_name, fitted_vals, fcast
-
-    # Fallback: seasonal naive + pseudo-fitted
-    fcast = seasonal_naive_forecast(y, h=h, sp=sp)
-    if len(y) > sp:
-        fitted_vals.iloc[:sp] = y.values[0]
-        fitted_vals.iloc[sp:] = y.values[:-sp]
-    else:
-        fitted_vals[:] = float(np.nanmean(y.values))
-    return model_name, fitted_vals, fcast
-
-
-def load_input(path: str, sheet: Optional[str] = None) -> pd.DataFrame:
-    """Load data from CSV or Excel; return DataFrame."""
-    ext = os.path.splitext(path)[1].lower()
-    if ext in ('.xlsx', '.xls'):
-        df = pd.read_excel(path, sheet_name=sheet)
-    elif ext == '.csv':
-        df = pd.read_csv(path)
-    else:
-        raise ValueError(f'Unsupported file extension: {ext}. Use .xlsx/.xls or .csv')
-    return df
-
-
-def normalize_and_aggregate(df: pd.DataFrame) -> pd.DataFrame:
-    """Standardize columns, ensure types, aggregate to system x month."""
-    df = df.copy()
-    df.columns = [c.strip().upper() for c in df.columns]
-    missing = REQUIRED_COLS - set(df.columns)
-    if missing:
-        raise ValueError(f'Missing required columns: {missing}')
-    df['END_OF_MONTH_DATE'] = pd.to_datetime(df['END_OF_MONTH_DATE'])
-    df['SOURCE_SYSTEM_BALANCE'] = pd.to_numeric(df['SOURCE_SYSTEM_BALANCE'], errors='coerce')
-    df = df.dropna(subset=['END_OF_MONTH_DATE', 'SOURCE_SYSTEM_BALANCE'])
-
-    # Aggregate in case duplicates exist at month/system
-    df = (df.groupby(['CONTRACT_SOURCE_SYSTEM', 'END_OF_MONTH_DATE'], as_index=False)['SOURCE_SYSTEM_BALANCE']
-            .sum()
-            .sort_values(['CONTRACT_SOURCE_SYSTEM', 'END_OF_MONTH_DATE']))
-    return df
-
-
-def compute_outputs(df: pd.DataFrame, horizon: int, sp: int) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    For each system:
-      - fit model, compute in-sample fitted/residuals/sigma
-      - create next H forecasts with simple normal-approx PIs from residual sigma
-      - compute severity vs last actual for step=1
-    Returns: (summary_df, horizon_df, fitted_history_df)
-    """
-    summary_rows = []
-    horizon_rows = []
-    fitted_rows = []
-
-    for system, g in df.groupby('CONTRACT_SOURCE_SYSTEM', sort=False):
-        g = g.sort_values('END_OF_MONTH_DATE')
-        y = g['SOURCE_SYSTEM_BALANCE'].astype(float)
-        last_date = g['END_OF_MONTH_DATE'].iloc[-1]
-        last_actual = float(y.iloc[-1])
-        med_level = float(np.nanmedian(y.values)) if len(y) else 1.0
-
-        model_name, fitted_vals, fcast = fit_and_forecast(y, h=horizon, sp=sp)
-
-        # Residuals & sigma (align lengths)
-        n = min(len(y), len(fitted_vals))
-        resid = (y.iloc[:n].values - fitted_vals.iloc[:n].values).astype(float)
-        sigma = robust_sigma(resid)
-
-        # Save fitted history rows
-        for t_idx, (dt, actual, fitted) in enumerate(zip(g['END_OF_MONTH_DATE'].iloc[:n], y.iloc[:n], fitted_vals.iloc[:n])):
-            fitted_rows.append({
-                'CONTRACT_SOURCE_SYSTEM': system,
-                'DATE': pd.to_datetime(dt),
-      
+            fcast = pd.Series(fit.forecast(h).values, index=ra
