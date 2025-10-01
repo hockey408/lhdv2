@@ -17,6 +17,141 @@ idx AS (
     FROM base b
 ),
 
+-- Per RC mean for SST (needed for R²)
+means AS (
+    SELECT RC_CODE, AVG(bal_num)::FLOAT8 AS mean_y
+    FROM idx
+    GROUP BY RC_CODE
+),
+
+-- Regression params (full history, same slope/intercept used for 12 or 36 cutoff)
+regression_params AS (
+    SELECT
+        RC_CODE,
+        COUNT(*) AS n,
+        SUM(t)::FLOAT8 AS sum_t,
+        SUM(bal_num)::FLOAT8 AS sum_y,
+        SUM(t*bal_num)::FLOAT8 AS sum_ty,
+        SUM(t*t)::FLOAT8 AS sum_t2
+    FROM idx
+    GROUP BY RC_CODE
+),
+
+regression_fit AS (
+    SELECT
+        i.RC_CODE,
+        i.month_end,
+        i.bal_num,
+        i.t,
+        /* slope/intercept full sample */
+        ( (r.sum_y - ((r.n*r.sum_ty - r.sum_t*r.sum_y) 
+             / NULLIF(r.n*r.sum_t2 - r.sum_t*r.sum_t,0))*r.sum_t) / r.n )::FLOAT8
+        + ( (r.n*r.sum_ty - r.sum_t*r.sum_y) 
+             / NULLIF(r.n*r.sum_t2 - r.sum_t*r.sum_t,0) )::FLOAT8 * i.t
+        AS forecast_reg
+    FROM idx i
+    JOIN regression_params r ON i.RC_CODE = r.RC_CODE
+),
+
+-- Moving averages (6 and 12 months)
+ma_fit AS (
+    SELECT
+        i.RC_CODE,
+        i.month_end,
+        i.bal_num,
+        AVG(i.bal_num) OVER (
+            PARTITION BY i.RC_CODE ORDER BY i.month_end
+            ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+        )::FLOAT8 AS forecast_ma6,
+        AVG(i.bal_num) OVER (
+            PARTITION BY i.RC_CODE ORDER BY i.month_end
+            ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+        )::FLOAT8 AS forecast_ma12
+    FROM idx i
+),
+
+-- Combine all fits
+fits AS (
+    SELECT
+        f.RC_CODE,
+        f.month_end,
+        f.bal_num,
+        f.forecast_reg,
+        m.forecast_ma6,
+        m.forecast_ma12
+    FROM regression_fit f
+    JOIN ma_fit m
+      ON f.RC_CODE = m.RC_CODE AND f.month_end = m.month_end
+),
+
+-- Residual sums for each model
+residuals AS (
+    SELECT
+        ft.RC_CODE,
+        mn.mean_y,
+        COUNT(*) AS n_obs,
+
+        -- Regression (using all history, call this "Regression-12")
+        SUM( (ft.bal_num - ft.forecast_reg) * (ft.bal_num - ft.forecast_reg) ) AS sse_reg,
+        -- MA6
+        SUM( (ft.bal_num - ft.forecast_ma6) * (ft.bal_num - ft.forecast_ma6) ) AS sse_ma6,
+        -- MA12
+        SUM( (ft.bal_num - ft.forecast_ma12) * (ft.bal_num - ft.forecast_ma12) ) AS sse_ma12,
+        -- SST for R²
+        SUM( (ft.bal_num - mn.mean_y) * (ft.bal_num - mn.mean_y) ) AS sst
+    FROM fits ft
+    JOIN means mn ON ft.RC_CODE = mn.RC_CODE
+    GROUP BY ft.RC_CODE, mn.mean_y
+)
+
+SELECT
+    r.RC_CODE,
+
+    -- Regression (treated as "Regression-12 full sample")
+    (1.0 - r.sse_reg / NULLIF(r.sst,0))::FLOAT8 AS r2_reg,
+    SQRT(r.sse_reg / r.n_obs)::FLOAT8 AS rmse_reg,
+
+    -- MA6
+    (1.0 - r.sse_ma6 / NULLIF(r.sst,0))::FLOAT8 AS r2_ma6,
+    SQRT(r.sse_ma6 / r.n_obs)::FLOAT8 AS rmse_ma6,
+
+    -- MA12
+    (1.0 - r.sse_ma12 / NULLIF(r.sst,0))::FLOAT8 AS r2_ma12,
+    SQRT(r.sse_ma12 / r.n_obs)::FLOAT8 AS rmse_ma12,
+
+    CASE
+        WHEN (1.0 - r.sse_reg/NULLIF(r.sst,0)) < 0.5 THEN 
+             CASE WHEN r.rmse_ma6 <= r.rmse_ma12 THEN 'MA6' ELSE 'MA12' END
+        WHEN r.rmse_reg <= r.rmse_ma6 AND r.rmse_reg <= r.rmse_ma12 THEN 'REGRESSION'
+        WHEN r.rmse_ma6 <= r.rmse_ma12 THEN 'MA6'
+        ELSE 'MA12'
+    END AS Best_Model
+
+FROM residuals r
+ORDER BY r.RC_CODE;
+
+
+
+
+WITH base AS (
+    SELECT
+        RC_CODE,
+        RC_DESCRIPTION,
+        CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+        SUM(SOURCE_SYSTEM_BALANCE)::FLOAT8 AS bal_num
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+    WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+      AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    GROUP BY RC_CODE, RC_DESCRIPTION, CAST(END_OF_MONTH_DATE AS DATE)
+),
+
+idx AS (
+    SELECT
+        b.*,
+        ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY month_end) AS t
+    FROM base b
+),
+
 -- regression params
 regression_params AS (
     SELECT
@@ -26794,93 +26929,4 @@ Notes
 """
 
 import argparse
-import os
-import sys
-from typing import Tuple, Optional
-
-import numpy as np
-import pandas as pd
-
-# Try to import statsmodels; fallback if unavailable
-_HAS_SM = True
-try:
-    from statsmodels.tsa.holtwinters import ExponentialSmoothing
-except Exception:
-    _HAS_SM = False
-
-# -----------------------------
-# Config defaults
-# -----------------------------
-DEFAULT_SEASONAL_PERIODS = 12     # monthly data -> yearly seasonality
-DEFAULT_HORIZON = 1               # months ahead
-Z80 = 1.2816
-Z95 = 1.9599
-# Severity weights (z, percent, impact)
-WZ, WPCT, WIMP = 0.5, 0.3, 0.2
-
-REQUIRED_COLS = {'END_OF_MONTH_DATE', 'CONTRACT_SOURCE_SYSTEM', 'SOURCE_SYSTEM_BALANCE'}
-
-
-# -----------------------------
-# Helpers
-# -----------------------------
-def robust_sigma(resid: np.ndarray) -> float:
-    """Robust sigma using MAD; fallback to std if needed."""
-    resid = resid[~np.isnan(resid)]
-    if resid.size == 0:
-        return np.nan
-    med = np.nanmedian(resid)
-    mad = np.nanmedian(np.abs(resid - med))
-    if mad and mad > 0:
-        return 1.4826 * mad
-    return float(np.nanstd(resid)) if resid.size > 1 else np.nan
-
-
-def seasonal_naive_forecast(y: pd.Series, h: int, sp: int) -> pd.Series:
-    """Seasonal naive: yhat(t+h) = y(t+h-sp)."""
-    out = []
-    n = len(y)
-    for k in range(1, h + 1):
-        idx = n - sp
-        out.append(y.iloc[idx] if idx >= 0 else y.iloc[-1])
-    return pd.Series(out, index=range(h), dtype=float)
-
-
-def fit_and_forecast(y: pd.Series, h: int, sp: int) -> Tuple[str, pd.Series, pd.Series]:
-    """Fit ETS if possible; else fallback to seasonal naive. Returns (model_name, fitted_vals, forecast)."""
-    y = pd.Series(pd.to_numeric(y, errors='coerce').astype(float).values)  # clean index 0..n-1, drop weird types
-    model_name = 'SeasonalNaive'
-    fitted_vals = pd.Series(index=y.index, dtype=float)
-
-    if _HAS_SM:
-        fit = None
-        # ETS(A,A,A) if long enough for seasonality
-        if len(y) >= 2 * sp:
-            try:
-                m = ExponentialSmoothing(
-                    y, trend='add', seasonal='add', seasonal_periods=sp, initialization_method='estimated'
-                )
-                fit = m.fit(optimized=True)
-                model_name = 'ETS(A,A,A)'
-            except Exception:
-                fit = None
-        # ETS(A,A,N) (trend, no season)
-        if fit is None and len(y) >= 6:
-            try:
-                m = ExponentialSmoothing(y, trend='add', seasonal=None, initialization_method='estimated')
-                fit = m.fit(optimized=True)
-                model_name = 'ETS(A,A,N)'
-            except Exception:
-                fit = None
-        # SES (no trend/season)
-        if fit is None:
-            try:
-                m = ExponentialSmoothing(y, trend=None, seasonal=None, initialization_method='estimated')
-                fit = m.fit(optimized=True)
-                model_name = 'SES'
-            except Exception:
-                fit = None
-
-        if fit is not None:
-            fitted_vals = pd.Series(fit.fittedvalues, index=y.index, dtype=float)
-            fcast = pd.Series(fit.forecast(h).values, index=ra
+import o
