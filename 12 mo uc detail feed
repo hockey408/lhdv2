@@ -1,3 +1,62 @@
+Total Exposure (Latest, Active) :=
+VAR lm = CALCULATE ( MAX ( T[month_end] ), ALL ( T ) )
+RETURN
+CALCULATE (
+    SUM ( T[bal_num] ),
+    T[month_end] = lm,
+    T[include3_anypos] = 1
+)
+
+
+
+
+Flagged Systems (Latest, Hard 70) :=
+VAR lm = CALCULATE ( MAX ( T[month_end] ), ALL ( T ) )
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( T[RC_CODE] ),
+    T[month_end] = lm,
+    T[include3_anypos] = 1,
+    [Severity (0-100)] >= 70   -- hard-coded threshold
+)
+
+
+
+
+% Systems Flagged (Latest, Hard 70) :=
+DIVIDE ( [Flagged Systems (Latest, Hard 70)], [Active Systems (Latest)] )
+
+
+
+
+Flagged Exposure (Latest, Hard 70) :=
+VAR lm = CALCULATE ( MAX ( T[month_end] ), ALL ( T ) )
+RETURN
+CALCULATE (
+    SUM ( T[bal_num] ),
+    T[month_end] = lm,
+    T[include3_anypos] = 1,
+    [Severity (0-100)] >= 70
+)
+
+
+
+
+Active Systems (Latest) :=
+VAR lm = CALCULATE ( MAX ( T[month_end] ), ALL ( T ) )
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( T[RC_CODE] ),
+    T[month_end] = lm,
+    T[include3_anypos] = 1
+)
+
+
+
+
+
+
+
 -- Latest certified month-end in the current model
 Latest Month :=
 CALCULATE ( MAX ( T[month_end] ), ALL ( T ) )
