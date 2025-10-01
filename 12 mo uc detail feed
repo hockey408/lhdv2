@@ -1,3 +1,249 @@
+WITH
+-- 0) Base
+base AS (
+  SELECT
+    RC_CODE,
+    RC_DESCRIPTION,
+    CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+    SUM(SOURCE_SYSTEM_BALANCE)::FLOAT8 AS bal_num
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  GROUP BY RC_CODE, RC_DESCRIPTION, CAST(END_OF_MONTH_DATE AS DATE)
+),
+
+-- 1) Index and max-t per RC
+idx AS (
+  SELECT
+    b.*,
+    ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY month_end) AS t,
+    MAX(ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY month_end))
+      OVER (PARTITION BY RC_CODE) AS tmax
+  FROM base b
+),
+
+-- 2) Window subsets
+last12 AS (
+  SELECT * FROM idx WHERE t >= tmax - 11  -- up to 12 rows if history long enough
+),
+last36 AS (
+  SELECT * FROM idx WHERE t >= tmax - 35  -- up to 36 rows
+),
+
+-- 3) Regression params per window
+reg12_params AS (
+  SELECT
+    RC_CODE,
+    COUNT(*)                 AS n12,
+    SUM(t)::FLOAT8           AS sumx12,
+    SUM(bal_num)::FLOAT8     AS sumy12,
+    SUM(t*bal_num)::FLOAT8   AS sumxy12,
+    SUM(t*t)::FLOAT8         AS sumx2_12
+  FROM last12
+  GROUP BY RC_CODE
+),
+reg36_params AS (
+  SELECT
+    RC_CODE,
+    COUNT(*)                 AS n36,
+    SUM(t)::FLOAT8           AS sumx36,
+    SUM(bal_num)::FLOAT8     AS sumy36,
+    SUM(t*bal_num)::FLOAT8   AS sumxy36,
+    SUM(t*t)::FLOAT8         AS sumx2_36
+  FROM last36
+  GROUP BY RC_CODE
+),
+
+-- 4) Regression fits per window (only over their evaluation windows)
+reg12_fit AS (
+  SELECT
+    l.RC_CODE, l.month_end, l.bal_num, l.t,
+    CASE
+      WHEN p.n12 >= 2 AND (p.n12*p.sumx2_12 - p.sumx12*p.sumx12) <> 0
+      THEN
+        /* slope12 */ ((p.n12*p.sumxy12 - p.sumx12*p.sumy12) / (p.n12*p.sumx2_12 - p.sumx12*p.sumx12)) * l.t
+        /* intercept12 */ + ( (p.sumy12/p.n12) - ((p.n12*p.sumxy12 - p.sumx12*p.sumy12) / (p.n12*p.sumx2_12 - p.sumx12*p.sumx12)) * (p.sumx12/p.n12) )
+      ELSE NULL
+    END::FLOAT8 AS fc_reg12
+  FROM last12 l
+  JOIN reg12_params p USING (RC_CODE)
+),
+reg36_fit AS (
+  SELECT
+    l.RC_CODE, l.month_end, l.bal_num, l.t
+  , CASE
+      WHEN p.n36 >= 2 AND (p.n36*p.sumx2_36 - p.sumx36*p.sumx36) <> 0
+      THEN
+        ((p.n36*p.sumxy36 - p.sumx36*p.sumy36) / (p.n36*p.sumx2_36 - p.sumx36*p.sumx36)) * l.t
+        + ( (p.sumy36/p.n36) - ((p.n36*p.sumxy36 - p.sumx36*p.sumy36) / (p.n36*p.sumx2_36 - p.sumx36*p.sumx36)) * (p.sumx36/p.n36) )
+      ELSE NULL
+    END::FLOAT8 AS fc_reg36
+  FROM last36 l
+  JOIN reg36_params p USING (RC_CODE)
+),
+
+-- 5) Moving averages computed over full series, then restricted to windows
+ma_all AS (
+  SELECT
+    i.RC_CODE, i.month_end, i.bal_num, i.t,
+    AVG(i.bal_num) OVER (
+      PARTITION BY i.RC_CODE ORDER BY i.month_end
+      ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+    )::FLOAT8 AS fc_ma6,
+    AVG(i.bal_num) OVER (
+      PARTITION BY i.RC_CODE ORDER BY i.month_end
+      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+    )::FLOAT8 AS fc_ma12
+  FROM idx i
+),
+ma6_12 AS (  -- evaluate MA6 on last12
+  SELECT m.RC_CODE, m.month_end, m.bal_num, m.fc_ma6
+  FROM ma_all m JOIN last12 l USING (RC_CODE, month_end)
+  WHERE m.fc_ma6 IS NOT NULL
+),
+ma12_36 AS ( -- evaluate MA12 on last36
+  SELECT m.RC_CODE, m.month_end, m.bal_num, m.fc_ma12
+  FROM ma_all m JOIN last36 l USING (RC_CODE, month_end)
+  WHERE m.fc_ma12 IS NOT NULL
+),
+
+-- 6) Means and SST per window
+mean12 AS ( SELECT RC_CODE, AVG(bal_num)::FLOAT8 AS mean_y12 FROM last12 GROUP BY RC_CODE ),
+mean36 AS ( SELECT RC_CODE, AVG(bal_num)::FLOAT8 AS mean_y36 FROM last36 GROUP BY RC_CODE ),
+
+sst12 AS (
+  SELECT l.RC_CODE,
+         SUM( (l.bal_num - m.mean_y12) * (l.bal_num - m.mean_y12) )::FLOAT8 AS sst12
+  FROM last12 l JOIN mean12 m USING (RC_CODE)
+  GROUP BY l.RC_CODE
+),
+sst36 AS (
+  SELECT l.RC_CODE,
+         SUM( (l.bal_num - m.mean_y36) * (l.bal_num - m.mean_y36) )::FLOAT8 AS sst36
+  FROM last36 l JOIN mean36 m USING (RC_CODE)
+  GROUP BY l.RC_CODE
+),
+
+-- 7) SSE and counts per model/window
+agg_reg12 AS (
+  SELECT f.RC_CODE,
+         SUM( (f.bal_num - f.fc_reg12) * (f.bal_num - f.fc_reg12) )::FLOAT8 AS sse_reg12,
+         COUNT(*) AS n_reg12
+  FROM reg12_fit f
+  WHERE f.fc_reg12 IS NOT NULL
+  GROUP BY f.RC_CODE
+),
+agg_reg36 AS (
+  SELECT f.RC_CODE,
+         SUM( (f.bal_num - f.fc_reg36) * (f.bal_num - f.fc_reg36) )::FLOAT8 AS sse_reg36,
+         COUNT(*) AS n_reg36
+  FROM reg36_fit f
+  WHERE f.fc_reg36 IS NOT NULL
+  GROUP BY f.RC_CODE
+),
+agg_ma6_12 AS (
+  SELECT m.RC_CODE,
+         SUM( (m.bal_num - m.fc_ma6) * (m.bal_num - m.fc_ma6) )::FLOAT8 AS sse_ma6_12,
+         COUNT(*) AS n_ma6_12
+  FROM ma6_12 m
+  GROUP BY m.RC_CODE
+),
+agg_ma12_36 AS (
+  SELECT m.RC_CODE,
+         SUM( (m.bal_num - m.fc_ma12) * (m.bal_num - m.fc_ma12) )::FLOAT8 AS sse_ma12_36,
+         COUNT(*) AS n_ma12_36
+  FROM ma12_36 m
+  GROUP BY m.RC_CODE
+),
+
+-- 8) Combine & compute metrics
+scores AS (
+  SELECT
+    x.RC_CODE,
+
+    -- join all aggregates & SSTs
+    s12.sst12, s36.sst36,
+    ar12.sse_reg12, ar12.n_reg12,
+    ar36.sse_reg36, ar36.n_reg36,
+    am6.sse_ma6_12, am6.n_ma6_12,
+    am12.sse_ma12_36, am12.n_ma12_36,
+
+    -- R2 (guarded) and RMSE per model
+    CASE WHEN s12.sst12 > 0 AND ar12.sse_reg12 IS NOT NULL THEN 1.0 - ar12.sse_reg12 / s12.sst12 ELSE NULL END AS r2_reg12,
+    CASE WHEN ar12.n_reg12 > 0 AND ar12.sse_reg12 IS NOT NULL THEN SQRT(ar12.sse_reg12 / ar12.n_reg12) ELSE NULL END AS rmse_reg12,
+
+    CASE WHEN s36.sst36 > 0 AND ar36.sse_reg36 IS NOT NULL THEN 1.0 - ar36.sse_reg36 / s36.sst36 ELSE NULL END AS r2_reg36,
+    CASE WHEN ar36.n_reg36 > 0 AND ar36.sse_reg36 IS NOT NULL THEN SQRT(ar36.sse_reg36 / ar36.n_reg36) ELSE NULL END AS rmse_reg36,
+
+    CASE WHEN s12.sst12 > 0 AND am6.sse_ma6_12 IS NOT NULL THEN 1.0 - am6.sse_ma6_12 / s12.sst12 ELSE NULL END AS r2_ma6,
+    CASE WHEN am6.n_ma6_12 > 0 AND am6.sse_ma6_12 IS NOT NULL THEN SQRT(am6.sse_ma6_12 / am6.n_ma6_12) ELSE NULL END AS rmse_ma6,
+
+    CASE WHEN s36.sst36 > 0 AND am12.sse_ma12_36 IS NOT NULL THEN 1.0 - am12.sse_ma12_36 / s36.sst36 ELSE NULL END AS r2_ma12,
+    CASE WHEN am12.n_ma12_36 > 0 AND am12.sse_ma12_36 IS NOT NULL THEN SQRT(am12.sse_ma12_36 / am12.n_ma12_36) ELSE NULL END AS rmse_ma12
+  FROM
+    (SELECT DISTINCT RC_CODE FROM idx) x
+    LEFT JOIN sst12 s12      ON s12.RC_CODE = x.RC_CODE
+    LEFT JOIN sst36 s36      ON s36.RC_CODE = x.RC_CODE
+    LEFT JOIN agg_reg12 ar12 ON ar12.RC_CODE = x.RC_CODE
+    LEFT JOIN agg_reg36 ar36 ON ar36.RC_CODE = x.RC_CODE
+    LEFT JOIN agg_ma6_12 am6 ON am6.RC_CODE = x.RC_CODE
+    LEFT JOIN agg_ma12_36 am12 ON am12.RC_CODE = x.RC_CODE
+)
+
+-- 9) Final selection (regression eligible only if R² ≥ 0.5)
+SELECT
+  s.RC_CODE,
+  s.r2_reg12, s.rmse_reg12,
+  s.r2_reg36, s.rmse_reg36,
+  s.r2_ma6,   s.rmse_ma6,
+  s.r2_ma12,  s.rmse_ma12,
+
+  CASE
+    WHEN COALESCE(
+           CASE WHEN s.r2_reg12 >= 0.5 THEN s.rmse_reg12 ELSE NULL END,
+           9e99
+         ) <= LEAST(
+           COALESCE(s.rmse_ma6, 9e99),
+           COALESCE(s.rmse_ma12, 9e99),
+           COALESCE(
+             CASE WHEN s.r2_reg36 >= 0.5 THEN s.rmse_reg36 ELSE NULL END,
+             9e99
+           )
+         ) THEN 'REG12'
+
+    WHEN COALESCE(
+           CASE WHEN s.r2_reg36 >= 0.5 THEN s.rmse_reg36 ELSE NULL END,
+           9e99
+         ) <= LEAST(
+           COALESCE(s.rmse_ma6, 9e99),
+           COALESCE(s.rmse_ma12, 9e99),
+           COALESCE(
+             CASE WHEN s.r2_reg12 >= 0.5 THEN s.rmse_reg12 ELSE NULL END,
+             9e99
+           )
+         ) THEN 'REG36'
+
+    WHEN COALESCE(s.rmse_ma6, 9e99) <= LEAST(
+           COALESCE(s.rmse_ma12, 9e99),
+           COALESCE(
+             CASE WHEN s.r2_reg12 >= 0.5 THEN s.rmse_reg12 ELSE NULL END,
+             9e99
+           ),
+           COALESCE(
+             CASE WHEN s.r2_reg36 >= 0.5 THEN s.rmse_reg36 ELSE NULL END,
+             9e99
+           )
+         ) THEN 'MA6'
+
+    ELSE 'MA12'
+  END AS Best_Model
+FROM scores s
+ORDER BY s.RC_CODE;
+
+
+
+
+
 WITH base AS (
     SELECT
         RC_CODE,
@@ -26848,85 +27094,4 @@ def s_naive(y,h,sp):
     for _ in range(h):
         out.append(y.iloc[n-sp] if n-sp>=0 else y.iloc[-1])
     return pd.Series(out,index=range(h),dtype=float)
-def fit_fc(y,h,sp):
-    y=pd.Series(pd.to_numeric(y,errors='coerce').astype(float).values)
-    name='SeasonalNaive'; fit=None
-    if _HAS_SM:
-        try:
-            if len(y)>=2*sp:
-                fit=ExponentialSmoothing(y,trend='add',seasonal='add',seasonal_periods=sp,initialization_method='estimated').fit(optimized=True); name='ETS(A,A,A)'
-            elif len(y)>=6:
-                fit=ExponentialSmoothing(y,trend='add',seasonal=None,initialization_method='estimated').fit(optimized=True); name='ETS(A,A,N)'
-            else:
-                fit=ExponentialSmoothing(y,trend=None,seasonal=None,initialization_method='estimated').fit(optimized=True); name='SES'
-        except Exception:
-            fit=None
-        if fit is not None:
-            fv=pd.Series(fit.fittedvalues); fc=pd.Series(fit.forecast(h).values,index=range(h))
-            return name,fv,fc
-    fc=s_naive(y,h,sp)
-    fv=pd.Series(index=y.index,dtype=float)
-    if len(y)>sp:
-        fv.iloc[:sp]=y.values[0]; fv.iloc[sp:]=y.values[:-sp]
-    else:
-        fv[:]=np.nanmean(y.values)
-    return name,fv,fc
-rows=[]
-for sys,g in df.groupby('CONTRACT_SOURCE_SYSTEM',sort=False):
-    g=g.sort_values('END_OF_MONTH_DATE'); y=g['SOURCE_SYSTEM_BALANCE']
-    name,fv,fc=fit_fc(y,H,SP)
-    n=min(len(y),len(fv)); resid=(y.iloc[:n].values-np.nan_to_num(fv.iloc[:n].values,nan=np.nan)).astype(float)
-    resid=resid[~np.isnan(resid)]; sig=rstd(resid)
-    last_d=g['END_OF_MONTH_DATE'].iloc[-1]; last_a=float(y.iloc[-1]); med=float(np.nanmedian(y.values)) if len(y) else 1.0
-    for step in range(len(fc)):
-        f=float(fc.iloc[step]); next_d=last_d+pd.offsets.MonthEnd(step+1)
-        if sig is not None and np.isfinite(sig):
-            lo80,hi80=f-Z80*sig,f+Z80*sig; lo95,hi95=f-Z95*sig,f+Z95*sig
-        else:
-            lo80=hi80=lo95=hi95=np.nan
-        dev_abs=last_a-f; dev_pct=(dev_abs/f) if f!=0 else np.nan; z=(dev_abs/sig) if (sig is not None and np.isfinite(sig) and sig>0) else np.nan
-        zt=min(abs(z)/3.0,1.0) if pd.notna(z) else 0.0; pt=min(abs(dev_pct)/0.1,1.0) if pd.notna(dev_pct) else 0.0; it=min((abs(dev_abs)/(med*0.1)) if med>0 else 0.0,1.0)
-        sev=100.0*(WZ*zt+WP*pt+WI*it); flag95=(pd.notna(last_a) and pd.notna(lo95) and (last_a<lo95 or last_a>hi95))
-        rows.append({'CONTRACT_SOURCE_SYSTEM':sys,'MODEL':name,'LAST_PERIOD':last_d,'NEXT_PERIOD':next_d,'STEP_AHEAD':step+1,'ACTUAL_LAST':last_a,'FORECAST':f,'PI80_LO':lo80,'PI80_HI':hi80,'PI95_LO':lo95,'PI95_HI':hi95,'DEV_ABS_vs_LAST':dev_abs,'DEV_PCT_vs_LAST':dev_pct,'Z_SCORE_vs_LAST':z,'SEVERITY_0_100':sev,'OUTSIDE_95_BAND_vs_LAST':bool(flag95)})
-res=pd.DataFrame(rows).sort_values(['STEP_AHEAD','SEVERITY_0_100'],ascending=[True,False])
-return res", tblSSB[#All])
-
-
-
-
-
-
-
-
-#!/usr/bin/env python3
-"""
-ssb_forecast.py
-
-End-to-end forecasting + anomaly scoring for SOURCE_SYSTEM_BALANCE (SSB) by CONTRACT_SOURCE_SYSTEM.
-
-Inputs
-------
-- An input file containing at least these columns:
-    END_OF_MONTH_DATE, CONTRACT_SOURCE_SYSTEM, SOURCE_SYSTEM_BALANCE
-- File can be .xlsx/.xls (Excel) or .csv
-
-Outputs
--------
-- Excel file with 3 sheets:
-    1) Summary            -> per-system next-month forecast, PIs, severity rank
-    2) Forecast_Horizon   -> per-system multi-step forecasts (1..H)
-    3) Fitted_History     -> in-sample fitted values per system (for QA/plots)
-- (Optional) Per-system CSVs if --per_system_csv_dir is provided
-
-Usage
------
-python ssb_forecast.py --input data.xlsx --sheet Sheet1 --output ssb_forecast_output.xlsx --horizon 1 --seasonal_periods 12
-
-Notes
------
-- Uses statsmodels ExponentialSmoothing if installed; otherwise falls back to seasonal-naive.
-- Severity score blends Z-score surprise, percent deviation, and $ impact normalized by median system size.
-"""
-
-import argparse
-import o
+def fit_fc(
