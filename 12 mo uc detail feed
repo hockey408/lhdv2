@@ -1,3 +1,14 @@
+Active Systems (Latest) :=
+VAR lm = CALCULATE ( MAX ( T[month_end] ), ALL ( T ) )
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( T[RC_CODE] ),
+    T[month_end] = lm,
+    T[include3_anypos] = 1
+)
+
+
+
 Total Exposure (Latest, Active) :=
 VAR lm = CALCULATE ( MAX ( T[month_end] ), ALL ( T ) )
 RETURN
