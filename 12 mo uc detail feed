@@ -1,3 +1,31 @@
+DimMonth :=
+VAR StartMonthEnd =
+    EOMONTH ( MINX ( ALL ( T ), T[month_end] ), 0 )
+VAR EndMonthEnd =
+    EOMONTH ( MAXX ( ALL ( T ), T[month_end] ), 0 )
+VAR DailyCalendar =
+    ADDCOLUMNS (
+        CALENDAR ( StartMonthEnd, EndMonthEnd ),
+        "MonthEnd", EOMONTH ( [Date], 0 )
+    )
+RETURN
+SUMMARIZE (
+    DailyCalendar,
+    [MonthEnd],
+    "MonthStart", DATE ( YEAR ( [MonthEnd] ), MONTH ( [MonthEnd] ), 1 ),
+    "Year",       YEAR ( [MonthEnd] ),
+    "MonthNum",   MONTH ( [MonthEnd] ),
+    "Quarter",    "Q" & ROUNDUP ( MONTH ( [MonthEnd] ) / 3, 0 ),
+    "YearMonth",  FORMAT ( [MonthEnd], "YYYY-MM" ),
+    "MonthName",  FORMAT ( [MonthEnd], "MMM" ),
+    "MonthEndSort", YEAR ( [MonthEnd] ) * 100 + MONTH ( [MonthEnd] )
+)
+
+
+
+
+
+
 P95 Severity Raw :=
 PERCENTILEX.INC (
     ALLSELECTED ( T ),
@@ -26477,16 +26505,4 @@ SELECT
                 WHEN m.CreditLineNumber LIKE '%iMX%'          THEN 'iMX'
                 WHEN m.Source = 'LN'                          THEN 'CBS'
                 WHEN m.Source = 'LO'                          THEN 'UBS'
-                WHEN m.Source = 'LJ'                          THEN 'LJ'
-                ELSE ISNULL(NULLIF(m.Source,''), 'Unknown')
-             END
-FROM CRDLMTUFCALC.dbo.Credit_Line_Monthly            AS m
-JOIN CRDLMTUFCALC.dbo.Calculated_Unfunded            AS u
-  ON u.CreditLineNumber = m.CreditLineNumber
- AND u.LoadDate         = m.LoadDate
-LEFT JOIN crdadmprd.dbo.CDM_Cards_Loan               AS c
-  ON c.Cust_Line_Number = m.CreditLineNumber
-CROSS JOIN win w
-WHERE m.LoadDate >= w.StartMonthEnd
-  AND m.LoadDate <= w.AsOfMonthEnd
-ORDER BY m.LoadDate, m.Credit
+                WHEN m.Source = 'LJ'                        
