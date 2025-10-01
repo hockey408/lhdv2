@@ -1,4 +1,248 @@
 WITH
+-- 0) Base (month-end, Total Loans)
+base AS (
+  SELECT
+    RC_CODE,
+    RC_DESCRIPTION,
+    CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+    SUM(SOURCE_SYSTEM_BALANCE)::FLOAT8 AS bal_num
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  GROUP BY RC_CODE, RC_DESCRIPTION, CAST(END_OF_MONTH_DATE AS DATE)
+),
+
+-- 1) Index and max-t
+idx AS (
+  SELECT
+    b.*,
+    ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY month_end) AS t,
+    MAX(ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY month_end))
+      OVER (PARTITION BY RC_CODE) AS tmax
+  FROM base b
+),
+
+-- 2) Window subsets (evaluation sets)
+last12 AS ( SELECT * FROM idx WHERE t >= tmax - 11 ),
+last36 AS ( SELECT * FROM idx WHERE t >= tmax - 35 ),
+
+/* -------------------- Regression-12 -------------------- */
+reg12_stats AS (
+  SELECT
+    l.*,
+    -- window sums across last12
+    COUNT(*)  OVER (PARTITION BY RC_CODE)                           AS n12,
+    SUM(t)::FLOAT8     OVER (PARTITION BY RC_CODE)                  AS sumx12,
+    SUM(bal_num)::FLOAT8 OVER (PARTITION BY RC_CODE)                AS sumy12,
+    SUM(t*bal_num)::FLOAT8 OVER (PARTITION BY RC_CODE)              AS sumxy12,
+    SUM(t*t)::FLOAT8   OVER (PARTITION BY RC_CODE)                  AS sumx2_12
+  FROM last12 l
+),
+reg12_fit AS (
+  SELECT
+    s.*,
+    (s.n12*s.sumx2_12 - s.sumx12*s.sumx12)                          AS den12,
+    /* slope/intercept using window sums */
+    CASE WHEN s.n12 >= 2 AND (s.n12*s.sumx2_12 - s.sumx12*s.sumx12) <> 0
+         THEN ((s.n12*s.sumxy12 - s.sumx12*s.sumy12) / (s.n12*s.sumx2_12 - s.sumx12*s.sumx12))
+         ELSE NULL END::FLOAT8 AS slope12,
+    CASE WHEN s.n12 >= 1 AND (s.n12*s.sumx2_12 - s.sumx12*s.sumx12) <> 0
+         THEN (s.sumy12/s.n12) - (((s.n12*s.sumxy12 - s.sumx12*s.sumy12) / (s.n12*s.sumx2_12 - s.sumx12*s.sumx12)) * (s.sumx12/s.n12))
+         ELSE NULL END::FLOAT8 AS intercept12
+  FROM reg12_stats s
+),
+reg12_res AS (
+  SELECT
+    f.RC_CODE, f.month_end, f.bal_num, f.t,
+    /* forecast, residual^2 */
+    (CASE WHEN f.slope12 IS NULL THEN NULL ELSE (f.slope12*f.t + f.intercept12) END)::FLOAT8 AS fc_reg12,
+    (f.bal_num - (CASE WHEN f.slope12 IS NULL THEN NULL ELSE (f.slope12*f.t + f.intercept12) END))::FLOAT8 AS resid_reg12,
+    /* mean and SST over last12 subset */
+    AVG(f.bal_num) OVER (PARTITION BY f.RC_CODE)                                  AS mean_y12,
+    -- sums over last12 subset
+    SUM( ((f.bal_num - (CASE WHEN f.slope12 IS NULL THEN NULL ELSE (f.slope12*f.t + f.intercept12) END))
+         * (f.bal_num - (CASE WHEN f.slope12 IS NULL THEN NULL ELSE (f.slope12*f.t + f.intercept12) END))) ) 
+         OVER (PARTITION BY f.RC_CODE)                                            AS sse_reg12,
+    SUM( (f.bal_num - AVG(f.bal_num) OVER (PARTITION BY f.RC_CODE))
+        * (f.bal_num - AVG(f.bal_num) OVER (PARTITION BY f.RC_CODE)) )
+         OVER (PARTITION BY f.RC_CODE)                                            AS sst12,
+    COUNT(*) OVER (PARTITION BY f.RC_CODE)                                        AS n_reg12,
+    ROW_NUMBER() OVER (PARTITION BY f.RC_CODE ORDER BY f.month_end DESC)          AS rn12
+  FROM reg12_fit f
+),
+reg12_metrics AS (
+  SELECT
+    RC_CODE,
+    CASE WHEN sst12 > 0 AND sse_reg12 IS NOT NULL THEN 1.0 - sse_reg12/sst12 ELSE NULL END AS r2_reg12,
+    CASE WHEN n_reg12 > 1 AND sse_reg12 IS NOT NULL THEN SQRT(sse_reg12 / n_reg12) ELSE NULL END AS rmse_reg12
+  FROM reg12_res
+  WHERE rn12 = 1
+),
+
+/* -------------------- Regression-36 -------------------- */
+reg36_stats AS (
+  SELECT
+    l.*,
+    COUNT(*)  OVER (PARTITION BY RC_CODE)                           AS n36,
+    SUM(t)::FLOAT8     OVER (PARTITION BY RC_CODE)                  AS sumx36,
+    SUM(bal_num)::FLOAT8 OVER (PARTITION BY RC_CODE)                AS sumy36,
+    SUM(t*bal_num)::FLOAT8 OVER (PARTITION BY RC_CODE)              AS sumxy36,
+    SUM(t*t)::FLOAT8   OVER (PARTITION BY RC_CODE)                  AS sumx2_36
+  FROM last36 l
+),
+reg36_fit AS (
+  SELECT
+    s.*,
+    (s.n36*s.sumx2_36 - s.sumx36*s.sumx36)                          AS den36,
+    CASE WHEN s.n36 >= 2 AND (s.n36*s.sumx2_36 - s.sumx36*s.sumx36) <> 0
+         THEN ((s.n36*s.sumxy36 - s.sumx36*s.sumy36) / (s.n36*s.sumx2_36 - s.sumx36*s.sumx36))
+         ELSE NULL END::FLOAT8 AS slope36,
+    CASE WHEN s.n36 >= 1 AND (s.n36*s.sumx2_36 - s.sumx36*s.sumx36) <> 0
+         THEN (s.sumy36/s.n36) - (((s.n36*s.sumxy36 - s.sumx36*s.sumy36) / (s.n36*s.sumx2_36 - s.sumx36*s.sumx36)) * (s.sumx36/s.n36))
+         ELSE NULL END::FLOAT8 AS intercept36
+  FROM reg36_stats s
+),
+reg36_res AS (
+  SELECT
+    f.RC_CODE, f.month_end, f.bal_num, f.t,
+    (CASE WHEN f.slope36 IS NULL THEN NULL ELSE (f.slope36*f.t + f.intercept36) END)::FLOAT8 AS fc_reg36,
+    (f.bal_num - (CASE WHEN f.slope36 IS NULL THEN NULL ELSE (f.slope36*f.t + f.intercept36) END))::FLOAT8 AS resid_reg36,
+    AVG(f.bal_num) OVER (PARTITION BY f.RC_CODE)                                  AS mean_y36,
+    SUM( ((f.bal_num - (CASE WHEN f.slope36 IS NULL THEN NULL ELSE (f.slope36*f.t + f.intercept36) END))
+         * (f.bal_num - (CASE WHEN f.slope36 IS NULL THEN NULL ELSE (f.slope36*f.t + f.intercept36) END))) ) 
+         OVER (PARTITION BY f.RC_CODE)                                            AS sse_reg36,
+    SUM( (f.bal_num - AVG(f.bal_num) OVER (PARTITION BY f.RC_CODE))
+        * (f.bal_num - AVG(f.bal_num) OVER (PARTITION BY f.RC_CODE)) )
+         OVER (PARTITION BY f.RC_CODE)                                            AS sst36,
+    COUNT(*) OVER (PARTITION BY f.RC_CODE)                                        AS n_reg36,
+    ROW_NUMBER() OVER (PARTITION BY f.RC_CODE ORDER BY f.month_end DESC)          AS rn36
+  FROM reg36_fit f
+),
+reg36_metrics AS (
+  SELECT
+    RC_CODE,
+    CASE WHEN sst36 > 0 AND sse_reg36 IS NOT NULL THEN 1.0 - sse_reg36/sst36 ELSE NULL END AS r2_reg36,
+    CASE WHEN n_reg36 > 1 AND sse_reg36 IS NOT NULL THEN SQRT(sse_reg36 / n_reg36) ELSE NULL END AS rmse_reg36
+  FROM reg36_res
+  WHERE rn36 = 1
+),
+
+/* -------------------- MA-6 on last12 -------------------- */
+ma_all AS (
+  SELECT
+    i.RC_CODE, i.month_end, i.bal_num, i.t,
+    AVG(i.bal_num) OVER (
+      PARTITION BY i.RC_CODE ORDER BY i.month_end
+      ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+    )::FLOAT8 AS fc_ma6,
+    AVG(i.bal_num) OVER (
+      PARTITION BY i.RC_CODE ORDER BY i.month_end
+      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+    )::FLOAT8 AS fc_ma12
+  FROM idx i
+),
+ma6_last12 AS (
+  SELECT m.*
+  FROM ma_all m
+  JOIN last12 l ON l.RC_CODE = m.RC_CODE AND l.month_end = m.month_end
+  WHERE m.fc_ma6 IS NOT NULL
+),
+ma6_res AS (
+  SELECT
+    a.RC_CODE, a.month_end, a.bal_num,
+    a.fc_ma6,
+    (a.bal_num - a.fc_ma6)::FLOAT8 AS resid_ma6,
+    AVG(a.bal_num) OVER (PARTITION BY a.RC_CODE)                     AS mean_y12_ma6,
+    SUM( (a.bal_num - a.fc_ma6) * (a.bal_num - a.fc_ma6) )
+      OVER (PARTITION BY a.RC_CODE)                                   AS sse_ma6,
+    SUM( (a.bal_num - AVG(a.bal_num) OVER (PARTITION BY a.RC_CODE))
+        * (a.bal_num - AVG(a.bal_num) OVER (PARTITION BY a.RC_CODE)) )
+      OVER (PARTITION BY a.RC_CODE)                                   AS sst12_ma6,
+    COUNT(*) OVER (PARTITION BY a.RC_CODE)                            AS n_ma6,
+    ROW_NUMBER() OVER (PARTITION BY a.RC_CODE ORDER BY a.month_end DESC) AS rn_ma6
+  FROM ma6_last12 a
+),
+ma6_metrics AS (
+  SELECT
+    RC_CODE,
+    CASE WHEN sst12_ma6 > 0 AND sse_ma6 IS NOT NULL THEN 1.0 - sse_ma6/sst12_ma6 ELSE NULL END AS r2_ma6,
+    CASE WHEN n_ma6 > 1 AND sse_ma6 IS NOT NULL THEN SQRT(sse_ma6 / n_ma6) ELSE NULL END AS rmse_ma6
+  FROM ma6_res
+  WHERE rn_ma6 = 1
+),
+
+/* -------------------- MA-12 on last36 -------------------- */
+ma12_last36 AS (
+  SELECT m.*
+  FROM ma_all m
+  JOIN last36 l ON l.RC_CODE = m.RC_CODE AND l.month_end = m.month_end
+  WHERE m.fc_ma12 IS NOT NULL
+),
+ma12_res AS (
+  SELECT
+    a.RC_CODE, a.month_end, a.bal_num,
+    a.fc_ma12,
+    (a.bal_num - a.fc_ma12)::FLOAT8 AS resid_ma12,
+    AVG(a.bal_num) OVER (PARTITION BY a.RC_CODE)                      AS mean_y36_ma12,
+    SUM( (a.bal_num - a.fc_ma12) * (a.bal_num - a.fc_ma12) )
+      OVER (PARTITION BY a.RC_CODE)                                    AS sse_ma12,
+    SUM( (a.bal_num - AVG(a.bal_num) OVER (PARTITION BY a.RC_CODE))
+        * (a.bal_num - AVG(a.bal_num) OVER (PARTITION BY a.RC_CODE)) )
+      OVER (PARTITION BY a.RC_CODE)                                    AS sst36_ma12,
+    COUNT(*) OVER (PARTITION BY a.RC_CODE)                             AS n_ma12,
+    ROW_NUMBER() OVER (PARTITION BY a.RC_CODE ORDER BY a.month_end DESC) AS rn_ma12
+  FROM ma12_last36 a
+),
+ma12_metrics AS (
+  SELECT
+    RC_CODE,
+    CASE WHEN sst36_ma12 > 0 AND sse_ma12 IS NOT NULL THEN 1.0 - sse_ma12/sst36_ma12 ELSE NULL END AS r2_ma12,
+    CASE WHEN n_ma12 > 1 AND sse_ma12 IS NOT NULL THEN SQRT(sse_ma12 / n_ma12) ELSE NULL END AS rmse_ma12
+  FROM ma12_res
+  WHERE rn_ma12 = 1
+)
+
+/* -------------------- Final: join metrics & pick best -------------------- */
+SELECT
+  x.RC_CODE,
+  r12.r2_reg12, r12.rmse_reg12,
+  r36.r2_reg36, r36.rmse_reg36,
+  m6.r2_ma6,    m6.rmse_ma6,
+  m12.r2_ma12,  m12.rmse_ma12,
+  /* pick best by RMSE, with regression eligible only if R²>=0.5 */
+  CASE
+    WHEN r12.rmse_reg12 IS NOT NULL AND r12.r2_reg12 >= 0.5
+       AND ( (r36.rmse_reg36 IS NULL OR r36.r2_reg36 < 0.5 OR r12.rmse_reg12 <= r36.rmse_reg36)
+         AND (m6.rmse_ma6   IS NULL OR r12.rmse_reg12 <= m6.rmse_ma6)
+         AND (m12.rmse_ma12 IS NULL OR r12.rmse_reg12 <= m12.rmse_ma12) )
+      THEN 'REG12'
+
+    WHEN r36.rmse_reg36 IS NOT NULL AND r36.r2_reg36 >= 0.5
+       AND ( (r12.rmse_reg12 IS NULL OR r12.r2_reg12 < 0.5 OR r36.rmse_reg36 < r12.rmse_reg12)
+         AND (m6.rmse_ma6   IS NULL OR r36.rmse_reg36 <= m6.rmse_ma6)
+         AND (m12.rmse_ma12 IS NULL OR r36.rmse_ma12 <= m12.rmse_ma12) )
+      THEN 'REG36'
+
+    WHEN m6.rmse_ma6 IS NOT NULL
+       AND ( (m12.rmse_ma12 IS NULL OR m6.rmse_ma6 <= m12.rmse_ma12)
+         AND (r12.rmse_reg12 IS NULL OR r12.r2_reg12 < 0.5 OR m6.rmse_ma6 < r12.rmse_reg12)
+         AND (r36.rmse_reg36 IS NULL OR r36.r2_reg36 < 0.5 OR m6.rmse_ma6 <= r36.rmse_reg36) )
+      THEN 'MA6'
+
+    ELSE 'MA12'
+  END AS Best_Model
+FROM (SELECT DISTINCT RC_CODE FROM idx) x
+LEFT JOIN reg12_metrics r12 ON r12.RC_CODE = x.RC_CODE
+LEFT JOIN reg36_metrics r36 ON r36.RC_CODE = x.RC_CODE
+LEFT JOIN ma6_metrics  m6  ON m6.RC_CODE  = x.RC_CODE
+LEFT JOIN ma12_metrics m12 ON m12.RC_CODE = x.RC_CODE
+ORDER BY x.RC_CODE;
+
+
+
+
+
+WITH
 -- 0) Base
 base AS (
   SELECT
@@ -26887,241 +27131,4 @@ trend AS (
     ) AS sumx12,
 
     SUM(r.SOURCE_SYSTEM_BALANCE) OVER (
-      PARTITION BY r.CONTRACT_SOURCE_SYSTEM
-      ORDER BY r.END_OF_MONTH_DATE
-      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
-    ) AS sumy12,
-
-    SUM(r.t_idx * r.SOURCE_SYSTEM_BALANCE) OVER (
-      PARTITION BY r.CONTRACT_SOURCE_SYSTEM
-      ORDER BY r.END_OF_MONTH_DATE
-      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
-    ) AS sumxy12,
-
-    SUM(r.t_idx * r.t_idx) OVER (
-      PARTITION BY r.CONTRACT_SOURCE_SYSTEM
-      ORDER BY r.END_OF_MONTH_DATE
-      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
-    ) AS sumxx12
-  FROM roll r
-),
-
--- 5) Compute slope/intercept & rolling/sample sigmas
-calc AS (
-  SELECT
-    t.*,
-
-    -- 6-month sample std (sqrt( max( avg(x^2) - avg(x)^2, 0 ) * n/(n-1) ))
-    CASE
-      WHEN cnt6 > 1 THEN
-        SQRT(GREATEST(roll_mean2_6 - (roll_mean_6 * roll_mean_6), 0) * (cnt6::FLOAT / (cnt6 - 1)))
-      ELSE NULL
-    END AS roll_std_6,
-
-    -- overall sample std fallback
-    CASE
-      WHEN cnt_all > 1 THEN
-        SQRT(GREATEST(avg2_all - (avg_all * avg_all), 0) * (cnt_all::FLOAT / (cnt_all - 1)))
-      ELSE NULL
-    END AS std_all,
-
-    -- Linear regression slope/intercept on last up-to-12 months
-    CASE
-      WHEN n12 >= 2 AND (n12 * sumxx12 - (sumx12 * sumx12)) <> 0
-        THEN (n12 * sumxy12 - (sumx12 * sumy12)) / (n12 * sumxx12 - (sumx12 * sumx12))
-      ELSE NULL
-    END AS regr_slope_12,
-
-    CASE
-      WHEN n12 >= 1 THEN
-        (sumy12 - ( (CASE
-                        WHEN n12 >= 2 AND (n12 * sumxx12 - (sumx12 * sumx12)) <> 0
-                          THEN (n12 * sumxy12 - (sumx12 * sumy12)) / (n12 * sumxx12 - (sumx12 * sumx12))
-                        ELSE NULL
-                      END) * sumx12)) / n12
-      ELSE NULL
-    END AS regr_intercept_12
-  FROM trend t
-),
-
--- 6) Last row per system
-last_per_sys AS (
-  SELECT c.*
-  FROM calc c
-  JOIN (
-    SELECT CONTRACT_SOURCE_SYSTEM, MAX(END_OF_MONTH_DATE) AS max_eom
-    FROM calc
-    GROUP BY CONTRACT_SOURCE_SYSTEM
-  ) m
-    ON c.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
-   AND c.END_OF_MONTH_DATE     = m.max_eom
-),
-
--- 7) Build next-month forecast + scoring per system
-summary_next AS (
-  SELECT
-    l.CONTRACT_SOURCE_SYSTEM,
-    l.END_OF_MONTH_DATE                                AS last_period,
-    ADD_MONTHS(l.END_OF_MONTH_DATE, 1)                 AS next_period,
-    l.SOURCE_SYSTEM_BALANCE                            AS actual_last,
-
-    -- candidate forecasts
-    CASE
-      WHEN l.regr_slope_12 IS NOT NULL AND l.regr_intercept_12 IS NOT NULL
-        THEN l.regr_intercept_12 + l.regr_slope_12 * (l.t_idx + 1)
-      ELSE NULL
-    END                                                AS fc_linear,
-    l.lag12_balance                                    AS fc_seasonal,
-    l.roll_mean_6                                      AS fc_rollmean,
-
-    -- choose: linear → seasonal → rolling mean
-    COALESCE(
-      CASE
-        WHEN l.regr_slope_12 IS NOT NULL AND l.regr_intercept_12 IS NOT NULL
-          THEN l.regr_intercept_12 + l.regr_slope_12 * (l.t_idx + 1)
-        ELSE NULL
-      END,
-      l.lag12_balance,
-      l.roll_mean_6
-    )                                                  AS forecast_next,
-
-    -- sigma for bands: prefer rolling-6, else overall
-    COALESCE(l.roll_std_6, l.std_all)                  AS sigma_est,
-
-    -- overall average as size proxy
-    l.avg_all                                          AS avg_level_sys
-  FROM last_per_sys l
-),
-
--- 8) Score & bands
-scored_next AS (
-  SELECT
-    s.CONTRACT_SOURCE_SYSTEM,
-    s.last_period,
-    s.next_period,
-    s.actual_last,
-    s.fc_linear,
-    s.fc_seasonal,
-    s.fc_rollmean,
-    s.forecast_next,
-
-    (s.forecast_next - 1.9599 * s.sigma_est)           AS pi95_lo,
-    (s.forecast_next + 1.9599 * s.sigma_est)           AS pi95_hi,
-
-    (s.actual_last - s.forecast_next)                  AS dev_abs_vs_last,
-    CASE WHEN s.forecast_next <> 0
-         THEN (s.actual_last - s.forecast_next) / s.forecast_next
-         ELSE NULL
-    END                                                AS dev_pct_vs_last,
-
-    CASE WHEN s.sigma_est IS NOT NULL AND s.sigma_est > 0
-         THEN (s.actual_last - s.forecast_next) / s.sigma_est
-         ELSE NULL
-    END                                                AS z_vs_last,
-
-    100 * (
-      0.5 * LEAST(ABS(CASE WHEN s.sigma_est IS NOT NULL AND s.sigma_est > 0
-                           THEN (s.actual_last - s.forecast_next) / s.sigma_est
-                           ELSE 0 END) / 3.0, 1.0)
-    + 0.3 * LEAST(ABS(CASE WHEN s.forecast_next <> 0
-                           THEN (s.actual_last - s.forecast_next) / s.forecast_next
-                           ELSE 0 END) / 0.10, 1.0)
-    + 0.2 * LEAST(ABS(s.actual_last - s.forecast_next) /
-                  NULLIF(s.avg_level_sys * 0.10, 0), 1.0)
-    )                                                  AS severity_0_100,
-
-    CASE
-      WHEN s.sigma_est IS NULL THEN NULL
-      WHEN s.actual_last < (s.forecast_next - 1.9599 * s.sigma_est) THEN TRUE
-      WHEN s.actual_last > (s.forecast_next + 1.9599 * s.sigma_est) THEN TRUE
-      ELSE FALSE
-    END                                                AS outside_95_band_vs_last
-  FROM summary_next s
-)
-
--- Choose one of the final outputs:
-
--- (A) One row per system for the NEXT period (ranked by severity)
-SELECT
-  'SUMMARY_NEXT' AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  last_period,
-  next_period,
-  actual_last,
-  fc_linear,
-  fc_seasonal,
-  fc_rollmean,
-  forecast_next,
-  pi95_lo, pi95_hi,
-  dev_abs_vs_last,
-  dev_pct_vs_last,
-  z_vs_last,
-  severity_0_100,
-  outside_95_band_vs_last
-FROM scored_next
-ORDER BY severity_0_100 DESC, CONTRACT_SOURCE_SYSTEM;
-
--- -- (B) If you also want history rows, say the word and I’ll add a HISTORY union like before.
-
-
-
-
-
--- Change this to -24 if you want exactly 24 months
-WITH latest AS (
-    SELECT MAX(END_OF_MONTH_DATE) AS max_eom
-    FROM V_DPRT_CREDIT_INSTRUMENTS_ME
-    WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
-),
-rng AS (
-    SELECT ADD_MONTHS(max_eom, -30) AS start_eom, max_eom
-    FROM latest
-),
--- 1) Aggregate to system x month within window
-base AS (
-    SELECT
-        t.END_OF_MONTH_DATE,
-        t.CONTRACT_SOURCE_SYSTEM,
-        SUM(t.SOURCE_SYSTEM_BALANCE) AS SOURCE_SYSTEM_BALANCE
-    FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
-    CROSS JOIN rng r
-    WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
-      AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
-      -- Optional filters:
-      -- AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
-      -- AND t.BANK_CODE IN ('L-FCB','L-CIT','L-SVB')
-    GROUP BY 1,2
-),
--- 2) Index per system for trend math
-idx AS (
-    SELECT
-        END_OF_MONTH_DATE,
-        CONTRACT_SOURCE_SYSTEM,
-        SOURCE_SYSTEM_BALANCE,
-        DENSE_RANK() OVER (PARTITION BY CONTRACT_SOURCE_SYSTEM ORDER BY END_OF_MONTH_DATE) AS t_idx
-    FROM base
-),
--- 3) Rolling baselines, seasonal anchor, and per-system level
-stats AS (
-    SELECT
-        i.*,
-        -- 6-month rolling mean/std (use 12 if you prefer)
-        AVG(SOURCE_SYSTEM_BALANCE) OVER (
-            PARTITION BY CONTRACT_SOURCE_SYSTEM
-            ORDER BY END_OF_MONTH_DATE
-            ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
-        ) AS roll_mean_6,
-        STDDEV_SAMP(SOURCE_SYSTEM_BALANCE) OVER (
-            PARTITION BY CONTRACT_SOURCE_SYSTEM
-            ORDER BY END_OF_MONTH_DATE
-            ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
-        ) AS roll_std_6,
-
-        -- Seasonal naive anchor (value 12 months ago)
-        LAG(SOURCE_SYSTEM_BALANCE, 12) OVER (
-            PARTITION BY CONTRACT_SOURCE_SYSTEM
-            ORDER BY END_OF_MONTH_DATE
-        ) AS lag12_balance,
-
-        -- Per-system average level (used to normalize impact)
-        AVG(SOURCE_SYSTEM_BALANCE) OVER (PARTITION BY CONTRACT_SOURCE_SYSTEM) AS a
+      PARTITION BY r.CONTRACT_SOURCE_S
