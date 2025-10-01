@@ -10,6 +10,111 @@ WITH base AS (
     GROUP BY RC_CODE, RC_DESCRIPTION, CAST(END_OF_MONTH_DATE AS DATE)
 ),
 
+idx AS (
+    SELECT
+        b.*,
+        ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY month_end) AS t
+    FROM base b
+),
+
+-- regression params
+regression_params AS (
+    SELECT
+        RC_CODE,
+        COUNT(*) AS n,
+        SUM(t)::FLOAT8 AS sum_t,
+        SUM(bal_num)::FLOAT8 AS sum_y,
+        SUM(t*bal_num)::FLOAT8 AS sum_ty,
+        SUM(t*t)::FLOAT8 AS sum_t2
+    FROM idx
+    GROUP BY RC_CODE
+),
+regression_fit AS (
+    SELECT
+        i.RC_CODE,
+        i.month_end,
+        i.bal_num,
+        ( (r.sum_y - ((r.n*r.sum_ty - r.sum_t*r.sum_y) / NULLIF(r.n*r.sum_t2 - r.sum_t*r.sum_t,0))*r.sum_t) / r.n )::FLOAT8
+        + ( (r.n*r.sum_ty - r.sum_t*r.sum_y) / NULLIF(r.n*r.sum_t2 - r.sum_t*r.sum_t,0) )::FLOAT8 * i.t
+        AS forecast_reg
+    FROM idx i
+    JOIN regression_params r ON i.RC_CODE = r.RC_CODE
+),
+ma12_fit AS (
+    SELECT
+        i.RC_CODE,
+        i.month_end,
+        i.bal_num,
+        AVG(i.bal_num) OVER (
+            PARTITION BY i.RC_CODE ORDER BY i.month_end
+            ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+        )::FLOAT8 AS forecast_ma12
+    FROM idx i
+),
+
+-- per RC_CODE mean of bal_num (needed for SST in R²)
+means AS (
+    SELECT RC_CODE, AVG(bal_num)::FLOAT8 AS mean_y
+    FROM idx
+    GROUP BY RC_CODE
+),
+
+-- collect residual sums
+residuals AS (
+    SELECT
+        f.RC_CODE,
+        SUM(POWER(f.bal_num - f.forecast_reg,2))::FLOAT8 AS sse_reg,
+        SUM(POWER(m.bal_num - m.forecast_ma12,2))::FLOAT8 AS sse_ma12,
+        SUM(POWER(f.bal_num - mn.mean_y,2))::FLOAT8 AS sst
+    FROM regression_fit f
+    JOIN ma12_fit m
+      ON f.RC_CODE = m.RC_CODE AND f.month_end = m.month_end
+    JOIN means mn
+      ON f.RC_CODE = mn.RC_CODE
+    GROUP BY f.RC_CODE, mn.mean_y
+)
+
+SELECT
+    r.RC_CODE,
+
+    -- Regression fit
+    (1.0 - r.sse_reg / NULLIF(r.sst,0))::FLOAT8 AS r2_reg,
+    SQRT(r.sse_reg / COUNT(*))::FLOAT8 AS rmse_reg,
+    (SUM(ABS(f.bal_num - f.forecast_reg)) / NULLIF(SUM(ABS(f.bal_num)),0))::FLOAT8 AS mape_reg,
+
+    -- MA12 fit
+    (1.0 - r.sse_ma12 / NULLIF(r.sst,0))::FLOAT8 AS r2_ma12,
+    SQRT(r.sse_ma12 / COUNT(*))::FLOAT8 AS rmse_ma12,
+    (SUM(ABS(m.bal_num - m.forecast_ma12)) / NULLIF(SUM(ABS(m.bal_num)),0))::FLOAT8 AS mape_ma12,
+
+    CASE
+        WHEN (1.0 - r.sse_reg/NULLIF(r.sst,0)) < 0.5 THEN 'MA12'
+        WHEN r.sse_reg <= r.sse_ma12 THEN 'REGRESSION'
+        ELSE 'MA12'
+    END AS Best_Model
+
+FROM residuals r
+JOIN regression_fit f ON f.RC_CODE = r.RC_CODE
+JOIN ma12_fit m       ON m.RC_CODE = r.RC_CODE AND m.month_end = f.month_end
+GROUP BY r.RC_CODE, r.sse_reg, r.sse_ma12, r.sst
+ORDER BY r.RC_CODE;
+
+
+
+
+
+WITH base AS (
+    SELECT
+        RC_CODE,
+        RC_DESCRIPTION,
+        CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+        SUM(SOURCE_SYSTEM_BALANCE)::FLOAT8 AS bal_num
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+    WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+      AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    GROUP BY RC_CODE, RC_DESCRIPTION, CAST(END_OF_MONTH_DATE AS DATE)
+),
+
 -- Add index t for regression
 idx AS (
     SELECT
@@ -26690,68 +26795,4 @@ def compute_outputs(df: pd.DataFrame, horizon: int, sp: int) -> Tuple[pd.DataFra
 def main():
     p = argparse.ArgumentParser(description='Forecast SOURCE_SYSTEM_BALANCE per CONTRACT_SOURCE_SYSTEM with severity scoring.')
     p.add_argument('--input', required=True, help='Input file path (.xlsx/.xls or .csv)')
-    p.add_argument('--sheet', default=None, help='Excel sheet name (if input is .xlsx/.xls)')
-    p.add_argument('--output', default='ssb_forecast_output.xlsx', help='Output Excel file path')
-    p.add_argument('--horizon', type=int, default=DEFAULT_HORIZON, help='Forecast horizon in months (default: 1)')
-    p.add_argument('--seasonal_periods', type=int, default=DEFAULT_SEASONAL_PERIODS, help='Seasonal periods (default: 12 for monthly)')
-    p.add_argument('--per_system_csv_dir', default=None, help='Optional dir to write per-system CSVs')
-    args = p.parse_args()
-
-    # Load and prep
-    df_raw = load_input(args.input, sheet=args.sheet)
-    df = normalize_and_aggregate(df_raw)
-
-    # Compute outputs
-    summary_df, horizon_df, fitted_df = compute_outputs(df, horizon=args.horizon, sp=args.seasonal_periods)
-
-    # Ensure output dir exists
-    out_dir = os.path.dirname(os.path.abspath(args.output))
-    if out_dir and not os.path.exists(out_dir):
-        os.makedirs(out_dir, exist_ok=True)
-
-    # Write Excel
-    with pd.ExcelWriter(args.output, engine='openpyxl') as xw:
-        summary_df.to_excel(xw, sheet_name='Summary', index=False)
-        horizon_df.to_excel(xw, sheet_name='Forecast_Horizon', index=False)
-        fitted_df.to_excel(xw, sheet_name='Fitted_History', index=False)
-
-    # Optional per-system CSVs
-    if args.per_system_csv_dir:
-        os.makedirs(args.per_system_csv_dir, exist_ok=True)
-        for sys_name, g in summary_df.groupby('CONTRACT_SOURCE_SYSTEM', sort=False):
-            safe = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in str(sys_name))
-            path = os.path.join(args.per_system_csv_dir, f'{safe}_summary.csv')
-            g.to_csv(path, index=False)
-        for sys_name, g in fitted_df.groupby('CONTRACT_SOURCE_SYSTEM', sort=False):
-            safe = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in str(sys_name))
-            path = os.path.join(args.per_system_csv_dir, f'{safe}_fitted_history.csv')
-            g.to_csv(path, index=False)
-        for sys_name, g in horizon_df.groupby('CONTRACT_SOURCE_SYSTEM', sort=False):
-            safe = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in str(sys_name))
-            path = os.path.join(args.per_system_csv_dir, f'{safe}_horizon.csv')
-            g.to_csv(path, index=False)
-
-    print(f'Wrote: {args.output}')
-    if args.per_system_csv_dir:
-        print(f'Per-system CSVs in: {args.per_system_csv_dir}')
-
-
-if __name__ == '__main__':
-    main()
-
-
-
-
-
-
-
-import numpy as np, pandas as pd
-try:
-    from statsmodels.tsa.holtwinters import ExponentialSmoothing; _HAS_SM=True
-except Exception:
-    _HAS_SM=False
-SP=12; H=1; Z80=1.2816; Z95=1.9599; WZ,WP,WI=0.5,0.3,0.2
-df=args[0].copy()
-df.columns=[c.strip().upper() for c in df.columns]
-req={'END_OF_MONTH_DATE','CONTRACT_SOURCE_SYSTEM','SOURCE_SYSTEM_BALANCE'}
-mis=req-set(df
+    p.add_argument('--sheet', default=None, help='Excel sheet na
