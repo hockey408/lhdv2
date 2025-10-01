@@ -1,3 +1,82 @@
+-- Current latest certified month-end (from your Date table)
+Latest Month :=
+CALCULATE ( MAX ( 'Date'[MonthEnd] ), ALL ( 'Date' ) )
+
+-- Actual & Forecast (respect current filter context)
+Actual :=
+SUM ( T[bal_num] )
+
+Forecast :=
+SUM ( T[forecast_ma12_adj] )
+
+Residual :=
+[Actual] - [Forecast]
+
+
+
+
+
+-- Sum of squared errors (∑ residual_i^2)
+SSE (Portfolio) :=
+SUMX (
+    VALUES ( T[RC_CODE] ),
+    VAR r = CALCULATE ( [Residual] )
+    RETURN r * r
+)
+
+-- Mean actual across the RCs in the same context
+Mean Actual (Context) :=
+AVERAGEX (
+    VALUES ( T[RC_CODE] ),
+    CALCULATE ( [Actual] )
+)
+
+-- Total variance vs that mean (∑ (actual_i - mean)^2)
+SST (Portfolio) :=
+VAR mu = [Mean Actual (Context)]
+RETURN
+SUMX (
+    VALUES ( T[RC_CODE] ),
+    VAR a = CALCULATE ( [Actual] )
+    RETURN ( a - mu ) ^ 2
+)
+
+-- R² = 1 - SSE/SST (bounded and safe)
+R² (Portfolio) :=
+VAR sse = [SSE (Portfolio)]
+VAR sst = [SST (Portfolio)]
+RETURN
+IF ( sst > 0, MAX ( 0, MIN ( 1, 1 - sse / sst ) ), BLANK () )
+
+-- RMSE across RCs in context = sqrt(SSE / N)
+RMSE (Portfolio) :=
+VAR n = COUNTROWS ( VALUES ( T[RC_CODE] ) )
+VAR sse = [SSE (Portfolio)]
+RETURN IF ( n > 0, SQRT ( sse / n ), BLANK () )
+
+-- WAPE (exposure-weighted MAPE) = ∑|A-F| / ∑|A|
+WAPE (Portfolio) :=
+DIVIDE (
+    SUMX ( VALUES ( T[RC_CODE] ), ABS ( CALCULATE ( [Residual] ) ) ),
+    SUMX ( VALUES ( T[RC_CODE] ), ABS ( CALCULATE ( [Actual] ) ) )
+)
+
+-- sMAPE (symmetric MAPE), averaged across RCs
+sMAPE (Portfolio) :=
+AVERAGEX (
+    VALUES ( T[RC_CODE] ),
+    VAR a = CALCULATE ( [Actual] )
+    VAR f = CALCULATE ( [Forecast] )
+    VAR denom = ABS ( a ) + ABS ( f )
+    RETURN IF ( denom > 0, 2 * ABS ( a - f ) / denom, BLANK () )
+)
+
+
+
+
+
+
+
 Flagged Systems (Trend, Hard 70) :=
 VAR thr = 70
 RETURN
@@ -26575,15 +26654,4 @@ Tab4_Top5Conc AS (
     n.MonthEnd,
     SUM(n.Balance) AS TotalNA
   FROM NonAccrual n
-  GROUP BY n.MonthEnd
-),
-Tab4_Top5Conc_Top AS (
-  SELECT
-    t.MonthEnd,
-    SUM(t.Bal) AS Top5Bal
-  FROM (
-    SELECT
-      n.MonthEnd,
-      n.ACCOUNT_IDENTIFIER,
-      SUM(n.Balance) AS Bal,
-      ROW_NUMB
+  GROUP 
