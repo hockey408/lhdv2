@@ -1,3 +1,29 @@
+Latest Month :=
+CALCULATE ( MAX ( Date[MonthEnd] ), ALL ( Date ) )
+
+
+
+P95 Severity Raw :=
+PERCENTILEX.INC ( ALLSELECTED ( T ), T[severity_raw_v3], 0.95 )
+
+Severity (0-100) :=
+VAR p95 = [P95 Severity Raw]
+VAR raw = MAX ( T[severity_raw_v3] )
+RETURN IF ( p95 > 0, 100 * MIN ( raw / p95, 1 ), BLANK () )
+
+Active Systems (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( T[RC_CODE] ),
+    T[month_end] = lm,
+    T[include3_anypos] = 1
+)
+
+
+
+
+
 Date =
 VAR MinEOM =
     MINX ( ALL ( T ), T[month_end] )
@@ -26497,24 +26523,4 @@ Tab5_AnomalyTable AS (
     CAST(EventDate AS VARCHAR(30)) AS Dim1,   -- show actual datetime in the table
     'Count'                  AS Metric,
     1                        AS Value,
-    Severity                 AS Dim2
-  FROM AnomalySrc
-  WHERE EventDate >= ADD_MONTHS(CURRENT_DATE, -3)   -- last 3 months (adjust)
-)
-
-
-
-
-
-
-/* ===== Last 12 months detail with derived System & Commitment ===== */
-WITH bounds AS (
-    SELECT AsOfMonthEnd = (SELECT MAX(m.LoadDate) FROM CRDLMTUFCALC.dbo.Credit_Line_Monthly AS m)
-),
-win AS (
-    SELECT AsOfMonthEnd, StartMonthEnd = DATEADD(MONTH, -11, AsOfMonthEnd)
-    FROM bounds
-)
-SELECT
-    LoadDate         = CONVERT(date, m.LoadDate),             -- month end (from Credit_Line_Monthly)
-    ApplID           = m.ApplID,                    
+    Severity           
