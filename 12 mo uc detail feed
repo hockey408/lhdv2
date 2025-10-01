@@ -1,3 +1,52 @@
+SSE (Latest, Active) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    [SSE (Portfolio)],
+    T[include3_anypos] = 1,
+    FILTER ( ALL ( T[month_end] ), EOMONTH ( T[month_end], 0 ) = lm )
+)
+
+SST (Latest, Active) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    [SST (Portfolio)],
+    T[include3_anypos] = 1,
+    FILTER ( ALL ( T[month_end] ), EOMONTH ( T[month_end], 0 ) = lm )
+)
+
+R² (Latest, Active) :=
+VAR sse = [SSE (Latest, Active)]
+VAR sst = [SST (Latest, Active)]
+RETURN IF ( sst > 0, MAX ( 0, MIN ( 1, 1 - sse / sst ) ), BLANK () )
+
+RMSE (Latest, Active) :=
+VAR lm = [Latest Month]
+VAR n =
+    CALCULATE (
+        COUNTROWS ( VALUES ( T[RC_CODE] ) ),
+        T[include3_anypos] = 1,
+        FILTER ( ALL ( T[month_end] ), EOMONTH ( T[month_end], 0 ) = lm )
+    )
+VAR sse = [SSE (Latest, Active)]
+RETURN IF ( n > 0, SQRT ( sse / n ), BLANK () )
+
+WAPE (Latest, Active) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    [WAPE (Portfolio)],
+    T[include3_anypos] = 1,
+    FILTER ( ALL ( T[month_end] ), EOMONTH ( T[month_end], 0 ) = lm )
+)
+
+
+
+
+
+
+
 -- Current latest certified month-end (from your Date table)
 Latest Month :=
 CALCULATE ( MAX ( 'Date'[MonthEnd] ), ALL ( 'Date' ) )
@@ -26597,61 +26646,4 @@ Tab2_RemovalsDetail AS (
   GROUP BY r.CurrMonth, r.ACCOUNT_IDENTIFIER, r.CONTRACT_SOURCE_SYSTEM
 ),
 
-/* ===================== TAB 4 – Risk & Concentration (Non-Accrual) ===================== */
-
--- PD_Grade buckets (adjust thresholds if your PD scale differs)
-Tab4_PD_Buckets AS (
-  SELECT
-    n.MonthEnd,
-    CASE
-      WHEN n.PD_GRADE_NUM IS NULL THEN 'Missing'
-      WHEN n.PD_GRADE_NUM < 3      THEN 'PD 1–2'
-      WHEN n.PD_GRADE_NUM < 6      THEN 'PD 3–5'
-      WHEN n.PD_GRADE_NUM < 9      THEN 'PD 6–8'
-      ELSE 'PD 9+'
-    END AS PDBand,
-    n.Balance
-  FROM NonAccrual n
-),
-Tab4_PD_Distribution AS (
-  SELECT
-    'Tab4_PD_Distribution'       AS Dataset,
-    MonthEnd,
-    PDBand                       AS Dim1,
-    'Balance'                    AS Metric,
-    SUM(Balance)                 AS Value,
-    CAST(NULL AS VARCHAR(100))   AS Dim2
-  FROM Tab4_PD_Buckets
-  GROUP BY MonthEnd, PDBand
-),
-
--- Top 10 accounts by balance (per month)
-Tab4_TopAccounts AS (
-  SELECT
-    n.MonthEnd,
-    n.ACCOUNT_IDENTIFIER                                   AS AccountId,
-    n.CONTRACT_SOURCE_SYSTEM                               AS SystemName,
-    SUM(n.Balance)                                         AS Bal,
-    ROW_NUMBER() OVER (PARTITION BY n.MonthEnd ORDER BY SUM(n.Balance) DESC) AS rn
-  FROM NonAccrual n
-  GROUP BY n.MonthEnd, n.ACCOUNT_IDENTIFIER, n.CONTRACT_SOURCE_SYSTEM
-),
-Tab4_Top10Accounts_Long AS (
-  SELECT
-    'Tab4_Top10_Accounts'      AS Dataset,
-    MonthEnd,
-    AccountId                  AS Dim1,
-    'Balance'                  AS Metric,
-    Bal                        AS Value,
-    SystemName                 AS Dim2
-  FROM Tab4_TopAccounts
-  WHERE rn <= 10
-),
-
--- Top-5 concentration % (sum of top 5 balances / total non-accrual balance)
-Tab4_Top5Conc AS (
-  SELECT
-    n.MonthEnd,
-    SUM(n.Balance) AS TotalNA
-  FROM NonAccrual n
-  GROUP 
+/* ===================== TAB 4 – Risk & Concentration (Non-Accrual) =========
