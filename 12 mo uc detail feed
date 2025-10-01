@@ -1,3 +1,148 @@
+/* === KDE Change Analysis (portfolio-level; user-specified KDE list) =========
+   Purpose:
+     - For each KDE (column), count how many accounts changed value vs last month
+       and sum the exposure of those changing accounts.
+     - Compare the latest month’s change vs historical (z-scores) and rank.
+
+   How to use:
+     1) Edit the UNION ALL block in `unpivot_kdes` to list your KDE columns.
+     2) (Optional) Un-comment portfolio filters (e.g., Total Loans).
+
+   Severity weighting (fixed): 0.3 * |acct_change_z| + 0.7 * |exp_change_z|
+   History window: 24 months
+   =========================================================================== */
+
+WITH
+/* 1) Latest month and historical window */
+latest AS (
+  SELECT MAX(t.END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -24) AS start_eom, max_eom
+  FROM latest
+),
+
+/* 2) Base slice at account granularity with the KDE columns you’ll analyze */
+base AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.ACCOUNT_IDENTIFIER,
+    CAST(t.SOURCE_SYSTEM_BALANCE AS FLOAT8) AS exposure,
+    /* === Include ALL KDE columns you plan to analyze here so they’re available
+           later in the UNION ALL block. Examples shown; replace with your fields. === */
+    t.PD_GRADE,
+    t.CRE_FLAG,
+    t.DAYS_PAST_DUE,
+    t.RC_CODE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    /* Optional portfolio scope:
+       AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans' */
+),
+
+/* 3) UNPIVOT (manually) the chosen KDE columns into (KDE_NAME, KDE_VALUE) rows.
+      >>> EDIT THIS BLOCK ONLY: add/remove SELECTs for the KDE columns you want. */
+unpivot_kdes AS (
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'PD_GRADE'    AS KDE_NAME, CAST(PD_GRADE    AS VARCHAR(200)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'CRE_FLAG'     AS KDE_NAME, CAST(CRE_FLAG     AS VARCHAR(200)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'DAYS_PAST_DUE'AS KDE_NAME, CAST(DAYS_PAST_DUE AS VARCHAR(200)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'RC_CODE'      AS KDE_NAME, CAST(RC_CODE      AS VARCHAR(200)) AS KDE_VALUE, exposure FROM base
+),
+
+/* 4) For each account × KDE_NAME, detect if KDE_VALUE changed vs previous month */
+kde_change AS (
+  SELECT
+    u.END_OF_MONTH_DATE,
+    u.KDE_NAME,
+    u.ACCOUNT_IDENTIFIER,
+    u.KDE_VALUE,
+    LAG(u.KDE_VALUE) OVER (
+      PARTITION BY u.KDE_NAME, u.ACCOUNT_IDENTIFIER
+      ORDER BY u.END_OF_MONTH_DATE
+    ) AS prev_value,
+    u.exposure
+  FROM unpivot_kdes u
+),
+
+/* 5) Flag “changed this month” (treat NULL↔non-NULL as a change) and aggregate */
+kde_change_agg AS (
+  SELECT
+    END_OF_MONTH_DATE,
+    KDE_NAME,
+    /* change volume = # of accounts with a KDE value change vs prev month */
+    SUM(CASE
+          WHEN (KDE_VALUE IS DISTINCT FROM prev_value)  -- handles NULL vs non-NULL
+               AND prev_value IS NOT NULL               -- require a prior month to compare
+          THEN 1 ELSE 0
+        END)                                           AS change_acct_cnt,
+    /* change exposure = sum of current-month exposure for changed accounts */
+    SUM(CASE
+          WHEN (KDE_VALUE IS DISTINCT FROM prev_value)
+               AND prev_value IS NOT NULL
+          THEN exposure ELSE 0
+        END)                                           AS change_exposure
+  FROM kde_change
+  GROUP BY END_OF_MONTH_DATE, KDE_NAME
+),
+
+/* 6) Historical stats of monthly change by KDE_NAME (for z-scores) */
+kde_change_stats AS (
+  SELECT
+    KDE_NAME,
+    AVG(COALESCE(change_acct_cnt,0))    AS avg_cnt,
+    STDDEV(COALESCE(change_acct_cnt,0)) AS std_cnt,
+    AVG(COALESCE(change_exposure,0))    AS avg_exp,
+    STDDEV(COALESCE(change_exposure,0)) AS std_exp,
+    COUNT(*)                            AS hist_rows
+  FROM kde_change_agg
+  GROUP BY KDE_NAME
+),
+
+/* 7) Join stats; compute z-scores and severity */
+kde_flag AS (
+  SELECT
+    a.END_OF_MONTH_DATE,
+    a.KDE_NAME,
+    a.change_acct_cnt,
+    a.change_exposure,
+    (a.change_acct_cnt   - s.avg_cnt) / NULLIF(s.std_cnt, 0) AS acct_change_z,
+    (a.change_exposure   - s.avg_exp) / NULLIF(s.std_exp, 0) AS exp_change_z,
+    /* fixed severity weighting: emphasize exposure */
+    0.3 * ABS((a.change_acct_cnt - s.avg_cnt) / NULLIF(s.std_cnt, 0))
+  + 0.7 * ABS((a.change_exposure - s.avg_exp) / NULLIF(s.std_exp, 0)) AS severity_score,
+    s.hist_rows
+  FROM kde_change_agg a
+  JOIN kde_change_stats s
+    ON a.KDE_NAME = s.KDE_NAME
+)
+
+/* 8) Latest-month portfolio-level summary across all chosen KDEs */
+SELECT
+  f.KDE_NAME,
+  f.change_acct_cnt,
+  f.change_exposure,
+  ROUND(f.acct_change_z, 2) AS acct_change_z,
+  ROUND(f.exp_change_z, 2)  AS exp_change_z,
+  ROUND(f.severity_score, 2) AS severity_score
+FROM kde_flag f
+JOIN latest l
+  ON f.END_OF_MONTH_DATE = l.max_eom
+WHERE f.severity_score IS NOT NULL          -- suppress KDEs with no variance/history
+  AND f.hist_rows >= 6                      -- require at least ~6 months of deltas
+ORDER BY f.severity_score DESC, ABS(f.exp_change_z) DESC, ABS(f.acct_change_z) DESC;
+
+
+
+
+
+
 /* === KDE Portfolio Summary (Latest Month) ===========================
    - Focus: change volume (acct count) & change exposure (dollars)
    - History window: 24 months
@@ -27022,115 +27167,4 @@ scored_next AS (
     CASE WHEN s.sigma_est IS NOT NULL AND s.sigma_est > 0 THEN (s.actual_last - s.forecast_next) / s.sigma_est ELSE NULL END AS z_vs_last,
 
     100.0 * (
-      0.5 * LEAST(ABS(CASE WHEN s.sigma_est IS NOT NULL AND s.sigma_est > 0 THEN (s.actual_last - s.forecast_next) / s.sigma_est ELSE 0 END) / 3.0, 1.0)
-    + 0.3 * LEAST(ABS(CASE WHEN s.forecast_next <> 0 THEN (s.actual_last - s.forecast_next) / s.forecast_next ELSE 0 END) / 0.10, 1.0)
-    + 0.2 * LEAST(ABS(s.actual_last - s.forecast_next) / NULLIF(s.avg_level_sys * 0.10, 0), 1.0)
-    )                                                                                   AS severity_0_100,
-
-    CASE
-      WHEN s.sigma_est IS NULL THEN NULL
-      WHEN s.actual_last < (s.forecast_next - 1.9599 * s.sigma_est) THEN TRUE
-      WHEN s.actual_last > (s.forecast_next + 1.9599 * s.sigma_est) THEN TRUE
-      ELSE FALSE
-    END                                                                                 AS outside_95_band_vs_last
-  FROM summary_next s
-)
-
--- FINAL OUTPUT: union of full HISTORY and one-row-per-system SUMMARY_NEXT
-SELECT
-  'HISTORY'               AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  END_OF_MONTH_DATE       AS period_date,
-  SOURCE_SYSTEM_BALANCE   AS actual,
-  roll_mean_6,
-  roll_std_6,
-  lag12_balance,
-  regr_slope_12,
-  regr_intercept_12,
-  NULL::FLOAT8            AS forecast_next,
-  NULL::FLOAT8            AS pi95_lo,
-  NULL::FLOAT8            AS pi95_hi,
-  NULL::FLOAT8            AS dev_abs_vs_last,
-  NULL::FLOAT8            AS dev_pct_vs_last,
-  NULL::FLOAT8            AS z_vs_last,
-  NULL::FLOAT8            AS severity_0_100,
-  NULL                    AS outside_95_band_vs_last
-FROM calc
-
-UNION ALL
-
-SELECT
-  'SUMMARY_NEXT'          AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  next_period             AS period_date,
-  NULL::FLOAT8            AS actual,
-  NULL::FLOAT8            AS roll_mean_6,
-  NULL::FLOAT8            AS roll_std_6,
-  NULL::FLOAT8            AS lag12_balance,
-  NULL::FLOAT8            AS regr_slope_12,
-  NULL::FLOAT8            AS regr_intercept_12,
-  forecast_next,
-  pi95_lo,
-  pi95_hi,
-  dev_abs_vs_last,
-  dev_pct_vs_last,
-  z_vs_last,
-  severity_0_100,
-  outside_95_band_vs_last
-FROM scored_next
-
-ORDER BY CONTRACT_SOURCE_SYSTEM, period_date;
-
-
-
-
-
-WITH latest AS (
-  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
-  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
-  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
-),
-rng AS (
-  SELECT ADD_MONTHS(max_eom, -30) AS start_eom, max_eom FROM latest
-),
-
--- 1) system × month, cast to FLOAT8 early
-base AS (
-  SELECT
-    t.END_OF_MONTH_DATE,
-    t.CONTRACT_SOURCE_SYSTEM,
-    CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8) AS SOURCE_SYSTEM_BALANCE
-  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
-  CROSS JOIN rng r
-  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
-    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
-  GROUP BY 1,2
-),
-
--- 2) add integer row index per system
-idx1 AS (
-  SELECT
-    b.*,
-    ROW_NUMBER() OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS rn
-  FROM base b
-),
-
--- 3) materialize float index in its own CTE (so it can be used by window funcs later)
-idx2 AS (
-  SELECT
-    i.*,
-    CAST(i.rn AS FLOAT8) AS rn_f
-  FROM idx1 i
-),
-
--- 4) cumulative sums (window functions only here)
-csum AS (
-  SELECT
-    x.*,
-
-    -- cumulative sums for y and y^2
-    SUM(x.SOURCE_SYSTEM_BALANCE) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_y,
-
-    SUM(CAST(x.SOURCE_SYSTEM_BALANCE * x.SOURCE_SYSTEM_
+      0.5 * LEAST(ABS(CASE WHEN s.sigma_est IS NOT NULL AND s.sigma_est > 0 THEN (s.actual_la
