@@ -1,3 +1,100 @@
+/* === KDE Portfolio Summary (Latest Month) ===========================
+   - Focus: change volume (acct count) & change exposure (dollars)
+   - History window: 24 months
+   - Severity score (fixed weights): 0.3*|acct_z| + 0.7*|exp_z|
+   - Platform: Netezza-friendly SQL (works in many warehouses)
+   ================================================================== */
+
+WITH
+/* 1) Latest month and historical window */
+latest AS (
+  SELECT MAX(t.END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -24) AS start_eom, max_eom
+  FROM latest
+),
+
+/* 2) KDE × month aggregation (pre-aggregate to keep it fast) */
+kde_base AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.KDE,
+    COUNT(DISTINCT t.ACCOUNT_IDENTIFIER)        AS acct_cnt,
+    CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8) AS exposure
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    /* Optional portfolio filter:
+       AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans' */
+  GROUP BY 1,2
+),
+
+/* 3) Month-over-month deltas per KDE */
+kde_delta AS (
+  SELECT
+    k.*,
+    (k.acct_cnt - LAG(k.acct_cnt) OVER (PARTITION BY k.KDE ORDER BY k.END_OF_MONTH_DATE))  AS acct_cnt_delta,
+    (k.exposure - LAG(k.exposure) OVER (PARTITION BY k.KDE ORDER BY k.END_OF_MONTH_DATE))  AS exposure_delta
+  FROM kde_base k
+),
+
+/* 4) Historical benchmarks of deltas by KDE */
+kde_stats AS (
+  SELECT
+    d.KDE,
+    AVG(COALESCE(d.acct_cnt_delta,0))                 AS avg_acct_change,
+    STDDEV(COALESCE(d.acct_cnt_delta,0))              AS std_acct_change,
+    AVG(COALESCE(d.exposure_delta,0))                 AS avg_exp_change,
+    STDDEV(COALESCE(d.exposure_delta,0))              AS std_exp_change,
+    COUNT(*)                                          AS hist_rows
+  FROM kde_delta d
+  GROUP BY d.KDE
+),
+
+/* 5) Join stats; compute Z-scores + fixed-weight severity */
+kde_flag AS (
+  SELECT
+    d.END_OF_MONTH_DATE,
+    d.KDE,
+    d.acct_cnt_delta,
+    d.exposure_delta,
+
+    /* Z-scores vs each KDE's own history (NULL if std=0 or not enough history) */
+    (d.acct_cnt_delta - s.avg_acct_change) / NULLIF(s.std_acct_change, 0)  AS acct_change_z,
+    (d.exposure_delta - s.avg_exp_change) / NULLIF(s.std_exp_change, 0)    AS exp_change_z,
+
+    /* Fixed-weight severity (emphasize exposure) */
+    0.3 * ABS((d.acct_cnt_delta - s.avg_acct_change) / NULLIF(s.std_acct_change, 0))
+  + 0.7 * ABS((d.exposure_delta - s.avg_exp_change) / NULLIF(s.std_exp_change, 0)) AS severity_score,
+
+    /* Optional: guardrails to suppress low-history KDEs in the final select */
+    s.hist_rows
+  FROM kde_delta d
+  JOIN kde_stats s
+    ON d.KDE = s.KDE
+)
+
+SELECT
+  f.KDE,
+  f.acct_cnt_delta,
+  f.exposure_delta,
+  ROUND(f.acct_change_z, 2) AS acct_change_z,
+  ROUND(f.exp_change_z, 2)  AS exp_change_z,
+  ROUND(f.severity_score, 2) AS severity_score
+FROM kde_flag f
+JOIN latest l
+  ON f.END_OF_MONTH_DATE = l.max_eom
+/* Optional: only show KDEs with a minimum history size (e.g., >= 6 months of deltas) */
+/* WHERE f.hist_rows >= 6 */
+ORDER BY f.severity_score DESC, ABS(f.exp_change_z) DESC, ABS(f.acct_change_z) DESC;
+
+
+
+
 /* 10c) Seasonal lifts per RC×Quarter using NON-spike months (revised) */
 seasonal_q AS (
   SELECT
@@ -27036,42 +27133,4 @@ csum AS (
       PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
     ) AS csum_y,
 
-    SUM(CAST(x.SOURCE_SYSTEM_BALANCE * x.SOURCE_SYSTEM_BALANCE AS FLOAT8)) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_y2,
-
-    -- cumulative x, x^2, and x*y  (rn_f is a real column now)
-    SUM(x.rn_f) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_x,
-
-    SUM(CAST(x.rn_f * x.rn_f AS FLOAT8)) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_x2,
-
-    SUM(CAST(x.rn_f * x.SOURCE_SYSTEM_BALANCE AS FLOAT8)) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_xy,
-
-    -- overall per-system moments (fallback sigma)
-    COUNT(*) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM)                                        AS cnt_all,
-    AVG(x.SOURCE_SYSTEM_BALANCE) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM)                    AS avg_all,
-    AVG(CAST(x.SOURCE_SYSTEM_BALANCE * x.SOURCE_SYSTEM_BALANCE AS FLOAT8))
-      OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM)                                               AS avg2_all
-  FROM idx2 x
-),
-
--- 5) build 6-row and 12-row rolling windows via csum - lag(csum)
-roll AS (
-  SELECT
-    c.*,
-
-    LEAST(c.rn, 6)   AS n6,
-    LEAST(c.rn, 12)  AS n12,
-
-    -- 6-length rolling sums
-    (c.csum_y  - COALESCE(LAG(c.csum_y,  6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y,
-    (c.csum_y2 - COALESCE(LAG(c.csum_y2, 6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y2,
-
-    -- 12-length rolling sums for regression
-    (c.csum_x  - COALESCE(LAG(c.csum_x,  12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM O
+    SUM(CAST(x.SOURCE_SYSTEM_BALANCE * x.SOURCE_SYSTEM_
