@@ -1,3 +1,142 @@
+/* === KDE Change Analysis (portfolio-level; user-specified KDE list) ===
+   - Change volume = # accounts whose KDE value changed vs previous month
+   - Change exposure = sum of current-month exposure for those changed accounts
+   - Severity = 0.3*|acct_change_z| + 0.7*|exp_change_z|
+   - History window: 24 months
+   - Platform: Netezza-friendly (no IS DISTINCT FROM)
+   ===================================================================== */
+
+WITH
+latest AS (
+  SELECT MAX(t.END_OF_MONTH_DATE) AS max_eom
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -24) AS start_eom, max_eom
+  FROM latest
+),
+
+/* Base slice with all KDE columns you plan to analyze */
+base AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.ACCOUNT_IDENTIFIER,
+    CAST(t.SOURCE_SYSTEM_BALANCE AS FLOAT8) AS exposure,
+    /* <<< list your KDE columns here so they are available below >>> */
+    t.PD_GRADE,
+    t.CRE_FLAG,
+    t.DAYS_PAST_DUE,
+    t.RC_CODE
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
+  CROSS JOIN rng r
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    /* Optional:
+       AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans' */
+),
+
+/* Manual UNPIVOT: edit this block to include/remove KDE columns */
+unpivot_kdes AS (
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'PD_GRADE'      AS KDE_NAME, CAST(PD_GRADE      AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'CRE_FLAG'       AS KDE_NAME, CAST(CRE_FLAG       AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'DAYS_PAST_DUE'  AS KDE_NAME, CAST(DAYS_PAST_DUE  AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'RC_CODE'        AS KDE_NAME, CAST(RC_CODE        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+),
+
+/* Get previous month's KDE value per account × KDE_NAME */
+kde_change AS (
+  SELECT
+    u.END_OF_MONTH_DATE,
+    u.KDE_NAME,
+    u.ACCOUNT_IDENTIFIER,
+    u.KDE_VALUE,
+    LAG(u.KDE_VALUE) OVER (
+      PARTITION BY u.KDE_NAME, u.ACCOUNT_IDENTIFIER
+      ORDER BY u.END_OF_MONTH_DATE
+    ) AS prev_value,
+    u.exposure
+  FROM unpivot_kdes u
+),
+
+/* Aggregate: count changed accounts and sum exposure for changed accounts */
+kde_change_agg AS (
+  SELECT
+    END_OF_MONTH_DATE,
+    KDE_NAME,
+    SUM(CASE
+          WHEN (
+                 (KDE_VALUE <> prev_value)
+                 OR (KDE_VALUE IS NULL AND prev_value IS NOT NULL)
+                 OR (KDE_VALUE IS NOT NULL AND prev_value IS NULL)
+               )
+               AND prev_value IS NOT NULL
+          THEN 1 ELSE 0
+        END) AS change_acct_cnt,
+    SUM(CASE
+          WHEN (
+                 (KDE_VALUE <> prev_value)
+                 OR (KDE_VALUE IS NULL AND prev_value IS NOT NULL)
+                 OR (KDE_VALUE IS NOT NULL AND prev_value IS NULL)
+               )
+               AND prev_value IS NOT NULL
+          THEN exposure ELSE 0
+        END) AS change_exposure
+  FROM kde_change
+  GROUP BY END_OF_MONTH_DATE, KDE_NAME
+),
+
+/* Historical stats for monthly change by KDE_NAME */
+kde_change_stats AS (
+  SELECT
+    KDE_NAME,
+    AVG(COALESCE(change_acct_cnt,0))    AS avg_cnt,
+    STDDEV(COALESCE(change_acct_cnt,0)) AS std_cnt,
+    AVG(COALESCE(change_exposure,0))    AS avg_exp,
+    STDDEV(COALESCE(change_exposure,0)) AS std_exp,
+    COUNT(*)                            AS hist_rows
+  FROM kde_change_agg
+  GROUP BY KDE_NAME
+),
+
+/* Join stats; compute z-scores and fixed severity */
+kde_flag AS (
+  SELECT
+    a.END_OF_MONTH_DATE,
+    a.KDE_NAME,
+    a.change_acct_cnt,
+    a.change_exposure,
+    (a.change_acct_cnt - s.avg_cnt) / NULLIF(s.std_cnt, 0) AS acct_change_z,
+    (a.change_exposure - s.avg_exp) / NULLIF(s.std_exp, 0) AS exp_change_z,
+    0.3 * ABS((a.change_acct_cnt - s.avg_cnt) / NULLIF(s.std_cnt, 0))
+  + 0.7 * ABS((a.change_exposure - s.avg_exp) / NULLIF(s.std_exp, 0)) AS severity_score,
+    s.hist_rows
+  FROM kde_change_agg a
+  JOIN kde_change_stats s
+    ON a.KDE_NAME = s.KDE_NAME
+)
+
+SELECT
+  f.KDE_NAME,
+  f.change_acct_cnt,
+  f.change_exposure,
+  ROUND(f.acct_change_z, 2) AS acct_change_z,
+  ROUND(f.exp_change_z, 2)  AS exp_change_z,
+  ROUND(f.severity_score, 2) AS severity_score
+FROM kde_flag f
+JOIN latest l
+  ON f.END_OF_MONTH_DATE = l.max_eom
+WHERE f.severity_score IS NOT NULL
+  AND f.hist_rows >= 6
+ORDER BY f.severity_score DESC, ABS(f.exp_change_z) DESC, ABS(f.acct_change_z) DESC;
+
+
+
+
+
 /* === KDE Change Analysis (portfolio-level; user-specified KDE list) =========
    Purpose:
      - For each KDE (column), count how many accounts changed value vs last month
@@ -27043,128 +27182,4 @@ roll AS (
     (c.csum_y  - COALESCE(LAG(c.csum_y,  6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y,
     (c.csum_y2 - COALESCE(LAG(c.csum_y2, 6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y2,
 
-    -- 12-row rolling sums for regression
-    (c.csum_x  - COALESCE(LAG(c.csum_x,  12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_x,
-    (c.csum_y  - COALESCE(LAG(c.csum_y,  12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_y,
-    (c.csum_x2 - COALESCE(LAG(c.csum_x2, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_x2,
-    (c.csum_xy - COALESCE(LAG(c.csum_xy, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_xy,
-
-    -- lag-12 seasonal anchor
-    LAG(c.SOURCE_SYSTEM_BALANCE, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE) AS lag12_balance
-  FROM csum c
-),
-
--- 6) per-row stats (plain math; no window functions here)
-calc AS (
-  SELECT
-    r.*,
-
-    -- rolling mean (6)
-    CASE WHEN r.n6 > 0 THEN r.sum6_y / CAST(r.n6 AS FLOAT8) ELSE NULL END AS roll_mean_6,
-
-    -- sample std over last 6 rows: sqrt( max( (sum y^2 - (sum y)^2 / n) / (n-1), 0 ) )
-    CASE
-      WHEN r.n6 > 1 THEN
-        SQRT( GREATEST( (r.sum6_y2 - ( (r.sum6_y * r.sum6_y) / CAST(r.n6 AS FLOAT8) )), 0.0 ) / CAST(r.n6 - 1 AS FLOAT8) )
-      ELSE NULL
-    END AS roll_std_6,
-
-    -- regression slope / intercept over last up-to-12 rows
-    CASE
-      WHEN r.n12 >= 2 AND ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) ) <> 0.0
-        THEN ( (CAST(r.n12 AS FLOAT8) * r.sum12_xy) - (r.sum12_x * r.sum12_y) )
-             / ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) )
-      ELSE NULL
-    END AS regr_slope_12,
-
-    CASE
-      WHEN r.n12 >= 1 THEN
-        ( r.sum12_y
-          - ( COALESCE(
-                CASE
-                  WHEN r.n12 >= 2 AND ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) ) <> 0.0
-                    THEN ( (CAST(r.n12 AS FLOAT8) * r.sum12_xy) - (r.sum12_x * r.sum12_y) )
-                         / ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) )
-                  ELSE NULL
-                END, 0.0) * r.sum12_x ) ) / CAST(r.n12 AS FLOAT8)
-      ELSE NULL
-    END AS regr_intercept_12
-  FROM roll r
-),
-
--- 7) last row per system (for next-period summary)
-last_per_sys AS (
-  SELECT c.*
-  FROM calc c
-  JOIN (
-    SELECT CONTRACT_SOURCE_SYSTEM, MAX(END_OF_MONTH_DATE) AS max_eom
-    FROM calc
-    GROUP BY CONTRACT_SOURCE_SYSTEM
-  ) m
-    ON c.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
-   AND c.END_OF_MONTH_DATE     = m.max_eom
-),
-
--- 8) per-system next-period forecast + sigma and size
-summary_next AS (
-  SELECT
-    l.CONTRACT_SOURCE_SYSTEM,
-    l.END_OF_MONTH_DATE                                                                 AS last_period,
-    ADD_MONTHS(l.END_OF_MONTH_DATE, 1)                                                  AS next_period,
-    l.SOURCE_SYSTEM_BALANCE                                                             AS actual_last,
-
-    -- candidate forecasts
-    CASE
-      WHEN l.regr_slope_12 IS NOT NULL AND l.regr_intercept_12 IS NOT NULL
-        THEN l.regr_intercept_12 + l.regr_slope_12 * CAST(l.rn + 1 AS FLOAT8)
-      ELSE NULL
-    END                                                                                 AS fc_linear,
-    l.lag12_balance                                                                     AS fc_seasonal,
-    l.roll_mean_6                                                                       AS fc_rollmean,
-
-    -- choose forecast: linear → seasonal → rolling mean
-    COALESCE(
-      CASE
-        WHEN l.regr_slope_12 IS NOT NULL AND l.regr_intercept_12 IS NOT NULL
-          THEN l.regr_intercept_12 + l.regr_slope_12 * CAST(l.rn + 1 AS FLOAT8)
-        ELSE NULL
-      END,
-      l.lag12_balance,
-      l.roll_mean_6
-    )                                                                                   AS forecast_next,
-
-    -- sigma: prefer rolling-6 else overall sample std from moments
-    COALESCE(
-      l.roll_std_6,
-      CASE WHEN l.cnt_all > 1
-           THEN SQRT( GREATEST(l.avg2_all - (l.avg_all * l.avg_all), 0.0)
-                      * (CAST(l.cnt_all AS FLOAT8) / CAST(l.cnt_all - 1 AS FLOAT8)) )
-           ELSE NULL
-      END
-    )                                                                                   AS sigma_est,
-
-    l.avg_all                                                                           AS avg_level_sys
-  FROM last_per_sys l
-),
-
--- 9) score + bands for the summary
-scored_next AS (
-  SELECT
-    s.CONTRACT_SOURCE_SYSTEM,
-    s.last_period,
-    s.next_period,
-    s.actual_last,
-    s.fc_linear,
-    s.fc_seasonal,
-    s.fc_rollmean,
-    s.forecast_next,
-
-    (s.forecast_next - 1.9599 * s.sigma_est)                                            AS pi95_lo,
-    (s.forecast_next + 1.9599 * s.sigma_est)                                            AS pi95_hi,
-
-    (s.actual_last - s.forecast_next)                                                   AS dev_abs_vs_last,
-    CASE WHEN s.forecast_next <> 0 THEN (s.actual_last - s.forecast_next) / s.forecast_next ELSE NULL END AS dev_pct_vs_last,
-    CASE WHEN s.sigma_est IS NOT NULL AND s.sigma_est > 0 THEN (s.actual_last - s.forecast_next) / s.sigma_est ELSE NULL END AS z_vs_last,
-
-    100.0 * (
-      0.5 * LEAST(ABS(CASE WHEN s.sigma_est IS NOT NULL AND s.sigma_est > 0 THEN (s.actual_la
+    -- 12-row rolling
