@@ -1,3 +1,26 @@
+Date =
+VAR MinEOM =
+    MINX ( ALL ( T ), T[month_end] )
+VAR MaxEOM =
+    MAXX ( ALL ( T ), T[month_end] )
+RETURN
+ADDCOLUMNS (
+    CALENDAR ( MinEOM, MaxEOM ),
+    "Year", YEAR ( [Date] ),
+    "MonthNum", MONTH ( [Date] ),
+    "MonthName", FORMAT ( [Date], "MMM" ),
+    "Quarter", "Q" & ROUNDUP ( MONTH ( [Date] ) / 3, 0 ),
+    "MonthEnd", EOMONTH ( [Date], 0 ),
+    "YearMonth", FORMAT ( [Date], "YYYY-MM" ),
+    "MonthEndSort", YEAR ( EOMONTH ( [Date], 0 ) ) * 100 + MONTH ( EOMONTH ( [Date], 0 ) ),
+    "IsMonthEnd", IF ( [Date] = EOMONTH ( [Date], 0 ), 1, 0 )
+)
+
+
+
+
+
+
 DimMonth :=
 VAR StartMonthEnd =
     EOMONTH ( MINX ( ALL ( T ), T[month_end] ), 0 )
@@ -26494,15 +26517,4 @@ win AS (
 )
 SELECT
     LoadDate         = CONVERT(date, m.LoadDate),             -- month end (from Credit_Line_Monthly)
-    ApplID           = m.ApplID,                              -- keep if present; drop if not
-    CreditLineNumber = m.CreditLineNumber,
-    SecUnfunded      = u.SecUnfunded,                         -- from Calculated_Unfunded
-    NetUtilized      = m.NetUtilized,
-    Commitment       = m.NetUtilized + u.SecUnfunded,
-    System = CASE
-                WHEN c.Cust_Line_Number IS NOT NULL           THEN 'Cards'          -- Cards first
-                WHEN m.Source = 'CF'                          THEN 'CFD'
-                WHEN m.CreditLineNumber LIKE '%iMX%'          THEN 'iMX'
-                WHEN m.Source = 'LN'                          THEN 'CBS'
-                WHEN m.Source = 'LO'                          THEN 'UBS'
-                WHEN m.Source = 'LJ'                        
+    ApplID           = m.ApplID,                    
