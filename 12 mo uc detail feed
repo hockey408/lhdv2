@@ -1,4 +1,17 @@
 Largest Residual $ (Latest) :=
+VAR lm =
+    [Latest Month]
+RETURN
+MAXX (
+    FILTER ( ALL ( T ), EOMONTH ( T[month_end], 0 ) = lm ),
+    ABS ( T[abs_resid] )
+)
+
+
+
+
+
+Largest Residual $ (Latest) :=
 VAR lm = [Latest Month]
 RETURN
 CALCULATE (
@@ -26559,8 +26572,4 @@ Tab4_Top5Conc_Long AS (
     'Tab4_Top5_Concentration'   AS Dataset,
     c.MonthEnd                  AS MonthEnd,
     'Top5Pct'                   AS Dim1,
-    'Percent'                   AS Metric,
-    (tc.Top5Bal / NULLIF(c.TotalNA,0)) * 100.0 AS Value,
-    CAST(NULL AS VARCHAR(100))                 AS Dim2
-  FROM Tab4_Top5Conc c
-  JOIN Tab4_T
+    '
