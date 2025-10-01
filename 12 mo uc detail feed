@@ -1,3 +1,16 @@
+Largest Residual $ (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    MAX ( ABS ( T[abs_resid] ) ),
+    FILTER ( ALL ( T[month_end] ), EOMONTH ( T[month_end], 0 ) = lm )
+)
+
+
+
+
+
+
 P95 Severity Raw :=
 PERCENTILEX.INC ( ALLSELECTED ( T ), T[severity_raw_v3], 0.95 )
 
@@ -26550,34 +26563,4 @@ Tab4_Top5Conc_Long AS (
     (tc.Top5Bal / NULLIF(c.TotalNA,0)) * 100.0 AS Value,
     CAST(NULL AS VARCHAR(100))                 AS Dim2
   FROM Tab4_Top5Conc c
-  JOIN Tab4_Top5Conc_Top tc ON tc.MonthEnd = c.MonthEnd
-),
-
-/* ===================== TAB 5 – Anomaly Detection ===================== */
-/* Replace <YOUR_ANOMALY_TABLE> and column names as needed. 
-   Expect columns: EventDate (date or timestamp), Severity ('Critical'/'Warning'), System (optional). */
-
-AnomalySrc AS (
-  SELECT
-    CAST(EventDate AS DATE)        AS EventDate,
-    UPPER(TRIM(CAST(Severity AS VARCHAR(20)))) AS Severity,
-    CAST(SystemName AS VARCHAR(100)) AS SystemName   -- optional; remove if not available
-  FROM <YOUR_ANOMALY_TABLE>                           -- <<< TODO: set this
-  WHERE EventDate IS NOT NULL
-),
-AnomalyByMonth AS (
-  SELECT
-    ADD_MONTHS(DATE_TRUNC('month', EventDate), 1) - 1 AS MonthEnd,  -- normalize to month-end
-    CASE WHEN Severity IN ('CRITICAL','WARNING') THEN Severity ELSE 'OTHER' END AS Sev,
-    COUNT(*) AS Cnt
-  FROM AnomalySrc
-  GROUP BY ADD_MONTHS(DATE_TRUNC('month', EventDate), 1) - 1, 
-           CASE WHEN Severity IN ('CRITICAL','WARNING') THEN Severity ELSE 'OTHER' END
-),
-Tab5_AnomalyTrend AS (
-  SELECT
-    'Tab5_Anomaly_Trend'     AS Dataset,
-    MonthEnd                 AS MonthEnd,
-    Sev                      AS Dim1,     -- 'CRITICAL' / 'WARNING' / 'OTHER'
-    'Count'                  AS Metric,
-    Cnt          
+  JOIN Tab4_T
