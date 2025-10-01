@@ -1,3 +1,36 @@
+P95 Severity Raw :=
+PERCENTILEX.INC (
+    ALLSELECTED ( T ),
+    T[severity_raw_v3],
+    0.95
+)
+
+
+
+
+Severity (0-100) :=
+VAR p95 = [P95 Severity Raw]
+VAR raw = MAX ( T[severity_raw_v3] )
+RETURN
+IF ( p95 > 0, 100 * MIN ( raw / p95, 1 ), BLANK () )
+
+
+
+Flagged Exposure (Latest, Hard 70) :=
+VAR lm = CALCULATE ( MAX ( T[month_end] ), ALL ( T ) )
+RETURN
+CALCULATE (
+    SUM ( T[bal_num] ),
+    T[month_end] = lm,
+    T[include3_anypos] = 1,
+    FILTER ( VALUES ( T[RC_CODE] ), [Severity (0-100)] >= 70 )
+)
+
+
+
+
+
+
 Active Systems (Latest) :=
 VAR lm = CALCULATE ( MAX ( T[month_end] ), ALL ( T ) )
 RETURN
@@ -26456,4 +26489,4 @@ LEFT JOIN crdadmprd.dbo.CDM_Cards_Loan               AS c
 CROSS JOIN win w
 WHERE m.LoadDate >= w.StartMonthEnd
   AND m.LoadDate <= w.AsOfMonthEnd
-ORDER BY m.LoadDate, m.CreditLineNumber;
+ORDER BY m.LoadDate, m.Credit
