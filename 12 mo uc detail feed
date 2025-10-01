@@ -1,4 +1,67 @@
 //@version=5
+strategy("QQQ 5m Momentum Trend (EMA+ADX)", overlay=true, initial_capital=100000, pyramiding=0,
+     commission_type=strategy.commission.percent, commission_value=0.0025)
+
+// Inputs
+emaLen    = input.int(50,  "Trend EMA Length", minval=1)
+adxLen    = input.int(14,  "ADX Length", minval=1)
+adxThresh = input.float(20,"ADX Threshold",   minval=1, step=0.5)
+atrLen    = input.int(14,  "ATR Length",      minval=1)
+atrMult   = input.float(2.0,"ATR Stop Mult",  minval=0.1, step=0.1)
+useTP     = input.bool(false, "Use Take-Profit?")
+tpRR      = input.float(1.5,  "TP Risk/Reward", minval=0.5, step=0.1)
+
+// Core calcs
+ema     = ta.ema(close, emaLen)
+adxVal  = ta.adx(adxLen)
+diPlus  = ta.diPlus(adxLen)
+diMinus = ta.diMinus(adxLen)
+atrVal  = ta.atr(atrLen)
+
+// Trade conditions (bar-close)
+longCond  = close > ema  and diPlus  > diMinus and adxVal > adxThresh
+shortCond = close < ema  and diMinus > diPlus  and adxVal > adxThresh
+
+// Dynamic stops
+longStop  = close - atrVal * atrMult
+shortStop = close + atrVal * atrMult
+
+// Entries (no pyramiding)
+if (longCond and strategy.position_size <= 0)
+    strategy.entry("Long", strategy.long)
+if (shortCond and strategy.position_size >= 0)
+    strategy.entry("Short", strategy.short)
+
+// Exits (optional TP based on entry risk to stop)
+if (strategy.position_size > 0)
+    if useTP
+        longRisk = strategy.position_avg_price - longStop
+        longTP   = strategy.position_avg_price + longRisk * tpRR
+        strategy.exit("L-Exit", from_entry="Long", stop=longStop, limit=longTP)
+    else
+        strategy.exit("L-Exit", from_entry="Long", stop=longStop)
+
+if (strategy.position_size < 0)
+    if useTP
+        shortRisk = shortStop - strategy.position_avg_price
+        shortTP   = strategy.position_avg_price - shortRisk * tpRR
+        strategy.exit("S-Exit", from_entry="Short", stop=shortStop, limit=shortTP)
+    else
+        strategy.exit("S-Exit", from_entry="Short", stop=shortStop)
+
+// Visuals
+plot(ema, "EMA", color=color.orange, linewidth=2)
+plotshape(longCond,  title="Long Signal",  style=shape.triangleup,   color=color.new(color.green,0), size=size.tiny, location=location.belowbar, text="LONG")
+plotshape(shortCond, title="Short Signal", style=shape.triangledown, color=color.new(color.red,0),   size=size.tiny, location=location.abovebar, text="SHORT")
+
+// Alerts
+alertcondition(longCond,  title="Long Alert",  message="QQQ 5m: LONG momentum signal")
+alertcondition(shortCond, title="Short Alert", message="QQQ 5m: SHORT momentum signal")
+
+
+
+
+//@version=5
 strategy("QQQ 5m Momentum Trend Strategy", overlay=true, margin_long=100, margin_short=100)
 
 // Inputs
@@ -26632,33 +26695,4 @@ def s_naive(y,h,sp):
     return pd.Series(out,index=range(h))
 def fit_fc(y,h,sp):
     y=pd.Series(y.astype(float).values)
-    name='SeasonalNaive'; fit=None; fcast=None
-    if _HAS_SM:
-        try:
-            if len(y)>=2*sp:
-                fit=ExponentialSmoothing(y,trend='add',seasonal='add',seasonal_periods=sp,initialization_method='estimated').fit(optimized=True); name='ETS(A,A,A)'
-            elif len(y)>=6:
-                fit=ExponentialSmoothing(y,trend='add',seasonal=None,initialization_method='estimated').fit(optimized=True); name='ETS(A,A,N)'
-            else:
-                fit=ExponentialSmoothing(y,trend=None,seasonal=None,initialization_method='estimated').fit(optimized=True); name='SES'
-        except Exception: fit=None
-        if fit is not None:
-            fv=pd.Series(fit.fittedvalues); fc=pd.Series(fit.forecast(h).values,index=range(h))
-            return name,fv,fc
-    fc=s_naive(y,h,sp)
-    fv=pd.Series(index=y.index,dtype=float)
-    if len(y)>sp:
-        fv.iloc[:sp]=y.values[0]; fv.iloc[sp:]=y.values[:-sp]
-    else:
-        fv[:]=np.nanmean(y.values)
-    return name,fv,fc
-rows=[]
-for sys,g in df.groupby('CONTRACT_SOURCE_SYSTEM',sort=False):
-    g=g.sort_values('END_OF_MONTH_DATE'); y=g['SOURCE_SYSTEM_BALANCE']
-    name,fv,fc=fit_fc(y,H,SP)
-    n=min(len(y),len(fv)); resid=(y.iloc[:n].values-np.nan_to_num(fv.iloc[:n].values,nan=np.nan)).astype(float)
-    resid=resid[~np.isnan(resid)]; sig=rstd(resid)
-    last_d=g['END_OF_MONTH_DATE'].iloc[-1]; last_a=float(y.iloc[-1]); med=float(np.nanmedian(y.values)) if len(y) else 1.0
-    for step in range(len(fc)):
-        f=float(fc.iloc[step]); next_d=last_d+pd.offsets.MonthEnd(step+1)
- 
+    name='SeasonalNaive'; fit=N
