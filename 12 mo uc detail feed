@@ -1,3 +1,27 @@
+-- Latest certified month-end in the current model
+Latest Month :=
+CALCULATE ( MAX ( T[month_end] ), ALL ( T ) )
+
+-- 95th percentile cap for severity scaling
+P95 Severity Raw :=
+PERCENTILEX.INC ( ALLSELECTED ( T ), T[severity_raw_v3], 0.95 )
+
+-- 0–100 severity (scaled by P95)
+Severity (0-100) :=
+VAR p95 = [P95 Severity Raw]
+VAR raw = AVERAGE ( T[severity_raw_v3] )
+RETURN IF ( p95 <= 0, BLANK (), 100 * MIN ( raw / p95, 1 ) )
+
+-- Optional what-if parameter (create a What-If parameter named 'Severity Threshold'
+-- or fallback to 70 if not present)
+Severity Threshold (Value) :=
+SELECTEDVALUE ( 'Severity Threshold'[Severity Threshold Value], 70 )
+
+
+
+
+
+
 WITH
 -- Optional: codes that are structurally negative; leave empty (LIMIT 0) if not needed
 rc_struct_neg AS (
