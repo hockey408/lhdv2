@@ -1,3 +1,72 @@
+P95 Severity Raw :=
+PERCENTILEX.INC ( ALLSELECTED ( T ), T[severity_raw_v3], 0.95 )
+
+Severity (0-100) :=
+VAR p95 = [P95 Severity Raw]
+VAR raw = MAX ( T[severity_raw_v3] )
+RETURN IF ( p95 > 0, 100 * MIN ( raw / p95, 1 ), BLANK () )
+
+
+
+Active Systems (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( T[RC_CODE] ),
+    T[include3_anypos] = 1,
+    T[month_end] = lm
+)
+
+
+
+Active Systems (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( T[RC_CODE] ),
+    T[include3_anypos] = 1,
+    FILTER ( ALL ( T[month_end] ), EOMONTH ( T[month_end], 0 ) = lm )
+)
+
+
+
+Flagged Systems (Latest, Hard 70) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( T[RC_CODE] ),
+    T[include3_anypos] = 1,
+    FILTER ( ALL ( T[month_end] ), EOMONTH ( T[month_end], 0 ) = lm ),
+    FILTER ( VALUES ( T[RC_CODE] ), [Severity (0-100)] >= 70 )
+)
+
+
+
+% Systems Flagged (Latest, Hard 70) :=
+DIVIDE ( [Flagged Systems (Latest, Hard 70)], [Active Systems (Latest)] )
+
+
+
+
+Flagged Exposure (Latest, Hard 70) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    SUM ( T[bal_num] ),
+    T[include3_anypos] = 1,
+    FILTER ( ALL ( T[month_end] ), EOMONTH ( T[month_end], 0 ) = lm ),
+    FILTER ( VALUES ( T[RC_CODE] ), [Severity (0-100)] >= 70 )
+)
+
+
+
+
+
+
+
+
+
+
 Latest Month :=
 CALCULATE ( MAX ( Date[MonthEnd] ), ALL ( Date ) )
 
@@ -26511,16 +26580,4 @@ Tab5_AnomalyTrend AS (
     MonthEnd                 AS MonthEnd,
     Sev                      AS Dim1,     -- 'CRITICAL' / 'WARNING' / 'OTHER'
     'Count'                  AS Metric,
-    Cnt                      AS Value,
-    CAST(NULL AS VARCHAR(100)) AS Dim2
-  FROM AnomalyByMonth
-),
--- Optional: latest anomaly table for a detail grid
-Tab5_AnomalyTable AS (
-  SELECT
-    'Tab5_Anomaly_Table'     AS Dataset,
-    ADD_MONTHS(DATE_TRUNC('month', EventDate), 1) - 1 AS MonthEnd,
-    CAST(EventDate AS VARCHAR(30)) AS Dim1,   -- show actual datetime in the table
-    'Count'                  AS Metric,
-    1                        AS Value,
-    Severity           
+    Cnt          
