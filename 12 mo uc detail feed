@@ -1,3 +1,101 @@
+WITH base AS (
+    SELECT
+        RC_CODE,
+        RC_DESCRIPTION,
+        CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+        SUM(SOURCE_SYSTEM_BALANCE)::FLOAT8 AS bal_num
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+    WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+      AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    GROUP BY RC_CODE, RC_DESCRIPTION, CAST(END_OF_MONTH_DATE AS DATE)
+),
+
+-- Add index t for regression
+idx AS (
+    SELECT
+        b.*,
+        ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY month_end) AS t
+    FROM base b
+),
+
+-- Regression fit parameters
+regression_params AS (
+    SELECT
+        RC_CODE,
+        COUNT(*) AS n,
+        SUM(t)::FLOAT8 AS sum_t,
+        SUM(bal_num)::FLOAT8 AS sum_y,
+        SUM(t*bal_num)::FLOAT8 AS sum_ty,
+        SUM(t*t)::FLOAT8 AS sum_t2
+    FROM idx
+    GROUP BY RC_CODE
+),
+regression_fit AS (
+    SELECT
+        i.RC_CODE,
+        i.month_end,
+        i.bal_num,
+        ( (r.sum_y - ((r.n*r.sum_ty - r.sum_t*r.sum_y) / NULLIF(r.n*r.sum_t2 - r.sum_t*r.sum_t,0))*r.sum_t) / r.n )::FLOAT8
+        + ( (r.n*r.sum_ty - r.sum_t*r.sum_y) / NULLIF(r.n*r.sum_t2 - r.sum_t*r.sum_t,0) )::FLOAT8 * i.t
+        AS forecast_reg
+    FROM idx i
+    JOIN regression_params r ON i.RC_CODE = r.RC_CODE
+),
+
+-- Moving average 12
+ma12_fit AS (
+    SELECT
+        i.RC_CODE,
+        i.month_end,
+        i.bal_num,
+        AVG(i.bal_num) OVER (
+            PARTITION BY i.RC_CODE ORDER BY i.month_end
+            ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+        )::FLOAT8 AS forecast_ma12
+    FROM idx i
+),
+
+-- Metrics
+metrics AS (
+    SELECT
+        f.RC_CODE,
+
+        -- Regression
+        1.0 - SUM(POWER(f.bal_num - f.forecast_reg,2))::FLOAT8 
+              / NULLIF(SUM(POWER(f.bal_num - AVG(f.bal_num) OVER (PARTITION BY f.RC_CODE),2))::FLOAT8,0) AS r2_reg,
+        SQRT(AVG(POWER(f.bal_num - f.forecast_reg,2)))::FLOAT8 AS rmse_reg,
+        AVG(ABS(f.bal_num - f.forecast_reg) / NULLIF(ABS(f.bal_num),0))::FLOAT8 AS mape_reg,
+
+        -- MA12
+        1.0 - SUM(POWER(m.bal_num - m.forecast_ma12,2))::FLOAT8 
+              / NULLIF(SUM(POWER(m.bal_num - AVG(m.bal_num) OVER (PARTITION BY m.RC_CODE),2))::FLOAT8,0) AS r2_ma12,
+        SQRT(AVG(POWER(m.bal_num - m.forecast_ma12,2)))::FLOAT8 AS rmse_ma12,
+        AVG(ABS(m.bal_num - m.forecast_ma12) / NULLIF(ABS(m.bal_num),0))::FLOAT8 AS mape_ma12
+
+    FROM regression_fit f
+    JOIN ma12_fit m
+      ON f.RC_CODE = m.RC_CODE AND f.month_end = m.month_end
+    GROUP BY f.RC_CODE
+)
+
+-- Final selection
+SELECT
+    RC_CODE,
+    r2_reg, rmse_reg, mape_reg,
+    r2_ma12, rmse_ma12, mape_ma12,
+
+    CASE
+        WHEN r2_reg IS NULL OR r2_reg < 0.5 THEN 'MA12'   -- safeguard: regression must explain something
+        WHEN rmse_reg <= rmse_ma12 THEN 'REGRESSION'
+        ELSE 'MA12'
+    END AS Best_Model
+FROM metrics
+ORDER BY RC_CODE;
+
+
+
+
+
 //@version=5
 strategy("QQQ 5m Momentum Trend (EMA + DMI)", overlay=true, initial_capital=100000,
      pyramiding=0, commission_type=strategy.commission.percent, commission_value=0.0025)
@@ -26656,49 +26754,4 @@ SP=12; H=1; Z80=1.2816; Z95=1.9599; WZ,WP,WI=0.5,0.3,0.2
 df=args[0].copy()
 df.columns=[c.strip().upper() for c in df.columns]
 req={'END_OF_MONTH_DATE','CONTRACT_SOURCE_SYSTEM','SOURCE_SYSTEM_BALANCE'}
-mis=req-set(df.columns)
-if mis: raise ValueError(f'Missing required columns: {mis}')
-df['END_OF_MONTH_DATE']=pd.to_datetime(df['END_OF_MONTH_DATE'])
-df['SOURCE_SYSTEM_BALANCE']=pd.to_numeric(df['SOURCE_SYSTEM_BALANCE'], errors='coerce')
-df=df.dropna(subset=['END_OF_MONTH_DATE','SOURCE_SYSTEM_BALANCE'])
-df=(df.groupby(['CONTRACT_SOURCE_SYSTEM','END_OF_MONTH_DATE'],as_index=False)['SOURCE_SYSTEM_BALANCE'].sum()
-       .sort_values(['CONTRACT_SOURCE_SYSTEM','END_OF_MONTH_DATE']))
-def rstd(r):
-    if r.size==0: return np.nan
-    med=np.nanmedian(r); mad=np.nanmedian(np.abs(r-med))
-    return 1.4826*mad if mad and mad>0 else (np.nanstd(r) if r.size>1 else np.nan)
-def s_naive(y,h,sp):
-    n=len(y); out=[]
-    for k in range(1,h+1):
-        out.append(y.iloc[n-sp] if n-sp>=0 else y.iloc[-1])
-    return pd.Series(out,index=range(h))
-def fit_fc(y,h,sp):
-    y=pd.Series(y.astype(float).values)
-    name='SeasonalNaive'; fit=None
-    if _HAS_SM:
-        try:
-            if len(y)>=2*sp:
-                fit=ExponentialSmoothing(y,trend='add',seasonal='add',seasonal_periods=sp,initialization_method='estimated').fit(optimized=True); name='ETS(A,A,A)'
-            elif len(y)>=6:
-                fit=ExponentialSmoothing(y,trend='add',seasonal=None,initialization_method='estimated').fit(optimized=True); name='ETS(A,A,N)'
-            else:
-                fit=ExponentialSmoothing(y,trend=None,seasonal=None,initialization_method='estimated').fit(optimized=True); name='SES'
-        except Exception:
-            fit=None
-        if fit is not None:
-            fv=pd.Series(fit.fittedvalues); fc=pd.Series(fit.forecast(H).values,index=range(H))
-            return name,fv,fc
-    fc=s_naive(y,H,sp)
-    fv=pd.Series(index=y.index,dtype=float)
-    if len(y)>sp:
-        fv.iloc[:sp]=y.values[0]; fv.iloc[sp:]=y.values[:-sp]
-    else:
-        fv[:]=np.nanmean(y.values)
-    return name,fv,fc
-rows=[]
-for sys,g in df.groupby('CONTRACT_SOURCE_SYSTEM',sort=False):
-    g=g.sort_values('END_OF_MONTH_DATE'); y=g['SOURCE_SYSTEM_BALANCE']
-    name,fv,fc=fit_fc(y,H,SP)
-    n=min(len(y),len(fv)); resid=(y.iloc[:n].values-np.nan_to_num(fv.iloc[:n].values,nan=np.nan)).astype(float)
-    resid=resid[~np.isnan(resid)]; sig=rstd(resid)
-    last_d=g['END_OF_MONTH_DATE'].iloc[-1]; last_a=float(y.iloc[-1]); m
+mis=req-set(df
