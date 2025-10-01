@@ -1,3 +1,16 @@
+Flagged Systems (Trend, Hard 70) :=
+VAR thr = 70
+RETURN
+CALCULATE(
+    DISTINCTCOUNT ( T[RC_CODE] ),
+    T[include3_anypos] = 1,
+    FILTER ( VALUES ( T[RC_CODE] ), [Severity (0-100)] >= thr )
+)
+
+
+
+
+
 Flagged Exposure (Trend, Hard 70) :=
 VAR thr = 70
 RETURN
@@ -26573,11 +26586,4 @@ Tab4_Top5Conc_Top AS (
       n.MonthEnd,
       n.ACCOUNT_IDENTIFIER,
       SUM(n.Balance) AS Bal,
-      ROW_NUMBER() OVER (PARTITION BY n.MonthEnd ORDER BY SUM(n.Balance) DESC) AS rn
-    FROM NonAccrual n
-    GROUP BY n.MonthEnd, n.ACCOUNT_IDENTIFIER
-  ) t
-  WHERE t.rn <= 5
-  GROUP BY t.MonthEnd
-),
-Tab
+      ROW_NUMB
