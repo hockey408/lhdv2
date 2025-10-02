@@ -1,3 +1,278 @@
+/* === KDE Change Analysis with Dual Baselines (REG + MA) ======================
+   - Input: same manual KDE list (UNPIVOT) you already have
+   - Methods:
+       REG: linear trend vs time (per KDE) using REGR_* functions
+       MA : 12-month moving-average & stdev (excludes current month)
+   - Model selection: per KDE, pick method with lower historical RMSE on exposure
+                      using months strictly BEFORE the latest month
+   - Latest output: chosen method's weighted severity + both methods' z-scores
+   ============================================================================ */
+
+WITH
+latest AS (
+  SELECT MAX(t.END_OF_MONTH_DATE) AS max_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -24) AS start_eom, max_eom
+  FROM latest
+),
+
+/* === Base + UNPIVOT (same as yours; edit the KDE list as needed) =========== */
+base AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.ACCOUNT_IDENTIFIER,
+    CAST(t.SOURCE_SYSTEM_BALANCE AS FLOAT8) AS exposure,
+    t.PD_GRADE, t.CRE_FLAG, t.DAYS_PAST_DUE, t.RC_CODE, t.REVOLVING_CODE,
+    t.FDIC_CALL_CODE, t.GL_ACCOUNT_CODE, t.INDUSTRY_CODE, t.MATURITY_DATE,
+    t.LTV, t.NAICS_CODE, t.RBC_CODE, t.NON_ACCRUAL_FLAG
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+  CROSS JOIN rng r
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+),
+unpivot_kdes AS (
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'PD_GRADE'        AS KDE_NAME, CAST(PD_GRADE        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'CRE_FLAG',        CAST(CRE_FLAG        AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'DAYS_PAST_DUE',   CAST(DAYS_PAST_DUE   AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'RC_CODE',         CAST(RC_CODE         AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'REVOLVING_CODE',  CAST(REVOLVING_CODE  AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'FDIC_CALL_CODE',  CAST(FDIC_CALL_CODE  AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'GL_ACCOUNT_CODE', CAST(GL_ACCOUNT_CODE AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'INDUSTRY_CODE',   CAST(INDUSTRY_CODE   AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'MATURITY_DATE',   CAST(MATURITY_DATE   AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'LTV',             CAST(LTV             AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'NAICS_CODE',      CAST(NAICS_CODE      AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'RBC_CODE',        CAST(RBC_CODE        AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'NON_ACCRUAL_FLAG',CAST(NON_ACCRUAL_FLAG AS VARCHAR(255)), exposure FROM base
+),
+
+/* === KDE value changes per account (vs prior month) ======================== */
+kde_change AS (
+  SELECT
+    u.END_OF_MONTH_DATE,
+    u.KDE_NAME,
+    u.ACCOUNT_IDENTIFIER,
+    u.KDE_VALUE,
+    LAG(u.KDE_VALUE) OVER (PARTITION BY u.KDE_NAME, u.ACCOUNT_IDENTIFIER ORDER BY u.END_OF_MONTH_DATE) AS prev_value,
+    u.exposure
+  FROM unpivot_kdes u
+),
+
+/* === Monthly agg per KDE: change volume & exposure ========================= */
+kde_change_agg AS (
+  SELECT
+    END_OF_MONTH_DATE,
+    KDE_NAME,
+    SUM(CASE
+          WHEN (
+                 (KDE_VALUE <> prev_value)
+                 OR (KDE_VALUE IS NULL AND prev_value IS NOT NULL)
+                 OR (KDE_VALUE IS NOT NULL AND prev_value IS NULL)
+               ) AND prev_value IS NOT NULL
+          THEN 1 ELSE 0
+        END) AS change_acct_cnt,
+    SUM(CASE
+          WHEN (
+                 (KDE_VALUE <> prev_value)
+                 OR (KDE_VALUE IS NULL AND prev_value IS NOT NULL)
+                 OR (KDE_VALUE IS NOT NULL AND prev_value IS NULL)
+               ) AND prev_value IS NOT NULL
+          THEN exposure ELSE 0
+        END) AS change_exposure
+  FROM kde_change
+  GROUP BY END_OF_MONTH_DATE, KDE_NAME
+),
+
+/* === Index months per KDE for regression & MA windows ====================== */
+kde_series AS (
+  SELECT
+    a.*,
+    ROW_NUMBER() OVER (PARTITION BY a.KDE_NAME ORDER BY a.END_OF_MONTH_DATE) AS month_num
+  FROM kde_change_agg a
+),
+
+/* === REG: fit per-KDE linear trend on full history ========================= */
+kde_regression AS (
+  SELECT
+    KDE_NAME,
+    REGR_SLOPE(change_exposure, month_num)     AS slope_exp,
+    REGR_INTERCEPT(change_exposure, month_num) AS intercept_exp,
+    REGR_COUNT(change_exposure, month_num)     AS n_exp,
+    REGR_SLOPE(change_acct_cnt, month_num)     AS slope_cnt,
+    REGR_INTERCEPT(change_acct_cnt, month_num) AS intercept_cnt,
+    REGR_COUNT(change_acct_cnt, month_num)     AS n_cnt
+  FROM kde_series
+  GROUP BY KDE_NAME
+),
+
+kde_reg_fit AS (
+  SELECT
+    s.KDE_NAME,
+    s.END_OF_MONTH_DATE,
+    s.month_num,
+    s.change_exposure,
+    s.change_acct_cnt,
+    (r.intercept_exp + r.slope_exp * s.month_num) AS pred_exp,
+    (r.intercept_cnt + r.slope_cnt * s.month_num) AS pred_cnt,
+    (s.change_exposure - (r.intercept_exp + r.slope_exp * s.month_num)) AS resid_exp,
+    (s.change_acct_cnt - (r.intercept_cnt + r.slope_cnt * s.month_num)) AS resid_cnt
+  FROM kde_series s
+  JOIN kde_regression r
+    ON s.KDE_NAME = r.KDE_NAME
+),
+
+/* REG residual stddev per KDE (for z-scores) */
+kde_reg_stats AS (
+  SELECT
+    KDE_NAME,
+    STDDEV(resid_exp) AS sd_resid_exp,
+    STDDEV(resid_cnt) AS sd_resid_cnt
+  FROM kde_reg_fit
+  GROUP BY KDE_NAME
+),
+
+kde_reg_z AS (
+  SELECT
+    f.KDE_NAME,
+    f.END_OF_MONTH_DATE,
+    (f.resid_exp / NULLIF(s.sd_resid_exp, 0)) AS exp_reg_z,
+    (f.resid_cnt / NULLIF(s.sd_resid_cnt, 0)) AS cnt_reg_z
+  FROM kde_reg_fit f
+  JOIN kde_reg_stats s
+    ON f.KDE_NAME = s.KDE_NAME
+),
+
+/* === MA(12): rolling baseline excluding current month ====================== */
+kde_ma_roll AS (
+  SELECT
+    KDE_NAME,
+    END_OF_MONTH_DATE,
+    change_exposure,
+    change_acct_cnt,
+    /* baselines computed over the 12 months BEFORE current row */
+    AVG(change_exposure) OVER (
+      PARTITION BY KDE_NAME ORDER BY END_OF_MONTH_DATE
+      ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+    ) AS ma_exp,
+    STDDEV(change_exposure) OVER (
+      PARTITION BY KDE_NAME ORDER BY END_OF_MONTH_DATE
+      ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+    ) AS sd_exp,
+    AVG(change_acct_cnt) OVER (
+      PARTITION BY KDE_NAME ORDER BY END_OF_MONTH_DATE
+      ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+    ) AS ma_cnt,
+    STDDEV(change_acct_cnt) OVER (
+      PARTITION BY KDE_NAME ORDER BY END_OF_MONTH_DATE
+      ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING
+    ) AS sd_cnt
+  FROM kde_series
+),
+
+kde_ma_z AS (
+  SELECT
+    KDE_NAME,
+    END_OF_MONTH_DATE,
+    ((change_exposure - ma_exp) / NULLIF(sd_exp, 0)) AS exp_ma_z,
+    ((change_acct_cnt - ma_cnt) / NULLIF(sd_cnt, 0)) AS cnt_ma_z
+  FROM kde_ma_roll
+),
+
+/* === Model selection: which method fits exposure better historically? ====== */
+/* Compute RMSE on exposure residuals for each method, using months BEFORE latest */
+rmse_hist AS (
+  SELECT
+    l.max_eom,
+    k.KDE_NAME,
+    /* REG residuals = resid_exp from kde_reg_fit */
+    SQRT(AVG( CASE WHEN rf.END_OF_MONTH_DATE < l.max_eom THEN (rf.resid_exp * rf.resid_exp) END )) AS rmse_reg_exp,
+    /* MA residuals = change_exposure - ma_exp */
+    SQRT(AVG( CASE WHEN mz.END_OF_MONTH_DATE < l.max_eom THEN POWER((mr.change_exposure - mr.ma_exp), 2) END )) AS rmse_ma_exp
+  FROM latest l
+  JOIN (SELECT DISTINCT KDE_NAME FROM kde_series) k ON 1=1
+  LEFT JOIN kde_reg_fit rf ON rf.KDE_NAME = k.KDE_NAME
+  LEFT JOIN kde_ma_roll mr ON mr.KDE_NAME = k.KDE_NAME
+  LEFT JOIN kde_ma_z    mz ON mz.KDE_NAME = k.KDE_NAME AND mz.END_OF_MONTH_DATE = mr.END_OF_MONTH_DATE
+  GROUP BY l.max_eom, k.KDE_NAME
+),
+
+method_choice AS (
+  SELECT
+    KDE_NAME,
+    CASE
+      WHEN rmse_ma_exp IS NULL AND rmse_reg_exp IS NOT NULL THEN 'REG'
+      WHEN rmse_reg_exp IS NULL AND rmse_ma_exp IS NOT NULL THEN 'MA'
+      WHEN rmse_reg_exp IS NULL AND rmse_ma_exp IS NULL THEN 'REG'  -- fallback
+      WHEN rmse_reg_exp <= rmse_ma_exp THEN 'REG' ELSE 'MA'
+    END AS chosen_method
+  FROM rmse_hist
+),
+
+/* === Latest-month scores from both methods ================================= */
+latest_scores AS (
+  SELECT
+    l.max_eom AS latest_month,
+    k.KDE_NAME,
+    /* REG z-scores */
+    rz.exp_reg_z,
+    rz.cnt_reg_z,
+    /* MA z-scores */
+    mz.exp_ma_z,
+    mz.cnt_ma_z
+  FROM latest l
+  JOIN (SELECT DISTINCT KDE_NAME FROM kde_series) k ON 1=1
+  LEFT JOIN kde_reg_z rz
+    ON rz.KDE_NAME = k.KDE_NAME AND rz.END_OF_MONTH_DATE = l.max_eom
+  LEFT JOIN kde_ma_z mz
+    ON mz.KDE_NAME = k.KDE_NAME AND mz.END_OF_MONTH_DATE = l.max_eom
+),
+
+/* === Final: pick per-KDE method & compute weighted severity ================= */
+chosen AS (
+  SELECT
+    s.latest_month,
+    s.KDE_NAME,
+    mc.chosen_method,
+
+    /* choose exposure z by method */
+    CASE WHEN mc.chosen_method = 'REG' THEN s.exp_reg_z ELSE s.exp_ma_z END AS exp_z,
+    /* choose count z by method */
+    CASE WHEN mc.chosen_method = 'REG' THEN s.cnt_reg_z ELSE s.cnt_ma_z END AS cnt_z,
+
+    /* keep both methods for transparency */
+    s.exp_reg_z, s.cnt_reg_z, s.exp_ma_z, s.cnt_ma_z
+  FROM latest_scores s
+  JOIN method_choice mc
+    ON mc.KDE_NAME = s.KDE_NAME
+)
+
+SELECT
+  c.latest_month,
+  c.KDE_NAME,
+  c.chosen_method,
+  ROUND(c.exp_z, 2)                         AS exp_z_chosen,
+  ROUND(c.cnt_z, 2)                         AS cnt_z_chosen,
+  /* weighted severity on chosen method */
+  ROUND( (0.3 * ABS(c.cnt_z) + 0.7 * ABS(c.exp_z)), 2 ) AS severity_score,
+
+  /* transparency fields (optional) */
+  ROUND(c.exp_reg_z, 2)                     AS exp_z_reg,
+  ROUND(c.cnt_reg_z, 2)                     AS cnt_z_reg,
+  ROUND(c.exp_ma_z, 2)                      AS exp_z_ma,
+  ROUND(c.cnt_ma_z, 2)                      AS cnt_z_ma
+FROM chosen c
+/* optional: suppress KDEs with no score (insufficient history) */
+WHERE (c.exp_z IS NOT NULL OR c.cnt_z IS NOT NULL)
+ORDER BY severity_score DESC, ABS(exp_z_chosen) DESC, ABS(cnt_z_chosen) DESC;
+
+
+
+
+
+
 -- Set the month you care about (any date within the month works)
 DECLARE @AsOfDate date = '2025-09-30';
 DECLARE @CurrEOM  date = EOMONTH(@AsOfDate);
@@ -27049,61 +27324,4 @@ SELECT
   CASE
     WHEN sigma_est IS NULL THEN NULL
     WHEN actual_latest < (forecast_val - 1.9599 * sigma_est) THEN TRUE
-    WHEN actual_latest > (forecast_val + 1.9599 * sigma_est) THEN TRUE
-    ELSE FALSE
-  END AS outside_95_band
-FROM summary_backtest
-
-UNION ALL
-
--- 3) FORWARD: latest→next forecast (no actual yet)
-SELECT
-  'SUMMARY_NEXT_FWD'       AS row_type,
-  RC_CODE                  AS key_col,
-  forecast_period          AS period_date,          -- next month (e.g., 2025-09-30)
-  NULL::FLOAT8             AS actual,
-  NULL::FLOAT8             AS roll_mean_6,
-  NULL::FLOAT8             AS roll_std_6,
-  NULL::FLOAT8             AS lag12_balance,
-  NULL::FLOAT8             AS regr_slope_12,
-  NULL::FLOAT8             AS regr_intercept_12,
-  forecast_val,
-  (forecast_val - 1.9599 * sigma_est) AS pi95_lo,
-  (forecast_val + 1.9599 * sigma_est) AS pi95_hi,
-  NULL::FLOAT8                         AS dev_abs,
-  NULL::FLOAT8                         AS dev_pct,
-  NULL::FLOAT8                         AS z_score,
-  NULL::FLOAT8                         AS severity_0_100,
-  NULL                                 AS outside_95_band
-FROM summary_next_fwd
-
-ORDER BY key_col, period_date;
-
-
-
-
-
-
-
-Date	Category	Description	 Amount 	Type
-9/6/2025	Coffee	Starbucks	 9.82 	Wants
-9/6/2025	Zyn	Shell	 6.00 	Wants
-9/6/2025	Snacks	Shell	 5.00 	Wants
-9/6/2025	Subscriptions	Netflix	 10.00 	Wants
-9/6/2025	Subscriptions	Hulu/Disney/ESPN	 10.00 	Wants
-9/6/2025	Clothing	J.Crew	 168.92 	Wants
-9/6/2025	Rent	Rent	 1,720.00 	Needs
-9/6/2025	Internet	Internet	 33.00 	Needs
-9/6/2025	Coffee	Starbucks	 3.86 	Wants
-9/6/2025	Alcohol	The Local	 13.00 	Wants
-9/6/2025	Alcohol	CVS	 12.00 	Wants
-9/6/2025	Alcohol	R-Day	 20.00 	Wants
-9/6/2025	Transit	Uber	 28.00 	Wants
-9/6/2025	Transit	Uber	 30.00 	Wants
-9/6/2025	Dining Out	Sizzle & Crunch	 30.20 	Wants
-9/7/2025	Coffee	Starbucks	 10.00 	Wants
-9/7/2025	Alcohol	Old Stove	 11.40 	Wants
-9/7/2025	Transit	Limes	 14.75 	Wants
-9/7/2025	Dining Out	Tom Douglas (Half Shell)	 76.91 	Wants
-9/7/2025	Dining Out	Mochinut	 20.97 	Wants
-9/7/202
+    WHEN a
