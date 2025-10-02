@@ -1,3 +1,20 @@
+WITH base as (
+	SELECT i.LOADDT AS MonthEnd, i.ACCTNBR, i.CIF, i.CUST_LINE_NBR, i.CLIENT_NM, i.NON_ACCR_INT_AMT, i.PRNCPL_GROSS_BAL_AMT, i.NOTEPRNCPLBALNET, i.DERIVED_AMORTIZED_COST_BASIS, i.AMORTIZED_COST_BASIS, a.TransactionType, a.Amount AS CO_AMOUNT
+	FROM CRDADMPRD.DBO.CDM_INSTRUMENTS_TOPSIDED i
+	LEFT JOIN CRDADMPRD.DBO.ALLLActivity_Base a
+	ON i.LOADDT = a.CHARGEOFFQTR and i.ACCTNBR = a.DW_NoteNumber
+	WHERE i.LOADDT = '9/31/2025'
+		AND i.CHARGE_OFF_CODE = 'C'
+		AND a.TransactionType = 'CHARGE-OFF'
+)
+SELECT TOP 10 *
+FROM base
+
+
+
+
+
+
 /* === KDE Change Analysis (portfolio-level; user-specified KDE list) ===
    - Change volume = # accounts whose KDE value changed vs previous month
    - Change exposure = sum of current-month exposure for those changed accounts
