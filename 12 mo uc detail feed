@@ -9,6 +9,174 @@
 WITH
 latest AS (
   SELECT MAX(t.END_OF_MONTH_DATE) AS max_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -24) AS start_eom, max_eom
+  FROM latest
+),
+
+/* Base slice with all KDE columns you plan to analyze */
+base AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.ACCOUNT_IDENTIFIER,
+    CAST(t.SOURCE_SYSTEM_BALANCE AS FLOAT8) AS exposure,
+    /* <<< list your KDE columns here so they are available below >>> */
+    t.PD_GRADE,
+    t.CRE_FLAG,
+    t.DAYS_PAST_DUE,
+    t.RC_CODE,
+    t.REVOLVING_CODE,
+    t.FDIC_CALL_CODE,
+    t.GL_ACCOUNT_CODE,
+    t.INDUSTRY_CODE,
+    t.MATURITY_DATE,
+    t.LTV,
+    t.NAICS_CODE,
+    t.RBC_CODE,
+    t.NON_ACCRUAL_FLAG
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+  CROSS JOIN rng r
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    /* Optional:
+       AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans' */
+),
+
+/* Manual UNPIVOT: edit this block to include/remove KDE columns */
+unpivot_kdes AS (
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'PD_GRADE'      AS KDE_NAME, CAST(PD_GRADE      AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'CRE_FLAG'       AS KDE_NAME, CAST(CRE_FLAG       AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'DAYS_PAST_DUE'  AS KDE_NAME, CAST(DAYS_PAST_DUE  AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'RC_CODE'        AS KDE_NAME, CAST(RC_CODE        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'REVOLVING_CODE'        AS KDE_NAME, CAST(REVOLVING_CODE        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'FDIC_CALL_CODE'        AS KDE_NAME, CAST(FDIC_CALL_CODE        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'GL_ACCOUNT_CODE'        AS KDE_NAME, CAST(GL_ACCOUNT_CODE        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'INDUSTRY_CODE'        AS KDE_NAME, CAST(INDUSTRY_CODE        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'MATURITY_DATE'        AS KDE_NAME, CAST(MATURITY_DATE        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'LTV'        AS KDE_NAME, CAST(LTV        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base 
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'NAICS_CODE'        AS KDE_NAME, CAST(NAICS_CODE        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base 
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'RBC_CODE'        AS KDE_NAME, CAST(RBC_CODE        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base 
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'NON_ACCRUAL_FLAG'        AS KDE_NAME, CAST(NON_ACCRUAL_FLAG        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base 
+),
+
+/* Get previous month's KDE value per account × KDE_NAME */
+kde_change AS (
+  SELECT
+    u.END_OF_MONTH_DATE,
+    u.KDE_NAME,
+    u.ACCOUNT_IDENTIFIER,
+    u.KDE_VALUE,
+    LAG(u.KDE_VALUE) OVER (
+      PARTITION BY u.KDE_NAME, u.ACCOUNT_IDENTIFIER
+      ORDER BY u.END_OF_MONTH_DATE
+    ) AS prev_value,
+    u.exposure
+  FROM unpivot_kdes u
+),
+
+/* Aggregate: count changed accounts and sum exposure for changed accounts */
+kde_change_agg AS (
+  SELECT
+    END_OF_MONTH_DATE,
+    KDE_NAME,
+    SUM(CASE
+          WHEN (
+                 (KDE_VALUE <> prev_value)
+                 OR (KDE_VALUE IS NULL AND prev_value IS NOT NULL)
+                 OR (KDE_VALUE IS NOT NULL AND prev_value IS NULL)
+               )
+               AND prev_value IS NOT NULL
+          THEN 1 ELSE 0
+        END) AS change_acct_cnt,
+    SUM(CASE
+          WHEN (
+                 (KDE_VALUE <> prev_value)
+                 OR (KDE_VALUE IS NULL AND prev_value IS NOT NULL)
+                 OR (KDE_VALUE IS NOT NULL AND prev_value IS NULL)
+               )
+               AND prev_value IS NOT NULL
+          THEN exposure ELSE 0
+        END) AS change_exposure
+  FROM kde_change
+  GROUP BY END_OF_MONTH_DATE, KDE_NAME
+),
+
+/* Historical stats for monthly change by KDE_NAME */
+kde_change_stats AS (
+  SELECT
+    KDE_NAME,
+    AVG(COALESCE(change_acct_cnt,0))    AS avg_cnt,
+    STDDEV(COALESCE(change_acct_cnt,0)) AS std_cnt,
+    AVG(COALESCE(change_exposure,0))    AS avg_exp,
+    STDDEV(COALESCE(change_exposure,0)) AS std_exp,
+    COUNT(*)                            AS hist_rows
+  FROM kde_change_agg
+  GROUP BY KDE_NAME
+),
+
+/* Join stats; compute z-scores and fixed severity */
+kde_flag AS (
+  SELECT
+    a.END_OF_MONTH_DATE,
+    a.KDE_NAME,
+    a.change_acct_cnt,
+    a.change_exposure,
+    (a.change_acct_cnt - s.avg_cnt) / NULLIF(s.std_cnt, 0) AS acct_change_z,
+    (a.change_exposure - s.avg_exp) / NULLIF(s.std_exp, 0) AS exp_change_z,
+    0.3 * ABS((a.change_acct_cnt - s.avg_cnt) / NULLIF(s.std_cnt, 0))
+  + 0.7 * ABS((a.change_exposure - s.avg_exp) / NULLIF(s.std_exp, 0)) AS severity_score,
+    s.hist_rows
+  FROM kde_change_agg a
+  JOIN kde_change_stats s
+    ON a.KDE_NAME = s.KDE_NAME
+)
+
+SELECT
+  f.KDE_NAME,
+  f.change_acct_cnt,
+  f.change_exposure,
+  ROUND(f.acct_change_z, 2) AS acct_change_z,
+  ROUND(f.exp_change_z, 2)  AS exp_change_z,
+  ROUND(f.severity_score, 2) AS severity_score
+FROM kde_flag f
+JOIN latest l
+  ON f.END_OF_MONTH_DATE = l.max_eom
+WHERE f.severity_score IS NOT NULL
+  AND f.hist_rows >= 6
+ORDER BY f.severity_score DESC, ABS(f.exp_change_z) DESC, ABS(f.acct_change_z) DESC;
+
+
+
+
+
+
+
+/* === KDE Change Analysis (portfolio-level; user-specified KDE list) ===
+   - Change volume = # accounts whose KDE value changed vs previous month
+   - Change exposure = sum of current-month exposure for those changed accounts
+   - Severity = 0.3*|acct_change_z| + 0.7*|exp_change_z|
+   - History window: 24 months
+   - Platform: Netezza-friendly (no IS DISTINCT FROM)
+   ===================================================================== */
+
+WITH
+latest AS (
+  SELECT MAX(t.END_OF_MONTH_DATE) AS max_eom
   FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
   WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
 ),
