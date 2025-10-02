@@ -47,6 +47,173 @@ base AS (
 
 /* Manual UNPIVOT: edit this block to include/remove KDE columns */
 unpivot_kdes AS (
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'PD_GRADE'       AS KDE_NAME, CAST(PD_GRADE       AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'CRE_FLAG'        AS KDE_NAME, CAST(CRE_FLAG        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'DAYS_PAST_DUE'   AS KDE_NAME, CAST(DAYS_PAST_DUE   AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'RC_CODE'         AS KDE_NAME, CAST(RC_CODE         AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'REVOLVING_CODE'  AS KDE_NAME, CAST(REVOLVING_CODE  AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'FDIC_CALL_CODE'  AS KDE_NAME, CAST(FDIC_CALL_CODE  AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'GL_ACCOUNT_CODE' AS KDE_NAME, CAST(GL_ACCOUNT_CODE AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'INDUSTRY_CODE'   AS KDE_NAME, CAST(INDUSTRY_CODE   AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'MATURITY_DATE'   AS KDE_NAME, CAST(MATURITY_DATE   AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'LTV'             AS KDE_NAME, CAST(LTV             AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'NAICS_CODE'      AS KDE_NAME, CAST(NAICS_CODE      AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'RBC_CODE'        AS KDE_NAME, CAST(RBC_CODE        AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'NON_ACCRUAL_FLAG' AS KDE_NAME, CAST(NON_ACCRUAL_FLAG AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+),
+
+/* Get previous month's KDE value per account × KDE_NAME */
+kde_change AS (
+  SELECT
+    u.END_OF_MONTH_DATE,
+    u.KDE_NAME,
+    u.ACCOUNT_IDENTIFIER,
+    u.KDE_VALUE,
+    LAG(u.KDE_VALUE) OVER (
+      PARTITION BY u.KDE_NAME, u.ACCOUNT_IDENTIFIER
+      ORDER BY u.END_OF_MONTH_DATE
+    ) AS prev_value,
+    u.exposure
+  FROM unpivot_kdes u
+),
+
+/* Aggregate: count changed accounts and sum exposure for changed accounts */
+kde_change_agg AS (
+  SELECT
+    END_OF_MONTH_DATE,
+    KDE_NAME,
+    SUM(CASE
+          WHEN (
+                 (KDE_VALUE <> prev_value)
+                 OR (KDE_VALUE IS NULL AND prev_value IS NOT NULL)
+                 OR (KDE_VALUE IS NOT NULL AND prev_value IS NULL)
+               )
+               AND prev_value IS NOT NULL
+          THEN 1 ELSE 0
+        END) AS change_acct_cnt,
+    SUM(CASE
+          WHEN (
+                 (KDE_VALUE <> prev_value)
+                 OR (KDE_VALUE IS NULL AND prev_value IS NOT NULL)
+                 OR (KDE_VALUE IS NOT NULL AND prev_value IS NULL)
+               )
+               AND prev_value IS NOT NULL
+          THEN exposure ELSE 0
+        END) AS change_exposure
+  FROM kde_change
+  GROUP BY END_OF_MONTH_DATE, KDE_NAME
+),
+
+/* Historical stats for monthly change by KDE_NAME */
+kde_change_stats AS (
+  SELECT
+    KDE_NAME,
+    AVG(COALESCE(change_acct_cnt,0))    AS avg_cnt,
+    STDDEV(COALESCE(change_acct_cnt,0)) AS std_cnt,
+    AVG(COALESCE(change_exposure,0))    AS avg_exp,
+    STDDEV(COALESCE(change_exposure,0)) AS std_exp,
+    COUNT(*)                            AS hist_rows
+  FROM kde_change_agg
+  GROUP BY KDE_NAME
+),
+
+/* Join stats; compute z-scores and fixed severity */
+kde_flag AS (
+  SELECT
+    a.END_OF_MONTH_DATE,
+    a.KDE_NAME,
+    a.change_acct_cnt,
+    a.change_exposure,
+    (a.change_acct_cnt - s.avg_cnt) / NULLIF(s.std_cnt, 0) AS acct_change_z,
+    (a.change_exposure - s.avg_exp) / NULLIF(s.std_exp, 0) AS exp_change_z,
+    0.3 * ABS((a.change_acct_cnt - s.avg_cnt) / NULLIF(s.std_cnt, 0))
+  + 0.7 * ABS((a.change_exposure - s.avg_exp) / NULLIF(s.std_exp, 0)) AS severity_score,
+    s.hist_rows
+  FROM kde_change_agg a
+  JOIN kde_change_stats s
+    ON a.KDE_NAME = s.KDE_NAME
+)
+
+SELECT
+  l.max_eom                               AS latest_month,   -- <<< added reference column
+  f.KDE_NAME,
+  f.change_acct_cnt,
+  f.change_exposure,
+  ROUND(f.acct_change_z, 2)               AS acct_change_z,
+  ROUND(f.exp_change_z, 2)                AS exp_change_z,
+  ROUND(f.severity_score, 2)              AS severity_score
+FROM kde_flag f
+JOIN latest l
+  ON f.END_OF_MONTH_DATE = l.max_eom
+WHERE f.severity_score IS NOT NULL
+  AND f.hist_rows >= 6
+ORDER BY f.severity_score DESC, ABS(f.exp_change_z) DESC, ABS(f.acct_change_z) DESC;
+
+
+
+
+
+/* === KDE Change Analysis (portfolio-level; user-specified KDE list) ===
+   - Change volume = # accounts whose KDE value changed vs previous month
+   - Change exposure = sum of current-month exposure for those changed accounts
+   - Severity = 0.3*|acct_change_z| + 0.7*|exp_change_z|
+   - History window: 24 months
+   - Platform: Netezza-friendly (no IS DISTINCT FROM)
+   ===================================================================== */
+
+WITH
+latest AS (
+  SELECT MAX(t.END_OF_MONTH_DATE) AS max_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -24) AS start_eom, max_eom
+  FROM latest
+),
+
+/* Base slice with all KDE columns you plan to analyze */
+base AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.ACCOUNT_IDENTIFIER,
+    CAST(t.SOURCE_SYSTEM_BALANCE AS FLOAT8) AS exposure,
+    /* <<< list your KDE columns here so they are available below >>> */
+    t.PD_GRADE,
+    t.CRE_FLAG,
+    t.DAYS_PAST_DUE,
+    t.RC_CODE,
+    t.REVOLVING_CODE,
+    t.FDIC_CALL_CODE,
+    t.GL_ACCOUNT_CODE,
+    t.INDUSTRY_CODE,
+    t.MATURITY_DATE,
+    t.LTV,
+    t.NAICS_CODE,
+    t.RBC_CODE,
+    t.NON_ACCRUAL_FLAG
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+  CROSS JOIN rng r
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    /* Optional:
+       AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans' */
+),
+
+/* Manual UNPIVOT: edit this block to include/remove KDE columns */
+unpivot_kdes AS (
   SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'PD_GRADE'      AS KDE_NAME, CAST(PD_GRADE      AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
   UNION ALL
   SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'CRE_FLAG'       AS KDE_NAME, CAST(CRE_FLAG       AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
@@ -27043,311 +27210,4 @@ calc AS (
                     THEN ( (CAST(r.n12 AS FLOAT8) * r.sum12_xy) - (r.sum12_x * r.sum12_y) )
                          / ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) )
                   ELSE NULL
-                END, 0.0) * r.sum12_x ) ) / CAST(r.n12 AS FLOAT8)
-      ELSE NULL
-    END AS regr_intercept_12
-  FROM roll r
-),
-
--- 7a) latest month per system
-latest_per_sys AS (
-  SELECT
-    CONTRACT_SOURCE_SYSTEM,
-    MAX(END_OF_MONTH_DATE) AS max_eom
-  FROM calc
-  GROUP BY CONTRACT_SOURCE_SYSTEM
-),
-
--- 7b) prior (previous) month per system
-prev_per_sys AS (
-  SELECT
-    l.CONTRACT_SOURCE_SYSTEM,
-    MAX(c.END_OF_MONTH_DATE) AS prev_eom
-  FROM latest_per_sys l
-  JOIN calc c
-    ON c.CONTRACT_SOURCE_SYSTEM = l.CONTRACT_SOURCE_SYSTEM
-   AND c.END_OF_MONTH_DATE < l.max_eom
-  GROUP BY l.CONTRACT_SOURCE_SYSTEM
-),
-
--- 7c) rows for latest month and prior month (for both modes)
-last_latest AS (  -- latest row: basis for FORWARD forecast (to next month)
-  SELECT c.*
-  FROM calc c
-  JOIN latest_per_sys l
-    ON c.CONTRACT_SOURCE_SYSTEM = l.CONTRACT_SOURCE_SYSTEM
-   AND c.END_OF_MONTH_DATE     = l.max_eom
-),
-last_prev AS (    -- previous row: basis for BACKTEST forecast (to latest month)
-  SELECT c.*
-  FROM calc c
-  JOIN prev_per_sys p
-    ON c.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
-   AND c.END_OF_MONTH_DATE     = p.prev_eom
-),
-
--- 7d) bring in the latest actual (value at latest month) for backtest comparison
-latest_actual AS (
-  SELECT
-    ll.CONTRACT_SOURCE_SYSTEM,
-    ll.END_OF_MONTH_DATE AS latest_eom,
-    ll.SOURCE_SYSTEM_BALANCE AS actual_latest
-  FROM last_latest ll
-),
-
--- 8) SUMMARY_NEXT_FWD: forecast from latest → next month
-summary_next_fwd AS (
-  SELECT
-    l.CONTRACT_SOURCE_SYSTEM,
-    l.END_OF_MONTH_DATE                                           AS last_period,
-    ADD_MONTHS(l.END_OF_MONTH_DATE, 1)                            AS forecast_period,
-    l.SOURCE_SYSTEM_BALANCE                                       AS actual_last,
-
-    -- candidate forecasts
-    CASE
-      WHEN l.regr_slope_12 IS NOT NULL AND l.regr_intercept_12 IS NOT NULL
-        THEN l.regr_intercept_12 + l.regr_slope_12 * CAST(l.rn + 1 AS FLOAT8)
-      ELSE NULL
-    END                                                           AS fc_linear,
-    l.lag12_balance                                               AS fc_seasonal,
-    l.roll_mean_6                                                 AS fc_rollmean,
-
-    -- choose forecast: linear → seasonal → rolling mean
-    COALESCE(
-      CASE
-        WHEN l.regr_slope_12 IS NOT NULL AND l.regr_intercept_12 IS NOT NULL
-          THEN l.regr_intercept_12 + l.regr_slope_12 * CAST(l.rn + 1 AS FLOAT8)
-        ELSE NULL
-      END,
-      l.lag12_balance,
-      l.roll_mean_6
-    )                                                             AS forecast_val,
-
-    -- sigma: prefer rolling-6 else overall sample std from moments
-    COALESCE(
-      l.roll_std_6,
-      CASE WHEN l.cnt_all > 1
-           THEN SQRT( GREATEST(l.avg2_all - (l.avg_all * l.avg_all), 0.0)
-                      * (CAST(l.cnt_all AS FLOAT8) / CAST(l.cnt_all - 1 AS FLOAT8)) )
-           ELSE NULL
-      END
-    )                                                             AS sigma_est,
-
-    l.avg_all                                                     AS avg_level_sys
-  FROM last_latest l
-),
-
--- 9) SUMMARY_BACKTEST: forecast from previous → latest month, compare to latest actual
-summary_backtest AS (
-  SELECT
-    p.CONTRACT_SOURCE_SYSTEM,
-    p.END_OF_MONTH_DATE                                           AS model_asof_period,  -- prev month (model trained up to here)
-    a.latest_eom                                                  AS forecast_period,    -- latest month (target)
-    a.actual_latest                                               AS actual_latest,
-
-    -- candidate forecasts (from previous row’s params ⇒ step ahead 1)
-    CASE
-      WHEN p.regr_slope_12 IS NOT NULL AND p.regr_intercept_12 IS NOT NULL
-        THEN p.regr_intercept_12 + p.regr_slope_12 * CAST(p.rn + 1 AS FLOAT8)
-      ELSE NULL
-    END                                                           AS fc_linear,
-    p.lag12_balance                                               AS fc_seasonal,
-    p.roll_mean_6                                                 AS fc_rollmean,
-
-    COALESCE(
-      CASE
-        WHEN p.regr_slope_12 IS NOT NULL AND p.regr_intercept_12 IS NOT NULL
-          THEN p.regr_intercept_12 + p.regr_slope_12 * CAST(p.rn + 1 AS FLOAT8)
-        ELSE NULL
-      END,
-      p.lag12_balance,
-      p.roll_mean_6
-    )                                                             AS forecast_val,
-
-    -- sigma estimated from previous window
-    COALESCE(
-      p.roll_std_6,
-      CASE WHEN p.cnt_all > 1
-           THEN SQRT( GREATEST(p.avg2_all - (p.avg_all * p.avg_all), 0.0)
-                      * (CAST(p.cnt_all AS FLOAT8) / CAST(p.cnt_all - 1 AS FLOAT8)) )
-           ELSE NULL
-      END
-    )                                                             AS sigma_est,
-
-    p.avg_all                                                     AS avg_level_sys
-  FROM last_prev p
-  JOIN latest_actual a
-    ON a.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
-)
-
--- ===== FINAL OUTPUTS =====
--- 1) Full HISTORY (one row per month per system with stats)
-SELECT
-  'HISTORY'                AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  END_OF_MONTH_DATE        AS period_date,
-  SOURCE_SYSTEM_BALANCE    AS actual,
-  roll_mean_6,
-  roll_std_6,
-  lag12_balance,
-  regr_slope_12,
-  regr_intercept_12,
-  NULL::FLOAT8             AS forecast_val,
-  NULL::FLOAT8             AS pi95_lo,
-  NULL::FLOAT8             AS pi95_hi,
-  NULL::FLOAT8             AS dev_abs,
-  NULL::FLOAT8             AS dev_pct,
-  NULL::FLOAT8             AS z_score,
-  NULL::FLOAT8             AS severity_0_100,
-  NULL                     AS outside_95_band
-FROM calc
-
-UNION ALL
-
--- 2) BACKTEST: prev→latest forecast with actual comparison
-SELECT
-  'SUMMARY_BACKTEST'       AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  forecast_period          AS period_date,          -- latest month (e.g., 2025-08-31)
-  actual_latest            AS actual,
-  NULL::FLOAT8             AS roll_mean_6,
-  NULL::FLOAT8             AS roll_std_6,
-  NULL::FLOAT8             AS lag12_balance,
-  NULL::FLOAT8             AS regr_slope_12,
-  NULL::FLOAT8             AS regr_intercept_12,
-  forecast_val,
-  (forecast_val - 1.9599 * sigma_est) AS pi95_lo,
-  (forecast_val + 1.9599 * sigma_est) AS pi95_hi,
-  (actual_latest - forecast_val)      AS dev_abs,
-  CASE WHEN forecast_val <> 0 THEN (actual_latest - forecast_val) / forecast_val ELSE NULL END AS dev_pct,
-  CASE WHEN sigma_est IS NOT NULL AND sigma_est > 0 THEN (actual_latest - forecast_val) / sigma_est ELSE NULL END AS z_score,
-  100.0 * (
-    0.5 * LEAST(ABS(CASE WHEN sigma_est IS NOT NULL AND sigma_est > 0 THEN (actual_latest - forecast_val) / sigma_est ELSE 0 END) / 3.0, 1.0)
-  + 0.3 * LEAST(ABS(CASE WHEN forecast_val <> 0 THEN (actual_latest - forecast_val) / forecast_val ELSE 0 END) / 0.10, 1.0)
-  + 0.2 * LEAST(ABS(actual_latest - forecast_val) / NULLIF(avg_level_sys * 0.10, 0), 1.0)
-  ) AS severity_0_100,
-  CASE
-    WHEN sigma_est IS NULL THEN NULL
-    WHEN actual_latest < (forecast_val - 1.9599 * sigma_est) THEN TRUE
-    WHEN actual_latest > (forecast_val + 1.9599 * sigma_est) THEN TRUE
-    ELSE FALSE
-  END AS outside_95_band
-FROM summary_backtest
-
-UNION ALL
-
--- 3) FORWARD: latest→next forecast (no actual yet)
-SELECT
-  'SUMMARY_NEXT_FWD'       AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  forecast_period          AS period_date,          -- next month (e.g., 2025-09-30)
-  NULL::FLOAT8             AS actual,
-  NULL::FLOAT8             AS roll_mean_6,
-  NULL::FLOAT8             AS roll_std_6,
-  NULL::FLOAT8             AS lag12_balance,
-  NULL::FLOAT8             AS regr_slope_12,
-  NULL::FLOAT8             AS regr_intercept_12,
-  forecast_val,
-  (forecast_val - 1.9599 * sigma_est) AS pi95_lo,
-  (forecast_val + 1.9599 * sigma_est) AS pi95_hi,
-  NULL::FLOAT8                         AS dev_abs,
-  NULL::FLOAT8                         AS dev_pct,
-  NULL::FLOAT8                         AS z_score,
-  NULL::FLOAT8                         AS severity_0_100,
-  NULL                                 AS outside_95_band
-FROM summary_next_fwd
-
-ORDER BY CONTRACT_SOURCE_SYSTEM, period_date;
-
-
-
-
-
-
-WITH latest AS (
-  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
-  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
-  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
-),
-rng AS (
-  SELECT ADD_MONTHS(max_eom, -30) AS start_eom, max_eom FROM latest
-),
-
--- 1) system × month, filtered to Total Loans, cast to FLOAT8
-base AS (
-  SELECT
-    t.END_OF_MONTH_DATE,
-    t.CONTRACT_SOURCE_SYSTEM,
-    CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8) AS SOURCE_SYSTEM_BALANCE
-  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
-  CROSS JOIN rng r
-  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
-    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
-    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
-  GROUP BY 1,2
-),
-
--- 2) row index per system (window only here)
-idx1 AS (
-  SELECT
-    b.*,
-    ROW_NUMBER() OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS rn
-  FROM base b
-),
-
--- 3) materialize float index (no window use of fresh alias later)
-idx2 AS (
-  SELECT
-    i.*,
-    CAST(i.rn AS FLOAT8) AS rn_f
-  FROM idx1 i
-),
-
--- 4) cumulative sums (window functions only here)
-csum AS (
-  SELECT
-    x.*,
-
-    -- cumulative sums for y and y^2
-    SUM(x.SOURCE_SYSTEM_BALANCE) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_y,
-
-    SUM(CAST(x.SOURCE_SYSTEM_BALANCE * x.SOURCE_SYSTEM_BALANCE AS FLOAT8)) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_y2,
-
-    -- cumulative x, x^2, and x*y
-    SUM(x.rn_f) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_x,
-
-    SUM(CAST(x.rn_f * x.rn_f AS FLOAT8)) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_x2,
-
-    SUM(CAST(x.rn_f * x.SOURCE_SYSTEM_BALANCE AS FLOAT8)) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_xy,
-
-    -- overall per-system moments for fallback sigma
-    COUNT(*) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM) AS cnt_all,
-    AVG(x.SOURCE_SYSTEM_BALANCE) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM) AS avg_all,
-    AVG(CAST(x.SOURCE_SYSTEM_BALANCE * x.SOURCE_SYSTEM_BALANCE AS FLOAT8))
-      OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM) AS avg2_all
-  FROM idx2 x
-),
-
--- 5) build rolling windows via (csum - lag(csum)); also lag-12
-roll AS (
-  SELECT
-    c.*,
-
-    LEAST(c.rn, 6)  AS n6,
-    LEAST(c.rn, 12) AS n12,
-
-    -- 6-row rolling sums
-    (c.csum_y  - COALESCE(LAG(c.csum_y,  6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y,
-    (c.csum_y2 - COALESCE(LAG(c.csum_y2, 6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y2,
-
-    -- 12-row rolling
+                END, 0.0) * r.sum12
