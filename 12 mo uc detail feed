@@ -1,3 +1,81 @@
+WITH params AS (
+  SELECT DATE '2025-09-30' AS as_of_date
+),
+base AS (
+  SELECT
+      End_of_Month_Date,
+      CASE
+        WHEN CONTRACT_SOURCE_SYSTEM IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN') THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1051872' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1061833' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1041344' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1041211' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1041345' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1041364' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1041210' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042127' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042213' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042048' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042368' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042408' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042409' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042424' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1100001' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1142067' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042886' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1043008' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO') THEN 'L-FCB'
+        WHEN CONTRACT_SOURCE_SYSTEM IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN','INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001','SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN','STRAT1','STRAT1-EXCPTN') THEN 'L-CIT'
+        ELSE 'NULL-Need to Research'
+      END AS bank,
+      Account_Name,
+      Contract_Source_System,
+      CIS_Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag,
+      PROD_HIER_LEVEL_5,
+      RBC_Code
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE END_OF_MONTH_DATE = (SELECT as_of_date FROM params)
+    AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+enriched AS (
+  SELECT
+    b.*,
+    CASE
+      WHEN Days_Past_Due = 0 THEN 'Zero Days'
+      WHEN Days_Past_Due BETWEEN 1 AND 30 THEN '1-30 Days'
+      WHEN Days_Past_Due BETWEEN 31 AND 90 THEN '31-90 Days'
+      WHEN Days_Past_Due BETWEEN 91 AND 180 THEN '91-180 Days'
+      WHEN Days_Past_Due > 180 THEN '180+ Days'
+      ELSE 'Unknown'
+    END AS Days_Past_Due_Bucket,
+    CASE
+      WHEN Source_System_Balance < 250000 THEN '< $250k'
+      WHEN Source_System_Balance < 500000 THEN '$250k - < $500k'
+      ELSE '>= $500k'
+    END AS Balance_Bucket
+  FROM base b
+)
+SELECT *
+FROM enriched
+ORDER BY bank, Account_Name, Account_Identifier;
+
+
+
+
 
 WITH params AS (
   SELECT DATE '2025-09-30' AS as_of_date
@@ -26940,148 +27018,4 @@ Key Outputs:
 How to Use:
 
 	•	Analysts review SUMMARY_BACKTEST_12M_SA to investigate high-severity anomalies (sorted descending).
-	•	Executives view the Power BI dashboard to understand portfolio stability, key drivers, and focus areas.
-
-
-
-
-
-
-
-WITH latest AS (
-  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
-  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
-  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
-),
-rng AS (
-  SELECT ADD_MONTHS(max_eom, -30) AS start_eom, max_eom FROM latest
-),
-
-/* 1) Base monthly sums per system (Total Loans) */
-base AS (
-  SELECT
-    t.END_OF_MONTH_DATE,
-    t.CONTRACT_SOURCE_SYSTEM,
-    CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8) AS SOURCE_SYSTEM_BALANCE
-  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
-  CROSS JOIN rng r
-  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
-    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
-    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
-  GROUP BY 1,2
-),
-
-/* 🚫 Fix correlated subquery: precompute avg level once */
-sys_level_avg AS (
-  SELECT CONTRACT_SOURCE_SYSTEM,
-         AVG(SOURCE_SYSTEM_BALANCE) AS avg_level_sys
-  FROM base
-  GROUP BY CONTRACT_SOURCE_SYSTEM
-),
-
-/* 2) Row index per system */
-idx1 AS (
-  SELECT
-    b.*,
-    ROW_NUMBER() OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS rn
-  FROM base b
-),
-
-/* 3) Month-of-year seasonal indices (normalized to avg=1) */
-base_moy AS (
-  SELECT
-    b.END_OF_MONTH_DATE,
-    b.CONTRACT_SOURCE_SYSTEM,
-    EXTRACT(MONTH FROM b.END_OF_MONTH_DATE) AS moy,
-    b.SOURCE_SYSTEM_BALANCE
-  FROM base b
-),
-sys_avg AS (
-  SELECT CONTRACT_SOURCE_SYSTEM, AVG(SOURCE_SYSTEM_BALANCE) AS avg_all_sys
-  FROM base_moy
-  GROUP BY CONTRACT_SOURCE_SYSTEM
-),
-season_raw AS (
-  SELECT
-    m.CONTRACT_SOURCE_SYSTEM,
-    m.moy,
-    AVG(m.SOURCE_SYSTEM_BALANCE) / a.avg_all_sys AS factor_raw
-  FROM base_moy m
-  JOIN sys_avg a
-    ON a.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
-  GROUP BY m.CONTRACT_SOURCE_SYSTEM, m.moy, a.avg_all_sys
-),
-season_norm AS (
-  SELECT
-    s.CONTRACT_SOURCE_SYSTEM,
-    s.moy,
-    s.factor_raw / NULLIF(AVG(s.factor_raw) OVER (PARTITION BY s.CONTRACT_SOURCE_SYSTEM), 0.0) AS season_factor
-  FROM season_raw s
-),
-
-/* 4) Join factors; de-seasonalize; materialize float index */
-base_d AS (
-  SELECT
-    i.END_OF_MONTH_DATE,
-    i.CONTRACT_SOURCE_SYSTEM,
-    i.rn,
-    CAST(i.rn AS FLOAT8) AS rn_f,
-    EXTRACT(MONTH FROM i.END_OF_MONTH_DATE) AS moy,
-    i.SOURCE_SYSTEM_BALANCE,
-    COALESCE(f.season_factor, 1.0) AS season_factor,
-    CAST(i.SOURCE_SYSTEM_BALANCE / NULLIF(f.season_factor, 0.0) AS FLOAT8) AS y_d
-  FROM idx1 i
-  LEFT JOIN season_norm f
-    ON f.CONTRACT_SOURCE_SYSTEM = i.CONTRACT_SOURCE_SYSTEM
-   AND f.moy = EXTRACT(MONTH FROM i.END_OF_MONTH_DATE)
-),
-
-/* 5) Cumulative sums on de-seasonalized series */
-csum_d AS (
-  SELECT
-    b.*,
-    SUM(b.y_d)  OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS csum_y_d,
-    SUM(CAST(b.y_d * b.y_d AS FLOAT8)) OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS csum_y2_d,
-    SUM(b.rn_f) OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS csum_x_d,
-    SUM(CAST(b.rn_f * b.rn_f AS FLOAT8)) OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS csum_x2_d,
-    SUM(CAST(b.rn_f * b.y_d AS FLOAT8)) OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS csum_xy_d
-  FROM base_d b
-),
-
-/* 6) Rolling windows via (csum - lag(csum)) */
-roll_d AS (
-  SELECT
-    c.*,
-    LEAST(c.rn, 6)  AS n6_d,
-    LEAST(c.rn, 12) AS n12_d,
-
-    (c.csum_y_d  - COALESCE(LAG(c.csum_y_d,  6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y_d,
-    (c.csum_y2_d - COALESCE(LAG(c.csum_y2_d, 6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y2_d,
-
-    (c.csum_x_d  - COALESCE(LAG(c.csum_x_d,  12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_x_d,
-    (c.csum_y_d  - COALESCE(LAG(c.csum_y_d,  12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_y_d,
-    (c.csum_x2_d - COALESCE(LAG(c.csum_x2_d, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_x2_d,
-    (c.csum_xy_d - COALESCE(LAG(c.csum_xy_d, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_xy_d
-  FROM csum_d c
-),
-
-/* 7) Per-row stats on de-seasonalized series */
-calc_d AS (
-  SELECT
-    r.*,
-
-    CASE WHEN r.n6_d > 0 THEN r.sum6_y_d / CAST(r.n6_d AS FLOAT8) ELSE NULL END AS roll_mean_6_d,
-
-    CASE
-      WHEN r.n6_d > 1 THEN
-        SQRT( GREATEST( (r.sum6_y2_d - ( (r.sum6_y_d * r.sum6_y_d) / CAST(r.n6_d AS FLOAT8) )), 0.0 )
-              / CAST(r.n6_d - 1 AS FLOAT8) )
-      ELSE NULL
-    END AS roll_std_6_d,
-
-    CASE
-      WHEN r.n12_d >= 2 AND ( (CAST(r.n12_d AS FLOAT8) * r.sum12_x2_d) - (r.sum12_x_d * r.sum12_x_d) ) <> 0.0
-        THEN ( (CAST(r.n12_d AS FLOAT8) * r.sum12_xy_d) - (r.sum12_x_d * r.sum12_y_d) )
-             / ( (CAST(r.n12_d AS FLOAT8) * r.sum12_x2_d) - (r.sum12_x_d * r.sum12_x_d) )
-      ELSE NULL
-    E
+	•	Executives view the 
