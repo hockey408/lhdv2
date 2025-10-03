@@ -1,3 +1,198 @@
+/* Drilldown + reclass detection between RC_CODEs (Netezza-safe)
+
+   Parameters to set:
+     - Focus RC_CODE ............. 'AL'
+     - Focus month_end ........... DATE '2025-08-31'
+*/
+
+WITH
+/* All accounts in the current month (all RCs) */
+cur_all AS (
+  SELECT
+    d.ACCOUNT_IDENTIFIER,
+    d.RC_CODE,
+    SUM(COALESCE(d.SOURCE_SYSTEM_BALANCE,0))::FLOAT8 AS bal_cur_any
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+  WHERE d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND d.END_OF_MONTH_DATE = DATE '2025-08-31'
+  GROUP BY d.ACCOUNT_IDENTIFIER, d.RC_CODE
+),
+
+/* All accounts in the prior month (all RCs) */
+prev_all AS (
+  SELECT
+    d.ACCOUNT_IDENTIFIER,
+    d.RC_CODE,
+    SUM(COALESCE(d.SOURCE_SYSTEM_BALANCE,0))::FLOAT8 AS bal_prev_any
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+  WHERE d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND d.END_OF_MONTH_DATE = ADD_MONTHS(DATE '2025-08-31', -1)
+  GROUP BY d.ACCOUNT_IDENTIFIER, d.RC_CODE
+),
+
+/* Focus RC_CODE current month accounts */
+cur_focus AS (
+  SELECT
+    d.RC_CODE,
+    d.RC_DESCRIPTION,
+    d.ACCOUNT_IDENTIFIER,
+    SUM(COALESCE(d.SOURCE_SYSTEM_BALANCE,0))::FLOAT8 AS bal_cur
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+  WHERE d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND d.RC_CODE = 'AL'
+    AND d.END_OF_MONTH_DATE = DATE '2025-08-31'
+  GROUP BY d.RC_CODE, d.RC_DESCRIPTION, d.ACCOUNT_IDENTIFIER
+),
+
+/* Focus RC_CODE prior month accounts */
+prev_focus AS (
+  SELECT
+    d.RC_CODE,
+    d.RC_DESCRIPTION,
+    d.ACCOUNT_IDENTIFIER,
+    SUM(COALESCE(d.SOURCE_SYSTEM_BALANCE,0))::FLOAT8 AS bal_prev
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+  WHERE d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND d.RC_CODE = 'AL'
+    AND d.END_OF_MONTH_DATE = ADD_MONTHS(DATE '2025-08-31', -1)
+  GROUP BY d.RC_CODE, d.RC_DESCRIPTION, d.ACCOUNT_IDENTIFIER
+),
+
+/* Bring focus months together (keep rows present in either month) */
+focus_join AS (
+  SELECT
+    COALESCE(c.RC_CODE, p.RC_CODE)                      AS rc_code,
+    COALESCE(c.ACCOUNT_IDENTIFIER, p.ACCOUNT_IDENTIFIER) AS account_identifier,
+    /* take any available description from focus tables */
+    MAX(COALESCE(c.RC_DESCRIPTION, p.RC_DESCRIPTION))   AS rc_description,
+    COALESCE(p.bal_prev, 0.0)                           AS balance_prev,
+    COALESCE(c.bal_cur,  0.0)                           AS balance_cur
+  FROM cur_focus c
+  FULL OUTER JOIN prev_focus p
+    ON  p.ACCOUNT_IDENTIFIER = c.ACCOUNT_IDENTIFIER
+    AND p.RC_CODE = c.RC_CODE
+  GROUP BY
+    COALESCE(c.RC_CODE, p.RC_CODE),
+    COALESCE(c.ACCOUNT_IDENTIFIER, p.ACCOUNT_IDENTIFIER),
+    COALESCE(p.bal_prev, 0.0),
+    COALESCE(c.bal_cur,  0.0)
+),
+
+/* For accounts that are NOT in focus RC in a month, find if they exist in OTHER RCs */
+
+/* Best (largest) prior-month other-RC for each account */
+prev_other_rank AS (
+  SELECT
+    pa.ACCOUNT_IDENTIFIER,
+    pa.RC_CODE           AS other_rc_prev,
+    pa.bal_prev_any,
+    ROW_NUMBER() OVER (
+      PARTITION BY pa.ACCOUNT_IDENTIFIER
+      ORDER BY pa.bal_prev_any DESC
+    ) AS rn_prev
+  FROM prev_all pa
+  WHERE pa.RC_CODE <> 'AL'   -- exclude the focus RC
+),
+
+/* Best (largest) current-month other-RC for each account */
+cur_other_rank AS (
+  SELECT
+    ca.ACCOUNT_IDENTIFIER,
+    ca.RC_CODE           AS other_rc_cur,
+    ca.bal_cur_any,
+    ROW_NUMBER() OVER (
+      PARTITION BY ca.ACCOUNT_IDENTIFIER
+      ORDER BY ca.bal_cur_any DESC
+    ) AS rn_cur
+  FROM cur_all ca
+  WHERE ca.RC_CODE <> 'AL'   -- exclude the focus RC
+),
+
+/* Attach other-RC presence to the focus join */
+focus_with_other AS (
+  SELECT
+    f.rc_code,
+    f.rc_description,
+    f.account_identifier,
+    f.balance_prev,
+    f.balance_cur,
+    /* top other RC presence (if any) */
+    po.other_rc_prev,
+    po.bal_prev_any  AS prev_bal_in_other_rc,
+    co.other_rc_cur,
+    co.bal_cur_any   AS cur_bal_in_other_rc
+  FROM focus_join f
+  LEFT JOIN prev_other_rank po
+    ON po.ACCOUNT_IDENTIFIER = f.account_identifier
+   AND po.rn_prev = 1
+  LEFT JOIN cur_other_rank co
+    ON co.ACCOUNT_IDENTIFIER = f.account_identifier
+   AND co.rn_cur = 1
+)
+
+/* Final: deltas, reclass flags, contributions */
+SELECT
+  '2025-08-31'::DATE                          AS end_of_month_date,   -- normalize to flagged month
+  x.rc_code                                   AS rc_code_focus,
+  x.rc_description,
+  x.account_identifier,
+
+  x.balance_prev,
+  x.balance_cur,
+  (x.balance_cur - x.balance_prev)            AS balance_delta,
+
+  /* Existence in other RCs */
+  x.other_rc_prev,
+  x.prev_bal_in_other_rc,
+  x.other_rc_cur,
+  x.cur_bal_in_other_rc,
+
+  /* Reclassification flags */
+  CASE
+    /* Appears in focus now, had nonzero balance in a different RC last month */
+    WHEN x.balance_prev = 0
+         AND x.balance_cur > 0
+         AND COALESCE(x.prev_bal_in_other_rc,0) > 0
+    THEN 1 ELSE 0
+  END AS moved_in_from_other_rc,
+
+  CASE
+    /* Disappears from focus now, shows up in a different RC this month */
+    WHEN x.balance_prev > 0
+         AND x.balance_cur = 0
+         AND COALESCE(x.cur_bal_in_other_rc,0) > 0
+    THEN 1 ELSE 0
+  END AS moved_out_to_other_rc,
+
+  /* Convenience text reason */
+  CASE
+    WHEN x.balance_prev = 0 AND x.balance_cur > 0 AND COALESCE(x.prev_bal_in_other_rc,0) > 0
+      THEN 'Moved IN from RC ' || x.other_rc_prev
+    WHEN x.balance_prev > 0 AND x.balance_cur = 0 AND COALESCE(x.cur_bal_in_other_rc,0) > 0
+      THEN 'Moved OUT to RC ' || x.other_rc_cur
+    WHEN x.balance_prev = 0 AND x.balance_cur > 0
+      THEN 'New in focus RC'
+    WHEN x.balance_prev > 0 AND x.balance_cur = 0
+      THEN 'Closed in focus RC'
+    ELSE 'Stayed in focus RC'
+  END AS reclass_reason,
+
+  /* Share of the focus RC's total change this month */
+  SUM( (x.balance_cur - x.balance_prev) ) OVER () AS rc_total_delta,
+  CASE
+    WHEN SUM( (x.balance_cur - x.balance_prev) ) OVER () = 0 THEN NULL
+    ELSE (x.balance_cur - x.balance_prev)
+         / SUM( (x.balance_cur - x.balance_prev) ) OVER ()
+  END AS pct_of_rc_delta
+
+FROM focus_with_other x
+ORDER BY ABS(x.balance_cur - x.balance_prev) DESC
+LIMIT 1000;
+
+
+
+
+
 SELECT
   s.RC_CODE,
   s.RC_DESCRIPTION,
@@ -26928,51 +27123,4 @@ backtest_12m AS (
     p.CONTRACT_SOURCE_SYSTEM,
     p.END_OF_MONTH_DATE                                   AS model_asof_period,  -- t-1
     c.END_OF_MONTH_DATE                                   AS forecast_period,    -- t
-    c.SOURCE_SYSTEM_BALANCE                               AS actual,
-
-    -- forecast from the t-1 row's params
-    COALESCE(
-      CASE
-        WHEN p.regr_slope_12 IS NOT NULL AND p.regr_intercept_12 IS NOT NULL
-          THEN p.regr_intercept_12 + p.regr_slope_12 * CAST(p.rn + 1 AS FLOAT8)
-        ELSE NULL
-      END,
-      p.lag12_balance,
-      p.roll_mean_6
-    )                                                     AS forecast_val,
-
-    -- sigma estimated from t-1 window
-    COALESCE(
-      p.roll_std_6,
-      CASE WHEN p.cnt_all > 1
-           THEN SQRT( GREATEST(p.avg2_all - (p.avg_all * p.avg_all), 0.0)
-                      * (CAST(p.cnt_all AS FLOAT8) / CAST(p.cnt_all - 1 AS FLOAT8)) )
-           ELSE NULL
-      END
-    )                                                     AS sigma_est,
-
-    p.avg_all                                             AS avg_level_sys
-  FROM calc p
-  JOIN calc c
-    ON c.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
-   AND c.END_OF_MONTH_DATE      = ADD_MONTHS(p.END_OF_MONTH_DATE, 1)
-  JOIN latest_per_sys l
-    ON l.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
-  WHERE p.END_OF_MONTH_DATE >= ADD_MONTHS(l.max_eom, -12)   -- last ~12 months of backtests
-    AND p.END_OF_MONTH_DATE <  l.max_eom                    -- up to the month before latest
-),
-
--- 9) latest row for forward forecast (optional)
-last_latest AS (
-  SELECT c.*
-  FROM calc c
-  JOIN latest_per_sys l
-    ON c.CONTRACT_SOURCE_SYSTEM = l.CONTRACT_SOURCE_SYSTEM
-   AND c.END_OF_MONTH_DATE     = l.max_eom
-),
-
-summary_next_fwd AS (
-  SELECT
-    l.CONTRACT_SOURCE_SYSTEM,
-    l.END_OF_MONTH_DATE                               AS last_period,
-    ADD_MO
+    c.SOURCE_SYSTEM_BALANCE    
