@@ -1,3 +1,400 @@
+/* === KDE Change Analysis with Seasonality + Robustness + History ============
+   - Netezza-safe: no REGR_*; no POWER(); alias-safe ORDER BY
+   - Seasonality: month-of-year additive means from history < latest (no leakage)
+   - Robustness: winsorize de-seasonalized training data (pre-latest) at ±3σ
+   - Methods: Regression (algebraic moments on de-seasonalized robust series),
+              MA(12) on de-seasonalized robust series (exclude current),
+              both re-seasonalized for comparison vs actuals
+   - Selection: per-KDE method with lower historical RMSE (exposure) pre-latest
+   - Output: history window with actuals, prev, forecasts, residuals, z-scores,
+             severity, and transparency fields
+   ========================================================================== */
+
+WITH
+/* Latest month and 24-month base window for modeling */
+latest AS (
+  SELECT MAX(t.END_OF_MONTH_DATE) AS max_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+rng AS (
+  SELECT ADD_MONTHS(max_eom, -24) AS start_eom, max_eom
+  FROM latest
+),
+
+/* ---- HISTORY WINDOW CONTROL (edit to change displayed history length) ---- */
+hist_bounds AS (
+  /* Last 12 months including latest: start = latest - 11 months */
+  SELECT ADD_MONTHS(max_eom, -11) AS hist_start, max_eom AS hist_end
+  FROM latest
+),
+
+/* Base slice: include every KDE column you might analyze */
+base AS (
+  SELECT
+    t.END_OF_MONTH_DATE,
+    t.ACCOUNT_IDENTIFIER,
+    CAST(t.SOURCE_SYSTEM_BALANCE AS DOUBLE PRECISION) AS exposure,
+    /* add/remove KDE columns you want to analyze downstream */
+    t.PD_GRADE, t.CRE_FLAG, t.DAYS_PAST_DUE, t.RC_CODE, t.REVOLVING_CODE,
+    t.FDIC_CALL_CODE, t.GL_ACCOUNT_CODE, t.INDUSTRY_CODE, t.MATURITY_DATE,
+    t.LTV, t.NAICS_CODE, t.RBC_CODE, t.NON_ACCRUAL_FLAG
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+  CROSS JOIN rng r
+  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
+    /* Optional portfolio scope:
+       AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans' */
+),
+
+/* Manual UNPIVOT: edit this block to add/remove KDE columns */
+unpivot_kdes AS (
+  SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'PD_GRADE'         AS KDE_NAME, CAST(PD_GRADE         AS VARCHAR(255)) AS KDE_VALUE, exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'CRE_FLAG',         CAST(CRE_FLAG         AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'DAYS_PAST_DUE',    CAST(DAYS_PAST_DUE    AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'RC_CODE',          CAST(RC_CODE          AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'REVOLVING_CODE',   CAST(REVOLVING_CODE   AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'FDIC_CALL_CODE',   CAST(FDIC_CALL_CODE   AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'GL_ACCOUNT_CODE',  CAST(GL_ACCOUNT_CODE  AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'INDUSTRY_CODE',    CAST(INDUSTRY_CODE    AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'MATURITY_DATE',    CAST(MATURITY_DATE    AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'LTV',              CAST(LTV              AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'NAICS_CODE',       CAST(NAICS_CODE       AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'RBC_CODE',         CAST(RBC_CODE         AS VARCHAR(255)), exposure FROM base
+  UNION ALL SELECT END_OF_MONTH_DATE, ACCOUNT_IDENTIFIER, 'NON_ACCRUAL_FLAG', CAST(NON_ACCRUAL_FLAG AS VARCHAR(255)), exposure FROM base
+),
+
+/* Prior month's KDE value per account × KDE */
+kde_change AS (
+  SELECT
+    u.END_OF_MONTH_DATE,
+    u.KDE_NAME,
+    u.ACCOUNT_IDENTIFIER,
+    u.KDE_VALUE,
+    LAG(u.KDE_VALUE) OVER (
+      PARTITION BY u.KDE_NAME, u.ACCOUNT_IDENTIFIER
+      ORDER BY u.END_OF_MONTH_DATE
+    ) AS prev_value,
+    u.exposure
+  FROM unpivot_kdes u
+),
+
+/* Monthly agg per KDE: change volume & change exposure */
+kde_change_agg AS (
+  SELECT
+    END_OF_MONTH_DATE,
+    KDE_NAME,
+    SUM(CASE
+          WHEN (
+                 (KDE_VALUE <> prev_value)
+                 OR (KDE_VALUE IS NULL AND prev_value IS NOT NULL)
+                 OR (KDE_VALUE IS NOT NULL AND prev_value IS NULL)
+               )
+               AND prev_value IS NOT NULL
+          THEN 1 ELSE 0
+        END) AS change_acct_cnt,
+    SUM(CASE
+          WHEN (
+                 (KDE_VALUE <> prev_value)
+                 OR (KDE_VALUE IS NULL AND prev_value IS NOT NULL)
+                 OR (KDE_VALUE IS NOT NULL AND prev_value IS NULL)
+               )
+               AND prev_value IS NOT NULL
+          THEN exposure ELSE 0
+        END) AS change_exposure
+  FROM kde_change
+  GROUP BY END_OF_MONTH_DATE, KDE_NAME
+),
+
+/* Add month-of-year and previous-month actuals */
+kde_with_month AS (
+  SELECT
+    a.*,
+    CAST(EXTRACT(MONTH FROM a.END_OF_MONTH_DATE) AS INTEGER) AS mo
+  FROM kde_change_agg a
+),
+
+/* Seasonality profiles from history strictly before latest (no leakage) */
+kde_seasonality AS (
+  SELECT
+    k.KDE_NAME,
+    k.mo,
+    AVG(k.change_exposure) AS seas_mean_exp,
+    STDDEV(k.change_exposure) AS seas_sd_exp,
+    AVG(k.change_acct_cnt) AS seas_mean_cnt,
+    STDDEV(k.change_acct_cnt) AS seas_sd_cnt
+  FROM kde_with_month k
+  JOIN latest l ON k.END_OF_MONTH_DATE < l.max_eom
+  GROUP BY k.KDE_NAME, k.mo
+),
+
+/* Series with de-seasonalized fields and prev-month actuals */
+kde_series AS (
+  SELECT
+    w.*,
+    CAST(ROW_NUMBER() OVER (PARTITION BY w.KDE_NAME ORDER BY w.END_OF_MONTH_DATE)
+         AS DOUBLE PRECISION) AS month_num_dp,
+    LAG(w.change_acct_cnt) OVER (PARTITION BY w.KDE_NAME ORDER BY w.END_OF_MONTH_DATE) AS prev_change_acct_cnt,
+    LAG(w.change_exposure) OVER (PARTITION BY w.KDE_NAME ORDER BY w.END_OF_MONTH_DATE) AS prev_change_exposure,
+    s.seas_mean_exp, s.seas_sd_exp, s.seas_mean_cnt, s.seas_sd_cnt,
+    /* additive de-seasonalization */
+    (w.change_exposure  - COALESCE(s.seas_mean_exp, 0)) AS change_exposure_ds,
+    (w.change_acct_cnt  - COALESCE(s.seas_mean_cnt, 0)) AS change_acct_cnt_ds
+  FROM kde_with_month w
+  LEFT JOIN kde_seasonality s
+    ON s.KDE_NAME = w.KDE_NAME AND s.mo = w.mo
+),
+
+/* Robustify training history by winsorizing de-seasonalized values (pre-latest only) */
+kde_train_stats AS (
+  SELECT
+    KDE_NAME,
+    AVG(change_exposure_ds) AS mu_exp_ds,
+    STDDEV(change_exposure_ds) AS sd_exp_ds,
+    AVG(change_acct_cnt_ds) AS mu_cnt_ds,
+    STDDEV(change_acct_cnt_ds) AS sd_cnt_ds
+  FROM kde_series
+  JOIN latest l ON kde_series.END_OF_MONTH_DATE < l.max_eom
+  GROUP BY KDE_NAME
+),
+kde_series_robust AS (
+  SELECT
+    s.*,
+    /* cap at ±3σ for training rows only; latest stays uncapped for scoring */
+    CASE
+      WHEN s.END_OF_MONTH_DATE < (SELECT max_eom FROM latest) AND ts.sd_exp_ds IS NOT NULL THEN
+        CASE
+          WHEN s.change_exposure_ds >  ts.mu_exp_ds + 3.0 * ts.sd_exp_ds THEN ts.mu_exp_ds + 3.0 * ts.sd_exp_ds
+          WHEN s.change_exposure_ds <  ts.mu_exp_ds - 3.0 * ts.sd_exp_ds THEN ts.mu_exp_ds - 3.0 * ts.sd_exp_ds
+          ELSE s.change_exposure_ds
+        END
+      ELSE s.change_exposure_ds
+    END AS change_exposure_ds_rb,
+    CASE
+      WHEN s.END_OF_MONTH_DATE < (SELECT max_eom FROM latest) AND ts.sd_cnt_ds IS NOT NULL THEN
+        CASE
+          WHEN s.change_acct_cnt_ds >  ts.mu_cnt_ds + 3.0 * ts.sd_cnt_ds THEN ts.mu_cnt_ds + 3.0 * ts.sd_cnt_ds
+          WHEN s.change_acct_cnt_ds <  ts.mu_cnt_ds - 3.0 * ts.sd_cnt_ds THEN ts.mu_cnt_ds - 3.0 * ts.sd_cnt_ds
+          ELSE s.change_acct_cnt_ds
+        END
+      ELSE s.change_acct_cnt_ds
+    END AS change_acct_cnt_ds_rb
+  FROM kde_series s
+  LEFT JOIN kde_train_stats ts
+    ON ts.KDE_NAME = s.KDE_NAME
+),
+
+/* ---------------- Regression path (algebraic moments on de-seasonalized robust) ---------------- */
+kde_reg_moments AS (
+  SELECT
+    KDE_NAME,
+    COUNT(*) AS n,
+    SUM(month_num_dp) AS sum_x,
+    SUM(month_num_dp * month_num_dp) AS sum_x2,
+    SUM(CAST(change_exposure_ds_rb AS DOUBLE PRECISION)) AS sum_y_exp,
+    SUM(month_num_dp * CAST(change_exposure_ds_rb AS DOUBLE PRECISION)) AS sum_xy_exp,
+    SUM(CAST(change_acct_cnt_ds_rb  AS DOUBLE PRECISION)) AS sum_y_cnt,
+    SUM(month_num_dp * CAST(change_acct_cnt_ds_rb  AS DOUBLE PRECISION)) AS sum_xy_cnt
+  FROM kde_series_robust
+  GROUP BY KDE_NAME
+),
+kde_reg_fit AS (
+  SELECT
+    s.KDE_NAME,
+    s.END_OF_MONTH_DATE,
+    s.month_num_dp,
+    /* keep raw actuals & seasonal means for re-seasonalization */
+    s.change_exposure,
+    s.change_acct_cnt,
+    s.seas_mean_exp, s.seas_mean_cnt,
+    /* solve slope/intercept on de-seasonalized robust series */
+    CASE WHEN (m.n * m.sum_x2 - m.sum_x * m.sum_x) = 0 THEN NULL
+         ELSE (m.n * m.sum_xy_exp - m.sum_x * m.sum_y_exp) / (m.n * m.sum_x2 - m.sum_x * m.sum_x) END AS slope_exp_ds,
+    CASE WHEN m.n = 0 THEN NULL
+         ELSE (m.sum_y_exp - ((m.n * m.sum_xy_exp - m.sum_x * m.sum_y_exp) / NULLIF((m.n * m.sum_x2 - m.sum_x * m.sum_x),0)) * m.sum_x) / m.n END AS intercept_exp_ds,
+    CASE WHEN (m.n * m.sum_x2 - m.sum_x * m.sum_x) = 0 THEN NULL
+         ELSE (m.n * m.sum_xy_cnt - m.sum_x * m.sum_y_cnt) / (m.n * m.sum_x2 - m.sum_x * m.sum_x) END AS slope_cnt_ds,
+    CASE WHEN m.n = 0 THEN NULL
+         ELSE (m.sum_y_cnt - ((m.n * m.sum_xy_cnt - m.sum_x * m.sum_y_cnt) / NULLIF((m.n * m.sum_x2 - m.sum_x * m.sum_x),0)) * m.sum_x) / m.n END AS intercept_cnt_ds
+  FROM kde_series s
+  JOIN kde_reg_moments m ON s.KDE_NAME = m.KDE_NAME
+),
+kde_reg_fit2 AS (
+  SELECT
+    f.*,
+    /* de-seasonalized predictions */
+    (f.intercept_exp_ds + f.slope_exp_ds * f.month_num_dp) AS reg_pred_exp_ds,
+    (f.intercept_cnt_ds + f.slope_cnt_ds * f.month_num_dp) AS reg_pred_cnt_ds,
+    /* re-seasonalize to compare with raw actuals */
+    (f.intercept_exp_ds + f.slope_exp_ds * f.month_num_dp) + COALESCE(f.seas_mean_exp,0) AS reg_pred_exp,
+    (f.intercept_cnt_ds + f.slope_cnt_ds * f.month_num_dp) + COALESCE(f.seas_mean_cnt,0) AS reg_pred_cnt,
+    /* residuals in raw space */
+    (CAST(f.change_exposure AS DOUBLE PRECISION) - ((f.intercept_exp_ds + f.slope_exp_ds * f.month_num_dp) + COALESCE(f.seas_mean_exp,0))) AS reg_resid_exp,
+    (CAST(f.change_acct_cnt  AS DOUBLE PRECISION) - ((f.intercept_cnt_ds + f.slope_cnt_ds * f.month_num_dp) + COALESCE(f.seas_mean_cnt,0))) AS reg_resid_cnt
+  FROM kde_reg_fit f
+),
+kde_reg_stats AS (
+  SELECT KDE_NAME,
+         STDDEV(reg_resid_exp) AS sd_resid_exp,
+         STDDEV(reg_resid_cnt) AS sd_resid_cnt
+  FROM kde_reg_fit2
+  GROUP BY KDE_NAME
+),
+kde_reg_z AS (
+  SELECT
+    f.KDE_NAME,
+    f.END_OF_MONTH_DATE,
+    (f.reg_resid_exp / NULLIF(s.sd_resid_exp, 0)) AS exp_reg_z,
+    (f.reg_resid_cnt / NULLIF(s.sd_resid_cnt, 0)) AS cnt_reg_z
+  FROM kde_reg_fit2 f
+  JOIN kde_reg_stats s ON f.KDE_NAME = s.KDE_NAME
+),
+
+/* ---------------- MA(12) path on de-seasonalized robust (exclude current) ---------------- */
+kde_ma_roll AS (
+  SELECT
+    KDE_NAME,
+    END_OF_MONTH_DATE,
+    change_exposure,
+    change_acct_cnt,
+    seas_mean_exp, seas_mean_cnt,
+    AVG(change_exposure_ds_rb) OVER (PARTITION BY KDE_NAME ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS ma_exp_ds,
+    STDDEV(change_exposure_ds_rb) OVER (PARTITION BY KDE_NAME ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS sd_exp_ds,
+    AVG(change_acct_cnt_ds_rb)  OVER (PARTITION BY KDE_NAME ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS ma_cnt_ds,
+    STDDEV(change_acct_cnt_ds_rb)  OVER (PARTITION BY KDE_NAME ORDER BY END_OF_MONTH_DATE ROWS BETWEEN 12 PRECEDING AND 1 PRECEDING) AS sd_cnt_ds
+  FROM kde_series_robust
+),
+kde_ma_preds AS (
+  SELECT
+    r.*,
+    /* re-seasonalize baselines to raw space */
+    (r.ma_exp_ds + COALESCE(r.seas_mean_exp,0)) AS ma_exp,
+    (r.ma_cnt_ds + COALESCE(r.seas_mean_cnt,0)) AS ma_cnt
+  FROM kde_ma_roll r
+),
+kde_ma_z AS (
+  SELECT
+    m.KDE_NAME,
+    m.END_OF_MONTH_DATE,
+    ((m.change_exposure - m.ma_exp) / NULLIF(m.sd_exp_ds, 0)) AS exp_ma_z,
+    ((m.change_acct_cnt - m.ma_cnt) / NULLIF(m.sd_cnt_ds, 0)) AS cnt_ma_z
+  FROM kde_ma_preds m
+),
+
+/* -------- Model selection (per KDE) by historical RMSE on exposure (pre-latest) -------- */
+rmse_hist AS (
+  SELECT
+    l.max_eom,
+    k.KDE_NAME,
+    /* REG residuals already in raw space */
+    SQRT(AVG(CASE WHEN rf.END_OF_MONTH_DATE < l.max_eom THEN (rf.reg_resid_exp * rf.reg_resid_exp) END)) AS rmse_reg_exp,
+    /* MA residuals vs re-seasonalized baseline */
+    SQRT(AVG(CASE WHEN mp.END_OF_MONTH_DATE < l.max_eom THEN (mp.change_exposure - mp.ma_exp) * (mp.change_exposure - mp.ma_exp) END)) AS rmse_ma_exp
+  FROM latest l
+  JOIN (SELECT DISTINCT KDE_NAME FROM kde_series) k ON 1=1
+  LEFT JOIN kde_reg_fit2 rf ON rf.KDE_NAME = k.KDE_NAME
+  LEFT JOIN kde_ma_preds mp ON mp.KDE_NAME = k.KDE_NAME
+  GROUP BY l.max_eom, k.KDE_NAME
+),
+method_choice AS (
+  SELECT
+    KDE_NAME,
+    CASE
+      WHEN rmse_ma_exp IS NULL AND rmse_reg_exp IS NOT NULL THEN 'REG'
+      WHEN rmse_reg_exp IS NULL AND rmse_ma_exp IS NOT NULL THEN 'MA'
+      WHEN rmse_reg_exp IS NULL AND rmse_ma_exp IS NULL THEN 'REG'
+      WHEN rmse_reg_exp <= rmse_ma_exp THEN 'REG' ELSE 'MA'
+    END AS chosen_method
+  FROM rmse_hist
+),
+
+/* ===== HISTORY RESULTSET: one row per month per KDE within hist window ===== */
+history AS (
+  SELECT
+    s.END_OF_MONTH_DATE                       AS report_month,
+    l.max_eom                                 AS latest_month,
+    s.KDE_NAME,
+    mc.chosen_method,
+
+    /* actuals & previous */
+    s.change_acct_cnt,
+    s.prev_change_acct_cnt,
+    s.change_exposure,
+    s.prev_change_exposure,
+
+    /* forecasts (both methods, re-seasonalized) */
+    rf.reg_pred_cnt,
+    rf.reg_pred_exp,
+    mp.ma_cnt,
+    mp.ma_exp,
+
+    /* z-scores */
+    rz.cnt_reg_z,
+    rz.exp_reg_z,
+    mz.cnt_ma_z,
+    mz.exp_ma_z,
+
+    /* chosen method: z, forecast, residuals (raw space) */
+    CASE WHEN mc.chosen_method = 'REG' THEN rz.cnt_reg_z ELSE mz.cnt_ma_z END AS cnt_z_chosen,
+    CASE WHEN mc.chosen_method = 'REG' THEN rz.exp_reg_z ELSE mz.exp_ma_z END AS exp_z_chosen,
+    CASE WHEN mc.chosen_method = 'REG' THEN rf.reg_pred_cnt ELSE mp.ma_cnt END AS forecast_change_acct_cnt,
+    CASE WHEN mc.chosen_method = 'REG' THEN rf.reg_pred_exp ELSE mp.ma_exp END AS forecast_change_exposure,
+    (s.change_acct_cnt - (CASE WHEN mc.chosen_method = 'REG' THEN rf.reg_pred_cnt ELSE mp.ma_cnt END)) AS resid_cnt_chosen,
+    (s.change_exposure - (CASE WHEN mc.chosen_method = 'REG' THEN rf.reg_pred_exp ELSE mp.ma_exp END)) AS resid_exp_chosen
+
+  FROM kde_series s
+  JOIN latest l             ON 1=1
+  JOIN method_choice mc     ON mc.KDE_NAME = s.KDE_NAME
+  LEFT JOIN kde_reg_fit2 rf ON rf.KDE_NAME = s.KDE_NAME AND rf.END_OF_MONTH_DATE = s.END_OF_MONTH_DATE
+  LEFT JOIN kde_ma_preds mp ON mp.KDE_NAME = s.KDE_NAME AND mp.END_OF_MONTH_DATE = s.END_OF_MONTH_DATE
+  LEFT JOIN kde_reg_z    rz ON rz.KDE_NAME = s.KDE_NAME AND rz.END_OF_MONTH_DATE = s.END_OF_MONTH_DATE
+  LEFT JOIN kde_ma_z     mz ON mz.KDE_NAME = s.KDE_NAME AND mz.END_OF_MONTH_DATE = s.END_OF_MONTH_DATE
+  JOIN hist_bounds hb ON s.END_OF_MONTH_DATE BETWEEN hb.hist_start AND hb.hist_end
+)
+
+SELECT
+  h.report_month,
+  h.latest_month,
+  h.KDE_NAME,
+  h.chosen_method,
+
+  /* actuals & previous */
+  h.change_acct_cnt,
+  h.prev_change_acct_cnt,
+  h.change_exposure,
+  h.prev_change_exposure,
+
+  /* forecasts & residuals (chosen method, raw space) */
+  h.forecast_change_acct_cnt,
+  h.forecast_change_exposure,
+  h.resid_cnt_chosen,
+  h.resid_exp_chosen,
+
+  /* scores */
+  ROUND(h.exp_z_chosen, 2) AS exp_z_chosen,
+  ROUND(h.cnt_z_chosen, 2) AS cnt_z_chosen,
+  ROUND(0.3 * ABS(h.cnt_z_chosen) + 0.7 * ABS(h.exp_z_chosen), 2) AS severity_score,
+
+  /* transparency (keep if useful) */
+  ROUND(h.exp_reg_z, 2) AS exp_z_reg,
+  ROUND(h.cnt_reg_z, 2) AS cnt_z_reg,
+  ROUND(h.exp_ma_z, 2)  AS exp_z_ma,
+  ROUND(h.cnt_ma_z, 2)  AS cnt_z_ma,
+  h.reg_pred_cnt, h.reg_pred_exp, h.ma_cnt, h.ma_exp
+
+FROM history h
+WHERE (h.exp_z_chosen IS NOT NULL OR h.cnt_z_chosen IS NOT NULL)
+ORDER BY
+  h.report_month DESC,   /* newest first within the history window */
+  (0.3 * ABS(h.cnt_z_chosen) + 0.7 * ABS(h.exp_z_chosen)) DESC,
+  ABS(h.exp_z_chosen) DESC,
+  ABS(h.cnt_z_chosen) DESC;
+
+
+
+
+
+
 /* === KDE Change Analysis: REG (moments) + MA(12) with HISTORY =================
    - Netezza-safe: no REGR_*; no POWER(); alias-safe ORDER BY
    - Method selection per KDE by historical RMSE (exposure) using months < latest
@@ -26991,339 +27388,4 @@ latest_per_sys AS (
   GROUP BY CONTRACT_SOURCE_SYSTEM
 ),
 
-/* 12-month seasonally-adjusted backtest: forecast t from (t-1), compare to actual at t */
-backtest_12m_sa AS (
-  SELECT
-    p.CONTRACT_SOURCE_SYSTEM,
-    p.END_OF_MONTH_DATE                                       AS model_asof_period,  -- t-1
-    c.END_OF_MONTH_DATE                                       AS forecast_period,    -- t
-    c.SOURCE_SYSTEM_BALANCE                                   AS actual,
-
-    COALESCE(fn.season_factor, 1.0)                           AS season_factor_next,
-
-    -- candidates (in seasonal space)
-    CASE
-      WHEN p.regr_slope_12_d IS NOT NULL AND p.regr_intercept_12_d IS NOT NULL
-        THEN (p.regr_intercept_12_d + p.regr_slope_12_d * CAST(p.rn + 1 AS FLOAT8)) * COALESCE(fn.season_factor, 1.0)
-      ELSE NULL
-    END                                                       AS fc_linear_sa,
-
-    CASE
-      WHEN c_prev12.SOURCE_SYSTEM_BALANCE IS NOT NULL AND fp12.season_factor IS NOT NULL
-        THEN c_prev12.SOURCE_SYSTEM_BALANCE * (COALESCE(fn.season_factor,1.0) / NULLIF(fp12.season_factor,1.0))
-      ELSE NULL
-    END                                                       AS fc_seasonal_sa,
-
-    (p.roll_mean_6_d * COALESCE(fn.season_factor, 1.0))       AS fc_rollmean_sa,
-
-    COALESCE(
-      CASE
-        WHEN p.regr_slope_12_d IS NOT NULL AND p.regr_intercept_12_d IS NOT NULL
-          THEN (p.regr_intercept_12_d + p.regr_slope_12_d * CAST(p.rn + 1 AS FLOAT8)) * COALESCE(fn.season_factor, 1.0)
-        ELSE NULL
-      END,
-      CASE
-        WHEN c_prev12.SOURCE_SYSTEM_BALANCE IS NOT NULL AND fp12.season_factor IS NOT NULL
-          THEN c_prev12.SOURCE_SYSTEM_BALANCE * (COALESCE(fn.season_factor,1.0) / NULLIF(fp12.season_factor,1.0))
-        ELSE NULL
-      END,
-      (p.roll_mean_6_d * COALESCE(fn.season_factor, 1.0))
-    )                                                         AS forecast_val,
-
-    (COALESCE(p.roll_std_6_d, NULL) * COALESCE(fn.season_factor, 1.0)) AS sigma_est,
-
-    -- long-run average level for severity scaling (raw)
-    (SELECT AVG(SOURCE_SYSTEM_BALANCE) FROM base_sys b WHERE b.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM) AS avg_level_sys
-  FROM calc_d p
-  JOIN calc_d c
-    ON c.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
-   AND c.END_OF_MONTH_DATE      = ADD_MONTHS(p.END_OF_MONTH_DATE, 1)
-  JOIN latest_per_sys l
-    ON l.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
-  LEFT JOIN season_norm fn
-    ON fn.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
-   AND fn.moy = EXTRACT(MONTH FROM c.END_OF_MONTH_DATE)
-  LEFT JOIN base_sys c_prev12
-    ON c_prev12.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
-   AND c_prev12.END_OF_MONTH_DATE      = ADD_MONTHS(c.END_OF_MONTH_DATE, -12)
-  LEFT JOIN season_norm fp12
-    ON fp12.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
-   AND fp12.moy = EXTRACT(MONTH FROM c_prev12.END_OF_MONTH_DATE)
-  WHERE p.END_OF_MONTH_DATE >= ADD_MONTHS(l.max_eom, -12)
-    AND p.END_OF_MONTH_DATE <  l.max_eom
-),
-
-/* Forward seasonally-adjusted forecast: latest → next month */
-last_latest AS (
-  SELECT c.*
-  FROM calc_d c
-  JOIN latest_per_sys l
-    ON c.CONTRACT_SOURCE_SYSTEM = l.CONTRACT_SOURCE_SYSTEM
-   AND c.END_OF_MONTH_DATE     = l.max_eom
-),
-summary_next_fwd_sa AS (
-  SELECT
-    l.CONTRACT_SOURCE_SYSTEM,
-    l.END_OF_MONTH_DATE                               AS last_period,
-    ADD_MONTHS(l.END_OF_MONTH_DATE, 1)                AS forecast_period,
-    l.SOURCE_SYSTEM_BALANCE                           AS actual_last,
-
-    COALESCE(
-      CASE
-        WHEN l.regr_slope_12_d IS NOT NULL AND l.regr_intercept_12_d IS NOT NULL
-          THEN (l.regr_intercept_12_d + l.regr_slope_12_d * CAST(l.rn + 1 AS FLOAT8)) * COALESCE(fn.season_factor, 1.0)
-        ELSE NULL
-      END,
-      (l.roll_mean_6_d * COALESCE(fn.season_factor, 1.0))
-    )                                                 AS forecast_val,
-
-    (COALESCE(l.roll_std_6_d, NULL) * COALESCE(fn.season_factor, 1.0)) AS sigma_est,
-
-    (SELECT AVG(SOURCE_SYSTEM_BALANCE) FROM base_sys b WHERE b.CONTRACT_SOURCE_SYSTEM = l.CONTRACT_SOURCE_SYSTEM) AS avg_level_sys
-  FROM last_latest l
-  LEFT JOIN season_norm fn
-    ON fn.CONTRACT_SOURCE_SYSTEM = l.CONTRACT_SOURCE_SYSTEM
-   AND fn.moy = EXTRACT(MONTH FROM ADD_MONTHS(l.END_OF_MONTH_DATE, 1))
-)
-
-/* ====== FINAL OUTPUTS ====== */
-
--- D) PROFILE: enriched analytic dataset at system × industry × RC × month
-SELECT
-  'PROFILE'               AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  END_OF_MONTH_DATE       AS period_date,
-  INDUSTRY_CODE,
-  INDUSTRY_DESCRIPTION,
-  RC_CODE,
-  RC_DESCRIPTION,
-  src_balance             AS actual_balance,
-  available_amount,
-  nonaccrual_balance,
-  acct_count,
-  avg_pd_grade_num,
-  utilization_ratio,
-  nonaccrual_pct,
-  NULL::FLOAT8            AS season_factor,
-  NULL::FLOAT8            AS deseasonal_actual,
-  NULL::FLOAT8            AS roll_mean_6_d,
-  NULL::FLOAT8            AS roll_std_6_d,
-  NULL::FLOAT8            AS regr_slope_12_d,
-  NULL::FLOAT8            AS regr_intercept_12_d,
-  NULL::FLOAT8            AS forecast_val,
-  NULL::FLOAT8            AS pi95_lo,
-  NULL::FLOAT8            AS pi95_hi,
-  NULL::FLOAT8            AS dev_abs,
-  NULL::FLOAT8            AS dev_pct,
-  NULL::FLOAT8            AS z_score,
-  NULL::FLOAT8            AS severity_0_100,
-  NULL                     AS outside_95_band
-FROM profile_with_ratios
-
-UNION ALL
-
--- A) HISTORY (system-level, seasonally de-trended stats for modeling)
-SELECT
-  'HISTORY'               AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  END_OF_MONTH_DATE       AS period_date,
-  NULL::VARCHAR(50)       AS INDUSTRY_CODE,
-  NULL::VARCHAR(200)      AS INDUSTRY_DESCRIPTION,
-  NULL::VARCHAR(50)       AS RC_CODE,
-  NULL::VARCHAR(200)      AS RC_DESCRIPTION,
-  SOURCE_SYSTEM_BALANCE   AS actual_balance,
-  AVAILABLE_AMOUNT,
-  NONACCRUAL_BALANCE,
-  ACCT_COUNT,
-  AVG_PD_GRADE_NUM,
-  NULL::FLOAT8            AS utilization_ratio,
-  NULL::FLOAT8            AS nonaccrual_pct,
-  season_factor,
-  y_d                     AS deseasonal_actual,
-  roll_mean_6_d,
-  roll_std_6_d,
-  regr_slope_12_d,
-  regr_intercept_12_d,
-  NULL::FLOAT8            AS forecast_val,
-  NULL::FLOAT8            AS pi95_lo,
-  NULL::FLOAT8            AS pi95_hi,
-  NULL::FLOAT8            AS dev_abs,
-  NULL::FLOAT8            AS dev_pct,
-  NULL::FLOAT8            AS z_score,
-  NULL::FLOAT8            AS severity_0_100,
-  NULL                    AS outside_95_band
-FROM calc_d
-
-UNION ALL
-
--- B) Seasonally-adjusted rolling 12M backtest (t-1 → t with actual)
-SELECT
-  'SUMMARY_BACKTEST_12M_SA' AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  forecast_period            AS period_date,
-  NULL::VARCHAR(50)          AS INDUSTRY_CODE,
-  NULL::VARCHAR(200)         AS INDUSTRY_DESCRIPTION,
-  NULL::VARCHAR(50)          AS RC_CODE,
-  NULL::VARCHAR(200)         AS RC_DESCRIPTION,
-  actual                     AS actual_balance,
-  NULL::FLOAT8               AS AVAILABLE_AMOUNT,
-  NULL::FLOAT8               AS NONACCRUAL_BALANCE,
-  NULL::INTEGER              AS ACCT_COUNT,
-  NULL::FLOAT8               AS AVG_PD_GRADE_NUM,
-  NULL::FLOAT8               AS utilization_ratio,
-  NULL::FLOAT8               AS nonaccrual_pct,
-  NULL::FLOAT8               AS season_factor,
-  NULL::FLOAT8               AS deseasonal_actual,
-  NULL::FLOAT8               AS roll_mean_6_d,
-  NULL::FLOAT8               AS roll_std_6_d,
-  NULL::FLOAT8               AS regr_slope_12_d,
-  NULL::FLOAT8               AS regr_intercept_12_d,
-  forecast_val,
-  (forecast_val - 1.9599 * sigma_est) AS pi95_lo,
-  (forecast_val + 1.9599 * sigma_est) AS pi95_hi,
-  (actual - forecast_val)             AS dev_abs,
-  CASE WHEN forecast_val <> 0 THEN (actual - forecast_val) / forecast_val ELSE NULL END AS dev_pct,
-  CASE WHEN sigma_est IS NOT NULL AND sigma_est > 0 THEN (actual - forecast_val) / sigma_est ELSE NULL END AS z_score,
-  100.0 * (
-    0.5 * LEAST(ABS(CASE WHEN sigma_est IS NOT NULL AND sigma_est > 0 THEN (actual - forecast_val)/sigma_est ELSE 0 END) / 3.0, 1.0)
-  + 0.3 * LEAST(ABS(CASE WHEN forecast_val <> 0 THEN (actual - forecast_val)/forecast_val ELSE 0 END) / 0.10, 1.0)
-  + 0.2 * LEAST(ABS(actual - forecast_val) / NULLIF(avg_level_sys * 0.10, 0), 1.0)
-  ) AS severity_0_100,
-  CASE
-    WHEN sigma_est IS NULL THEN NULL
-    WHEN actual < (forecast_val - 1.9599 * sigma_est) THEN TRUE
-    WHEN actual > (forecast_val + 1.9599 * sigma_est) THEN TRUE
-    ELSE FALSE
-  END AS outside_95_band
-FROM backtest_12m_sa
-
-UNION ALL
-
--- C) Seasonally-adjusted forward forecast (latest → next)
-SELECT
-  'SUMMARY_NEXT_FWD_SA'     AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  forecast_period           AS period_date,
-  NULL::VARCHAR(50)         AS INDUSTRY_CODE,
-  NULL::VARCHAR(200)        AS INDUSTRY_DESCRIPTION,
-  NULL::VARCHAR(50)         AS RC_CODE,
-  NULL::VARCHAR(200)        AS RC_DESCRIPTION,
-  NULL::FLOAT8              AS actual_balance,
-  NULL::FLOAT8              AS AVAILABLE_AMOUNT,
-  NULL::FLOAT8              AS NONACCRUAL_BALANCE,
-  NULL::INTEGER             AS ACCT_COUNT,
-  NULL::FLOAT8              AS AVG_PD_GRADE_NUM,
-  NULL::FLOAT8              AS utilization_ratio,
-  NULL::FLOAT8              AS nonaccrual_pct,
-  NULL::FLOAT8              AS season_factor,
-  NULL::FLOAT8              AS deseasonal_actual,
-  NULL::FLOAT8              AS roll_mean_6_d,
-  NULL::FLOAT8              AS roll_std_6_d,
-  NULL::FLOAT8              AS regr_slope_12_d,
-  NULL::FLOAT8              AS regr_intercept_12_d,
-  forecast_val,
-  (forecast_val - 1.9599 * sigma_est) AS pi95_lo,
-  (forecast_val + 1.9599 * sigma_est) AS pi95_hi,
-  NULL::FLOAT8              AS dev_abs,
-  NULL::FLOAT8              AS dev_pct,
-  NULL::FLOAT8              AS z_score,
-  NULL::FLOAT8              AS severity_0_100,
-  NULL                      AS outside_95_band
-FROM summary_next_fwd_sa
-
-ORDER BY CONTRACT_SOURCE_SYSTEM, period_date;
-
-
-
-
-
-
-WITH latest AS (
-  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
-  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
-  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
-),
-rng AS (
-  SELECT ADD_MONTHS(max_eom, -30) AS start_eom, max_eom FROM latest
-),
-
--- 1) Base aggregation (per system × month), scoped to Total Loans
-base AS (
-  SELECT
-    t.END_OF_MONTH_DATE,
-    t.CONTRACT_SOURCE_SYSTEM,
-    CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8) AS SOURCE_SYSTEM_BALANCE
-  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
-  CROSS JOIN rng r
-  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
-    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
-    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
-  GROUP BY 1,2
-),
-
--- 2) Row index per system (window only here)
-idx1 AS (
-  SELECT
-    b.*,
-    ROW_NUMBER() OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS rn
-  FROM base b
-),
-
--- 3) Compute month-of-year seasonal indices (multiplicative), normalized to avg=1
-base_moy AS (
-  SELECT
-    b.END_OF_MONTH_DATE,
-    b.CONTRACT_SOURCE_SYSTEM,
-    EXTRACT(MONTH FROM b.END_OF_MONTH_DATE) AS moy,
-    b.SOURCE_SYSTEM_BALANCE
-  FROM base b
-),
-sys_avg AS (
-  SELECT CONTRACT_SOURCE_SYSTEM, AVG(SOURCE_SYSTEM_BALANCE) AS avg_all_sys
-  FROM base_moy
-  GROUP BY CONTRACT_SOURCE_SYSTEM
-),
-season_raw AS (
-  SELECT
-    m.CONTRACT_SOURCE_SYSTEM,
-    m.moy,
-    AVG(m.SOURCE_SYSTEM_BALANCE) / a.avg_all_sys AS factor_raw
-  FROM base_moy m
-  JOIN sys_avg a
-    ON a.CONTRACT_SOURCE_SYSTEM = m.CONTRACT_SOURCE_SYSTEM
-  GROUP BY m.CONTRACT_SOURCE_SYSTEM, m.moy, a.avg_all_sys
-),
-season_norm AS (
-  SELECT
-    s.CONTRACT_SOURCE_SYSTEM,
-    s.moy,
-    s.factor_raw / NULLIF(AVG(s.factor_raw) OVER (PARTITION BY s.CONTRACT_SOURCE_SYSTEM), 0.0) AS season_factor
-  FROM season_raw s
-),
-
--- 4) Join factors; de-seasonalize; materialize float index
-base_d AS (
-  SELECT
-    i.END_OF_MONTH_DATE,
-    i.CONTRACT_SOURCE_SYSTEM,
-    i.rn,
-    CAST(i.rn AS FLOAT8) AS rn_f,
-    EXTRACT(MONTH FROM i.END_OF_MONTH_DATE) AS moy,
-    i.SOURCE_SYSTEM_BALANCE,
-    COALESCE(f.season_factor, 1.0) AS season_factor,
-    CAST(i.SOURCE_SYSTEM_BALANCE / NULLIF(f.season_factor, 0.0) AS FLOAT8) AS y_d
-  FROM idx1 i
-  LEFT JOIN season_norm f
-    ON f.CONTRACT_SOURCE_SYSTEM = i.CONTRACT_SOURCE_SYSTEM
-   AND f.moy = EXTRACT(MONTH FROM i.END_OF_MONTH_DATE)
-),
-
--- 5) Cumulative sums on de-seasonalized series (window only here)
-csum_d AS (
-  SELECT
-    b.*,
-    SUM(b.y_d)  OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS csum_y_d,
-    SUM(CAST(b.y_d * b.y_d AS FLOAT8)) OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS csum_y2_d,
-    SUM(b.rn_f) OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS csum_x_d,
-    SUM(CAST(b.rn_f * b.rn_f AS FLOAT8)) OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS csum_x2_d,
-    SUM(CAST(b.rn_f * b.y_d AS FLOAT8)) OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS csum_
+/* 12-month seasonally-adjusted backtest: forecast t fro
