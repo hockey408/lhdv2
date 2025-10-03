@@ -1,3 +1,85 @@
+
+WITH params AS (
+  SELECT DATE '2025-09-30' AS as_of_date
+),
+base AS (
+  SELECT
+      End_of_Month_Date,
+      CASE
+        WHEN CONTRACT_SOURCE_SYSTEM IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN') THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1051872' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1061833' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1041344' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1041211' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1041345' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1041364' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1041210' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042127' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042213' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042048' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042368' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042408' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042409' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042424' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1100001' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1142067' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1042886' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1043008' THEN 'L-SVB'
+        WHEN CONTRACT_SOURCE_SYSTEM IN ('ADJ', 'ALL', 'ALS', 'FDR', 'FISERV', 'GGSL', 'GL', 'LEA', 'PCFS', 'PSL','SBO') THEN 'L-FCB'
+        WHEN CONTRACT_SOURCE_SYSTEM IN ('ACAR01', 'ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN','INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001','SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN','STRAT1','STRAT1-EXCPTN') THEN 'L-CIT'
+        ELSE 'NULL-Need to Research' END AS bank,        
+      Account_Name,
+      Contract_Source_System,
+      CIS_Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      GL_Account_Hier_Level_4,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag,
+      PROD_HIER_LEVEL_5,
+      RBC_Code
+     
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE END_OF_MONTH_DATE = (SELECT as_of_date FROM params)
+    AND GL_ACCOUNT_HIER_LEVEL_4 in ('Total Loans','Lns Held for Sale')
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+enriched AS (
+  SELECT
+    b.*,
+    CASE
+      WHEN Days_Past_Due = 0 THEN 'Zero Days'
+      WHEN Days_Past_Due BETWEEN 1  AND 30  THEN '1-30 Days'
+      WHEN Days_Past_Due BETWEEN 31 AND 90  THEN '31-90 Days'
+      WHEN Days_Past_Due BETWEEN 91 AND 180 THEN '91-180 Days'
+      WHEN Days_Past_Due > 180 THEN '180+ Days'
+      ELSE 'Unknown'
+    END AS Days_Past_Due_Bucket,
+    CASE
+      WHEN Source_System_Balance < 250000 THEN '< $250k'
+      WHEN Source_System_Balance < 500000 THEN '$250k - < $500k'
+      ELSE '>= $500k'
+    END AS Balance_Bucket
+  FROM base b
+)
+SELECT *
+FROM enriched
+ORDER BY bank, Account_Name, Account_Identifier;
+
+
+
+
+
+
+
 import pandas as pd
 import numpy as np
 import requests
