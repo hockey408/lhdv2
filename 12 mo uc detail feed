@@ -1,3 +1,39 @@
+-- Put your month-end and your account list here ↓
+WITH params AS (
+  SELECT DATE '2025-09-30' AS as_of_date  -- << set your month-end
+),
+months AS (
+  SELECT as_of_date AS eom,
+         ADD_MONTHS(as_of_date, -1) AS prev_eom
+  FROM params
+),
+acct_list AS (
+  -- === Replace with your IDs (string example). If numeric, drop the quotes. ===
+  SELECT 'A123'::VARCHAR(64) AS ACCOUNT_IDENTIFIER UNION ALL
+  SELECT 'B456'::VARCHAR(64) UNION ALL
+  SELECT 'C789'::VARCHAR(64)
+),
+id_set AS (
+  -- Accounts from your list that appear in either month
+  SELECT DISTINCT t.ACCOUNT_IDENTIFIER
+  FROM YOUR_TABLE t
+  JOIN months m
+    ON t.END_OF_MONTH_DATE IN (m.eom, m.prev_eom)
+  JOIN acct_list a
+    ON a.ACCOUNT_IDENTIFIER = t.ACCOUNT_IDENTIFIER
+)
+SELECT t.*
+FROM YOUR_TABLE t
+JOIN months m
+  ON t.END_OF_MONTH_DATE IN (m.eom, m.prev_eom)
+JOIN id_set s
+  ON s.ACCOUNT_IDENTIFIER = t.ACCOUNT_IDENTIFIER
+ORDER BY t.ACCOUNT_IDENTIFIER, t.END_OF_MONTH_DATE;
+
+
+
+
+
 -- Pull rows for accounts that appear in either the chosen month or its previous month.
 -- Returns the rows for each month where the account is present (union of both months).
 
@@ -26966,18 +27002,4 @@ WHERE b.is_synthetic = 0
 UNION ALL
 
 /* F) Latest close anomaly detection (t = latest) — SYNTHETIC */
-SELECT
-  'SUMMARY_ANOMALY_DETECTION_SYNTH' AS row_type,
-  b.CONTRACT_SOURCE_SYSTEM,
-  b.forecast_period                 AS period_date,
-  b.actual,
-  b.forecast_val,
-  b.sigma_est,
-  (b.forecast_val - 1.9599 * b.sigma_est) AS pi95_lo,
-  (b.forecast_val + 1.9599 * b.sigma_est) AS pi95_hi,
-  (b.actual - b.forecast_val)             AS dev_abs,
-  CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val) / b.forecast_val ELSE NULL END AS dev_pct,
-  CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THEN (b.actual - b.forecast_val) / b.sigma_est ELSE NULL END AS z_score,
-  100.0 * (
-    0.5 * LEAST(ABS(CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THEN (b.actual - b.forecast_val)/b.sigma_est ELSE 0 END) / 3.0, 1.0)
-  + 0.3 * LEAST(ABS(CASE WHEN b.forecast_val <> 0 
+SELE
