@@ -1,3 +1,34 @@
+SELECT
+    d.RC_CODE,
+    d.RC_DESCRIPTION,
+    d.ACCTNBR,              -- or account key
+    d.CUST_LINE_NBR,        -- customer/line if available
+    d.CONTRACT_ID,          -- contract-level if applicable
+    d.END_OF_MONTH_DATE,
+    d.SOURCE_SYSTEM_BALANCE AS balance_cur,
+    LAG(d.SOURCE_SYSTEM_BALANCE) OVER (
+        PARTITION BY d.ACCTNBR
+        ORDER BY d.END_OF_MONTH_DATE
+    ) AS balance_prev,
+    (d.SOURCE_SYSTEM_BALANCE
+     - LAG(d.SOURCE_SYSTEM_BALANCE) OVER (
+          PARTITION BY d.ACCTNBR
+          ORDER BY d.END_OF_MONTH_DATE
+       )
+    ) AS balance_delta
+FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+WHERE d.RC_CODE = :RC_CODE
+  AND d.END_OF_MONTH_DATE IN (
+        :MONTH_END,
+        ADD_MONTHS(:MONTH_END, -1)
+  )
+  AND d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+ORDER BY ABS(balance_delta) DESC NULLS LAST
+FETCH FIRST 200 ROWS ONLY;
+
+
+
+
 WITH params AS (
   SELECT DATE '2025-09-30' AS as_of_date
 ),
@@ -26914,108 +26945,4 @@ summary_next_fwd AS (
     )                                                 AS sigma_est,
 
     l.avg_all                                         AS avg_level_sys
-  FROM last_latest l
-)
-
--- ===== FINAL OUTPUTS =====
-
--- A) Full HISTORY
-SELECT
-  'HISTORY'              AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  END_OF_MONTH_DATE      AS period_date,
-  SOURCE_SYSTEM_BALANCE  AS actual,
-  roll_mean_6,
-  roll_std_6,
-  lag12_balance,
-  regr_slope_12,
-  regr_intercept_12,
-  NULL::FLOAT8           AS forecast_val,
-  NULL::FLOAT8           AS pi95_lo,
-  NULL::FLOAT8           AS pi95_hi,
-  NULL::FLOAT8           AS dev_abs,
-  NULL::FLOAT8           AS dev_pct,
-  NULL::FLOAT8           AS z_score,
-  NULL::FLOAT8           AS severity_0_100,
-  NULL                   AS outside_95_band
-FROM calc
-
-UNION ALL
-
--- B) Rolling 12-month BACKTEST panel (t-1 → t with actual)
-SELECT
-  'SUMMARY_BACKTEST_12M' AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  forecast_period         AS period_date,            -- month t
-  actual,
-  NULL::FLOAT8           AS roll_mean_6,
-  NULL::FLOAT8           AS roll_std_6,
-  NULL::FLOAT8           AS lag12_balance,
-  NULL::FLOAT8           AS regr_slope_12,
-  NULL::FLOAT8           AS regr_intercept_12,
-  forecast_val,
-  (forecast_val - 1.9599 * sigma_est) AS pi95_lo,
-  (forecast_val + 1.9599 * sigma_est) AS pi95_hi,
-  (actual - forecast_val)             AS dev_abs,
-  CASE WHEN forecast_val <> 0 THEN (actual - forecast_val) / forecast_val ELSE NULL END AS dev_pct,
-  CASE WHEN sigma_est IS NOT NULL AND sigma_est > 0 THEN (actual - forecast_val) / sigma_est ELSE NULL END AS z_score,
-  100.0 * (
-    0.5 * LEAST(ABS(CASE WHEN sigma_est IS NOT NULL AND sigma_est > 0 THEN (actual - forecast_val) / sigma_est ELSE 0 END) / 3.0, 1.0)
-  + 0.3 * LEAST(ABS(CASE WHEN forecast_val <> 0 THEN (actual - forecast_val) / forecast_val ELSE 0 END) / 0.10, 1.0)
-  + 0.2 * LEAST(ABS(actual - forecast_val) / NULLIF(avg_level_sys * 0.10, 0), 1.0)
-  ) AS severity_0_100,
-  CASE
-    WHEN sigma_est IS NULL THEN NULL
-    WHEN actual < (forecast_val - 1.9599 * sigma_est) THEN TRUE
-    WHEN actual > (forecast_val + 1.9599 * sigma_est) THEN TRUE
-    ELSE FALSE
-  END AS outside_95_band
-FROM backtest_12m
-
-UNION ALL
-
--- C) Forward forecast (latest → next month) — optional
-SELECT
-  'SUMMARY_NEXT_FWD'     AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  forecast_period        AS period_date,            -- next month
-  NULL::FLOAT8           AS actual,
-  NULL::FLOAT8           AS roll_mean_6,
-  NULL::FLOAT8           AS roll_std_6,
-  NULL::FLOAT8           AS lag12_balance,
-  NULL::FLOAT8           AS regr_slope_12,
-  NULL::FLOAT8           AS regr_intercept_12,
-  forecast_val,
-  (forecast_val - 1.9599 * sigma_est) AS pi95_lo,
-  (forecast_val + 1.9599 * sigma_est) AS pi95_hi,
-  NULL::FLOAT8           AS dev_abs,
-  NULL::FLOAT8           AS dev_pct,
-  NULL::FLOAT8           AS z_score,
-  NULL::FLOAT8           AS severity_0_100,
-  NULL                   AS outside_95_band
-FROM summary_next_fwd
-
-ORDER BY CONTRACT_SOURCE_SYSTEM, period_date;
-
-
-
-
-
-
-
-
-1. Executive Overview (for documentation)
-
-Purpose:
-This analysis detects unusual month-over-month changes in SOURCE_SYSTEM_BALANCE by CONTRACT_SOURCE_SYSTEM (system-level balances), using rolling statistics, regression trends, and seasonality adjustments.
-
-Key Outputs:
-
-	•	HISTORY: De-seasonalized series with rolling mean, rolling std, and regression parameters
-	•	SUMMARY_BACKTEST_12M_SA: 12-month backtest comparing forecast vs. actual, with z-scores and severity ranking
-	•	SUMMARY_NEXT_FWD_SA: Forward forecast for next month, with prediction intervals
-
-How to Use:
-
-	•	Analysts review SUMMARY_BACKTEST_12M_SA to investigate high-severity anomalies (sorted descending).
-	•	Executives view the 
+  FROM la
