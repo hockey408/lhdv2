@@ -1,4 +1,57 @@
 SELECT
+  s.RC_CODE,
+  s.RC_DESCRIPTION,
+  s.ACCTNBR,
+  s.CUST_LINE_NBR,
+  s.CONTRACT_ID,
+  s.END_OF_MONTH_DATE,
+  s.balance_prev,
+  s.balance_cur,
+  s.balance_delta,
+  -- RC_CODE total change for the month and each account's contribution
+  SUM(s.balance_delta) OVER (PARTITION BY s.RC_CODE, s.END_OF_MONTH_DATE)    AS rc_total_delta,
+  CASE
+    WHEN SUM(s.balance_delta) OVER (PARTITION BY s.RC_CODE, s.END_OF_MONTH_DATE) = 0 THEN NULL
+    ELSE s.balance_delta / SUM(s.balance_delta) OVER (PARTITION BY s.RC_CODE, s.END_OF_MONTH_DATE)
+  END AS pct_of_rc_delta
+FROM (
+  SELECT
+    d.RC_CODE,
+    d.RC_DESCRIPTION,
+    d.ACCTNBR,
+    d.CUST_LINE_NBR,
+    d.CONTRACT_ID,
+    d.END_OF_MONTH_DATE,
+    LAG(d.SOURCE_SYSTEM_BALANCE) OVER (
+      PARTITION BY d.ACCTNBR
+      ORDER BY d.END_OF_MONTH_DATE
+    ) AS balance_prev,
+    d.SOURCE_SYSTEM_BALANCE AS balance_cur,
+    (d.SOURCE_SYSTEM_BALANCE
+     - LAG(d.SOURCE_SYSTEM_BALANCE) OVER (
+         PARTITION BY d.ACCTNBR
+         ORDER BY d.END_OF_MONTH_DATE
+       )
+    ) AS balance_delta
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+  WHERE d.RC_CODE = 'AL'                 -- << your RC_CODE
+    AND d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND d.END_OF_MONTH_DATE BETWEEN
+        ADD_MONTHS(DATE '2025-08-31', -1)   -- << your MONTH_END - 1
+        AND DATE '2025-08-31'               -- << your MONTH_END
+) s
+-- keep only the flagged month rows (delta refers to change from prior month)
+WHERE s.END_OF_MONTH_DATE = DATE '2025-08-31'   -- << your MONTH_END
+ORDER BY
+  CASE WHEN s.balance_delta IS NULL THEN 1 ELSE 0 END,  -- push NULLs to bottom
+  ABS(s.balance_delta) DESC
+LIMIT 200;
+
+
+
+
+
+SELECT
     d.RC_CODE,
     d.RC_DESCRIPTION,
     d.ACCTNBR,              -- or account key
@@ -26922,27 +26975,4 @@ summary_next_fwd AS (
   SELECT
     l.CONTRACT_SOURCE_SYSTEM,
     l.END_OF_MONTH_DATE                               AS last_period,
-    ADD_MONTHS(l.END_OF_MONTH_DATE, 1)                AS forecast_period,
-    l.SOURCE_SYSTEM_BALANCE                           AS actual_last,
-
-    COALESCE(
-      CASE
-        WHEN l.regr_slope_12 IS NOT NULL AND l.regr_intercept_12 IS NOT NULL
-          THEN l.regr_intercept_12 + l.regr_slope_12 * CAST(l.rn + 1 AS FLOAT8)
-        ELSE NULL
-      END,
-      l.lag12_balance,
-      l.roll_mean_6
-    )                                                 AS forecast_val,
-
-    COALESCE(
-      l.roll_std_6,
-      CASE WHEN l.cnt_all > 1
-           THEN SQRT( GREATEST(l.avg2_all - (l.avg_all * l.avg_all), 0.0)
-                      * (CAST(l.cnt_all AS FLOAT8) / CAST(l.cnt_all - 1 AS FLOAT8)) )
-           ELSE NULL
-      END
-    )                                                 AS sigma_est,
-
-    l.avg_all                                         AS avg_level_sys
-  FROM la
+    ADD_MO
