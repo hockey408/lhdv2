@@ -1,3 +1,182 @@
+/* Drill-down + reclass detection across CONTRACT_SOURCE_SYSTEM (Netezza-safe)
+
+   Parameters to set:
+     - Focus CONTRACT_SOURCE_SYSTEM ... 'SOURCE_A'
+     - Focus month_end ................. DATE '2025-08-31'
+*/
+
+WITH
+/* All accounts in the current month (all CSS) */
+cur_all AS (
+  SELECT
+    d.ACCOUNT_IDENTIFIER,
+    d.CONTRACT_SOURCE_SYSTEM,
+    SUM(COALESCE(d.SOURCE_SYSTEM_BALANCE,0))::FLOAT8 AS bal_cur_any
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+  WHERE d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND d.END_OF_MONTH_DATE = DATE '2025-08-31'
+  GROUP BY d.ACCOUNT_IDENTIFIER, d.CONTRACT_SOURCE_SYSTEM
+),
+
+/* All accounts in the prior month (all CSS) */
+prev_all AS (
+  SELECT
+    d.ACCOUNT_IDENTIFIER,
+    d.CONTRACT_SOURCE_SYSTEM,
+    SUM(COALESCE(d.SOURCE_SYSTEM_BALANCE,0))::FLOAT8 AS bal_prev_any
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+  WHERE d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND d.END_OF_MONTH_DATE = ADD_MONTHS(DATE '2025-08-31', -1)
+  GROUP BY d.ACCOUNT_IDENTIFIER, d.CONTRACT_SOURCE_SYSTEM
+),
+
+/* Focus CSS current month accounts */
+cur_focus AS (
+  SELECT
+    d.CONTRACT_SOURCE_SYSTEM,
+    d.ACCOUNT_IDENTIFIER,
+    SUM(COALESCE(d.SOURCE_SYSTEM_BALANCE,0))::FLOAT8 AS bal_cur
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+  WHERE d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND d.CONTRACT_SOURCE_SYSTEM = 'SOURCE_A'          -- << your CSS
+    AND d.END_OF_MONTH_DATE = DATE '2025-08-31'        -- << your month_end
+  GROUP BY d.CONTRACT_SOURCE_SYSTEM, d.ACCOUNT_IDENTIFIER
+),
+
+/* Focus CSS prior month accounts */
+prev_focus AS (
+  SELECT
+    d.CONTRACT_SOURCE_SYSTEM,
+    d.ACCOUNT_IDENTIFIER,
+    SUM(COALESCE(d.SOURCE_SYSTEM_BALANCE,0))::FLOAT8 AS bal_prev
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+  WHERE d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND d.CONTRACT_SOURCE_SYSTEM = 'SOURCE_A'          -- << your CSS
+    AND d.END_OF_MONTH_DATE = ADD_MONTHS(DATE '2025-08-31', -1)
+  GROUP BY d.CONTRACT_SOURCE_SYSTEM, d.ACCOUNT_IDENTIFIER
+),
+
+/* Bring focus months together; keep rows present in either month */
+focus_join AS (
+  SELECT
+    COALESCE(c.CONTRACT_SOURCE_SYSTEM, p.CONTRACT_SOURCE_SYSTEM) AS contract_source_system,
+    COALESCE(c.ACCOUNT_IDENTIFIER,     p.ACCOUNT_IDENTIFIER)     AS account_identifier,
+    COALESCE(p.bal_prev, 0.0)                                    AS balance_prev,
+    COALESCE(c.bal_cur,  0.0)                                    AS balance_cur
+  FROM cur_focus c
+  FULL OUTER JOIN prev_focus p
+    ON  p.ACCOUNT_IDENTIFIER      = c.ACCOUNT_IDENTIFIER
+    AND p.CONTRACT_SOURCE_SYSTEM  = c.CONTRACT_SOURCE_SYSTEM
+),
+
+/* For accounts not in the focus CSS in a month, see if they exist in OTHER CSSs */
+/* Largest prior-month other-CSS per account */
+prev_other_rank AS (
+  SELECT
+    pa.ACCOUNT_IDENTIFIER,
+    pa.CONTRACT_SOURCE_SYSTEM AS other_css_prev,
+    pa.bal_prev_any,
+    ROW_NUMBER() OVER (
+      PARTITION BY pa.ACCOUNT_IDENTIFIER
+      ORDER BY pa.bal_prev_any DESC
+    ) AS rn_prev
+  FROM prev_all pa
+  WHERE pa.CONTRACT_SOURCE_SYSTEM <> 'SOURCE_A'       -- exclude focus CSS
+),
+
+/* Largest current-month other-CSS per account */
+cur_other_rank AS (
+  SELECT
+    ca.ACCOUNT_IDENTIFIER,
+    ca.CONTRACT_SOURCE_SYSTEM AS other_css_cur,
+    ca.bal_cur_any,
+    ROW_NUMBER() OVER (
+      PARTITION BY ca.ACCOUNT_IDENTIFIER
+      ORDER BY ca.bal_cur_any DESC
+    ) AS rn_cur
+  FROM cur_all ca
+  WHERE ca.CONTRACT_SOURCE_SYSTEM <> 'SOURCE_A'       -- exclude focus CSS
+),
+
+/* Attach other-CSS presence to the focus join */
+focus_with_other AS (
+  SELECT
+    f.contract_source_system,
+    f.account_identifier,
+    f.balance_prev,
+    f.balance_cur,
+    po.other_css_prev,
+    po.bal_prev_any  AS prev_bal_in_other_css,
+    co.other_css_cur,
+    co.bal_cur_any   AS cur_bal_in_other_css
+  FROM focus_join f
+  LEFT JOIN prev_other_rank po
+    ON po.ACCOUNT_IDENTIFIER = f.account_identifier
+   AND po.rn_prev = 1
+  LEFT JOIN cur_other_rank co
+    ON co.ACCOUNT_IDENTIFIER = f.account_identifier
+   AND co.rn_cur = 1
+)
+
+/* Final: deltas, reclass flags, contribution to CSS's total change */
+SELECT
+  DATE '2025-08-31'::DATE                        AS end_of_month_date,  -- normalize to flagged month
+  x.contract_source_system                        AS contract_source_system_focus,
+  x.account_identifier,
+  x.balance_prev,
+  x.balance_cur,
+  (x.balance_cur - x.balance_prev)                AS balance_delta,
+
+  /* Reclassification context (largest other CSS, if any) */
+  x.other_css_prev,
+  x.prev_bal_in_other_css,
+  x.other_css_cur,
+  x.cur_bal_in_other_css,
+
+  /* Reclass flags */
+  CASE
+    WHEN x.balance_prev = 0
+         AND x.balance_cur > 0
+         AND COALESCE(x.prev_bal_in_other_css,0) > 0
+    THEN 1 ELSE 0
+  END AS moved_in_from_other_css,
+
+  CASE
+    WHEN x.balance_prev > 0
+         AND x.balance_cur = 0
+         AND COALESCE(x.cur_bal_in_other_css,0) > 0
+    THEN 1 ELSE 0
+  END AS moved_out_to_other_css,
+
+  /* Reason text */
+  CASE
+    WHEN x.balance_prev = 0 AND x.balance_cur > 0 AND COALESCE(x.prev_bal_in_other_css,0) > 0
+      THEN 'Moved IN from CSS ' || x.other_css_prev
+    WHEN x.balance_prev > 0 AND x.balance_cur = 0 AND COALESCE(x.cur_bal_in_other_css,0) > 0
+      THEN 'Moved OUT to CSS ' || x.other_css_cur
+    WHEN x.balance_prev = 0 AND x.balance_cur > 0
+      THEN 'New in focus CSS'
+    WHEN x.balance_prev > 0 AND x.balance_cur = 0
+      THEN 'Closed in focus CSS'
+    ELSE 'Stayed in focus CSS'
+  END AS reclass_reason,
+
+  /* Share of focus CSS total $ change */
+  SUM( (x.balance_cur - x.balance_prev) ) OVER () AS css_total_delta,
+  CASE
+    WHEN SUM( (x.balance_cur - x.balance_prev) ) OVER () = 0 THEN NULL
+    ELSE (x.balance_cur - x.balance_prev)
+         / SUM( (x.balance_cur - x.balance_prev) ) OVER ()
+  END AS pct_of_css_delta
+
+FROM focus_with_other x
+ORDER BY ABS(x.balance_cur - x.balance_prev) DESC
+LIMIT 1000;
+
+
+
+
+
 -- Put your month-end and your account list here ↓
 WITH params AS (
   SELECT DATE '2025-09-30' AS as_of_date  -- << set your month-end
@@ -26981,25 +27160,4 @@ SELECT
   (b.forecast_val + 1.9599 * b.sigma_est) AS pi95_hi,
   (b.actual - b.forecast_val)             AS dev_abs,
   CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val) / b.forecast_val ELSE NULL END AS dev_pct,
-  CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THEN (b.actual - b.forecast_val) / b.sigma_est ELSE NULL END AS z_score,
-  100.0 * (
-    0.5 * LEAST(ABS(CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THEN (b.actual - b.forecast_val)/b.sigma_est ELSE 0 END) / 3.0, 1.0)
-  + 0.3 * LEAST(ABS(CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val)/b.forecast_val ELSE 0 END) / 0.10, 1.0)
-  + 0.2 * LEAST(ABS(b.actual - b.forecast_val) / NULLIF(b.avg_level_sys * 0.10, 0), 1.0)
-  ) AS severity_0_100,
-  CASE
-    WHEN b.sigma_est IS NULL THEN NULL
-    WHEN b.actual < (b.forecast_val - 1.9599 * b.sigma_est) THEN TRUE
-    WHEN b.actual > (b.forecast_val + 1.9599 * b.sigma_est) THEN TRUE
-    ELSE FALSE
-  END AS outside_95_band
-FROM backtest_split b
-JOIN latest_join lj
-  ON lj.CONTRACT_SOURCE_SYSTEM = b.CONTRACT_SOURCE_SYSTEM
- AND lj.max_eom                = b.forecast_period
-WHERE b.is_synthetic = 0
-
-UNION ALL
-
-/* F) Latest close anomaly detection (t = latest) — SYNTHETIC */
-SELE
+  CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est >
