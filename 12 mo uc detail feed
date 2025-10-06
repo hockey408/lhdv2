@@ -1,3 +1,11 @@
+-- Latest month across the whole fact (ignores current slicers on Month_End)
+Latest Month :=
+CALCULATE ( MAX ( 'RC_Model'[Month_End] ), ALL ( 'RC_Model'[Month_End] ) )
+
+
+
+
+
 -- 1. Total RC Codes
 Total RC Codes = DISTINCTCOUNT('RC_Model'[RC_CODE])
 
@@ -27127,17 +27135,4 @@ UNION ALL
 SELECT
   'SUMMARY_ANOMALY_DETECTION_SYNTH' AS row_type,
   b.CONTRACT_SOURCE_SYSTEM          AS CONTRACT_SOURCE_SYSTEM,
-  b.forecast_period                 AS period_date,
-  b.actual                          AS actual,
-  b.forecast_val                    AS forecast_val,
-  b.sigma_est                       AS sigma_est,
-  (b.forecast_val - 1.9599 * b.sigma_est) AS pi95_lo,
-  (b.forecast_val + 1.9599 * b.sigma_est) AS pi95_hi,
-  (b.actual - b.forecast_val)             AS dev_abs,
-  CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val) / b.forecast_val ELSE NULL END AS dev_pct,
-  CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THEN (b.actual - b.forecast_val) / b.sigma_est ELSE NULL END AS z_score,
-  100.0 * (
-    0.5 * LEAST(ABS(CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THEN (b.actual - b.forecast_val)/b.sigma_est ELSE 0 END) / 3.0, 1.0)
-  + 0.3 * LEAST(ABS(CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val)/b.forecast_val ELSE 0 END) / 0.10, 1.0)
-  + 0.2 * LEAST(ABS(b.actual - b.forecast_val) / NULLIF(b.avg_level_sys * 0.10, 0), 1.0)
-  ) AS severit
+  b.forecast_period       
