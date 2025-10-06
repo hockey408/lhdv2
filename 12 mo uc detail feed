@@ -1,3 +1,64 @@
+R2 (Latest) :=
+CALCULATE ( [R2 (Context)], 'RC_Model'[Month_End] = [Latest Month] )
+
+RMSE (Latest) :=
+CALCULATE ( [RMSE (Context)], 'RC_Model'[Month_End] = [Latest Month] )
+
+MAE (Latest) :=
+CALCULATE ( [MAE (Context)], 'RC_Model'[Month_End] = [Latest Month] )
+
+MAPE (Latest) :=
+CALCULATE ( [MAPE (Context)], 'RC_Model'[Month_End] = [Latest Month] )
+
+
+Avg Severity (Context) :=
+AVERAGE ( 'RC_Model'[Severity_0_100] )
+
+Avg Severity (Latest) :=
+CALCULATE ( [Avg Severity (Context)], 'RC_Model'[Month_End] = [Latest Month] )
+
+Flagged Count (>=70, Latest) :=
+CALCULATE (
+    COUNTROWS ( 'RC_Model' ),
+    'RC_Model'[Severity_0_100] >= 70,
+    'RC_Model'[Month_End] = [Latest Month]
+)
+
+Total Rows (Latest) :=
+CALCULATE ( COUNTROWS ( 'RC_Model' ), 'RC_Model'[Month_End] = [Latest Month] )
+
+% Flagged (Latest) :=
+DIVIDE ( [Flagged Count (>=70, Latest)], [Total Rows (Latest)], 0 )
+
+
+
+Total Exposure $ (Latest) :=
+CALCULATE ( SUM ( 'RC_Model'[Actual] ), 'RC_Model'[Month_End] = [Latest Month] )
+
+Flagged Exposure $ (Latest) :=
+CALCULATE (
+    SUM ( 'RC_Model'[Actual] ),
+    'RC_Model'[Severity_0_100] >= 70,
+    'RC_Model'[Month_End] = [Latest Month]
+)
+
+RC Count (Distinct, Latest) :=
+CALCULATE ( DISTINCTCOUNT ( 'RC_Model'[RC_CODE] ), 'RC_Model'[Month_End] = [Latest Month] )
+
+RC Count (Distinct, Latest, All Models) :=
+CALCULATE (
+    [RC Count (Distinct, Latest)],
+    ALL ( 'RC_Model'[Best_Model] )
+)
+
+Model Share of RCs (Latest) :=
+DIVIDE ( [RC Count (Distinct, Latest)], [RC Count (Distinct, Latest, All Models)], 0 )
+
+
+
+
+
+
 R2 (Context) :=
 1 - DIVIDE(
       VAR.P ( 'RC_Model'[Resid] ),
@@ -27143,15 +27204,4 @@ SELECT
     WHEN b.actual > (b.forecast_val + 1.9599 * b.sigma_est) THEN TRUE
     ELSE FALSE
   END AS outside_95_band,
-  NULL::FLOAT8                    AS sigma_recent,
-  NULL::FLOAT8                    AS regr_slope_12,
-  NULL::FLOAT8                    AS lag12_balance
-FROM backtest_12m b
-JOIN latest_join lj
-  ON lj.CONTRACT_SOURCE_SYSTEM = b.CONTRACT_SOURCE_SYSTEM
- AND lj.max_eom                = b.forecast_period
-WHERE b.CONTRACT_SOURCE_SYSTEM NOT IN (SELECT CONTRACT_SOURCE_SYSTEM FROM synthetic_list)
-
-UNION ALL
-
-/* F) Latest close (t = latest) anomaly
+  NULL::FLOAT8                    AS sigma_
