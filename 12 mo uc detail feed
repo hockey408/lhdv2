@@ -1,3 +1,26 @@
+R2 (Context) :=
+1 - DIVIDE(
+      VAR.P ( 'RC_Model'[Resid] ),
+      VAR.P ( 'RC_Model'[Actual] ),
+      0
+)
+
+RMSE (Context) :=
+SQRT ( AVERAGEX ( 'RC_Model', 'RC_Model'[Resid] * 'RC_Model'[Resid] ) )
+
+MAE (Context) :=
+AVERAGEX ( 'RC_Model', ABS ( 'RC_Model'[Resid] ) )
+
+MAPE (Context) :=
+AVERAGEX (
+    'RC_Model',
+    DIVIDE ( ABS ( 'RC_Model'[Resid] ), ABS ( 'RC_Model'[Actual] ), BLANK () )
+)
+
+
+
+
+
 -- Latest month across the whole fact (ignores current slicers on Month_End)
 Latest Month :=
 CALCULATE ( MAX ( 'RC_Model'[Month_End] ), ALL ( 'RC_Model'[Month_End] ) )
@@ -27131,8 +27154,4 @@ WHERE b.CONTRACT_SOURCE_SYSTEM NOT IN (SELECT CONTRACT_SOURCE_SYSTEM FROM synthe
 
 UNION ALL
 
-/* F) Latest close (t = latest) anomaly detection — SYNTHETIC */
-SELECT
-  'SUMMARY_ANOMALY_DETECTION_SYNTH' AS row_type,
-  b.CONTRACT_SOURCE_SYSTEM          AS CONTRACT_SOURCE_SYSTEM,
-  b.forecast_period       
+/* F) Latest close (t = latest) anomaly
