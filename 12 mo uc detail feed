@@ -1,3 +1,74 @@
+R2 (Context) :=
+VAR meanResid  = AVERAGE ( 'RC_Model'[Resid] )
+VAR meanActual = AVERAGE ( 'RC_Model'[Actual] )
+VAR varResid   = AVERAGEX ( 'RC_Model', POWER ( 'RC_Model'[Resid]  - meanResid , 2 ) )
+VAR varActual  = AVERAGEX ( 'RC_Model', POWER ( 'RC_Model'[Actual] - meanActual, 2 ) )
+RETURN 1 - DIVIDE ( varResid, varActual, 0 )
+
+RMSE (Context) :=
+SQRT ( AVERAGEX ( 'RC_Model', 'RC_Model'[Resid] * 'RC_Model'[Resid] ) )
+
+
+R2 (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE ( [R2 (Context)], TREATAS ( { lm }, 'RC_Model'[Month_End] ) )
+
+RMSE (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE ( [RMSE (Context)], TREATAS ( { lm }, 'RC_Model'[Month_End] ) )
+
+Avg Severity (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE ( AVERAGE ( 'RC_Model'[Severity_0_100] ),
+            TREATAS ( { lm }, 'RC_Model'[Month_End] ) )
+
+
+
+Flagged Count (>=70, Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    COUNTROWS ( 'RC_Model' ),
+    'RC_Model'[Severity_0_100] >= 70,
+    TREATAS ( { lm }, 'RC_Model'[Month_End] )
+)
+
+Total Rows (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE ( COUNTROWS ( 'RC_Model' ), TREATAS ( { lm }, 'RC_Model'[Month_End] ) )
+
+% Flagged (Latest) :=
+DIVIDE ( [Flagged Count (>=70, Latest)], [Total Rows (Latest)], 0 )
+
+Total Exposure $ (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE ( SUM ( 'RC_Model'[Actual] ), TREATAS ( { lm }, 'RC_Model'[Month_End] ) )
+
+Flagged Exposure $ (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    SUM ( 'RC_Model'[Actual] ),
+    'RC_Model'[Severity_0_100] >= 70,
+    TREATAS ( { lm }, 'RC_Model'[Month_End] )
+)
+
+
+
+
+
+
+
+
+
+
+
+
 R2 (Latest) :=
 CALCULATE ( [R2 (Context)], 'RC_Model'[Month_End] = [Latest Month] )
 
@@ -27176,32 +27247,4 @@ FROM backtest_12m b
 JOIN latest_per_sys l
   ON l.CONTRACT_SOURCE_SYSTEM = b.CONTRACT_SOURCE_SYSTEM
 WHERE b.forecast_period < l.max_eom
-  AND b.CONTRACT_SOURCE_SYSTEM IN (SELECT CONTRACT_SOURCE_SYSTEM FROM synthetic_list)
-
-UNION ALL
-
-/* E) Latest close (t = latest) anomaly detection — NON-SYNTHETIC */
-SELECT
-  'SUMMARY_ANOMALY_DETECTION_MAIN' AS row_type,
-  b.CONTRACT_SOURCE_SYSTEM         AS CONTRACT_SOURCE_SYSTEM,
-  b.forecast_period                AS period_date,
-  b.actual                         AS actual,
-  b.forecast_val                   AS forecast_val,
-  b.sigma_est                      AS sigma_est,
-  (b.forecast_val - 1.9599 * b.sigma_est) AS pi95_lo,
-  (b.forecast_val + 1.9599 * b.sigma_est) AS pi95_hi,
-  (b.actual - b.forecast_val)             AS dev_abs,
-  CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val) / b.forecast_val ELSE NULL END AS dev_pct,
-  CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THEN (b.actual - b.forecast_val) / b.sigma_est ELSE NULL END AS z_score,
-  100.0 * (
-    0.5 * LEAST(ABS(CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THEN (b.actual - b.forecast_val)/b.sigma_est ELSE 0 END) / 3.0, 1.0)
-  + 0.3 * LEAST(ABS(CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val)/b.forecast_val ELSE 0 END) / 0.10, 1.0)
-  + 0.2 * LEAST(ABS(b.actual - b.forecast_val) / NULLIF(b.avg_level_sys * 0.10, 0), 1.0)
-  ) AS severity_0_100,
-  CASE
-    WHEN b.sigma_est IS NULL THEN NULL
-    WHEN b.actual < (b.forecast_val - 1.9599 * b.sigma_est) THEN TRUE
-    WHEN b.actual > (b.forecast_val + 1.9599 * b.sigma_est) THEN TRUE
-    ELSE FALSE
-  END AS outside_95_band,
-  NULL::FLOAT8                    AS sigma_
+  AND b.CONTRACT_SOUR
