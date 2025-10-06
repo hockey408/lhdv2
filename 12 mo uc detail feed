@@ -1,3 +1,31 @@
+/* All duplicate ACCOUNT_IDENTIFIER rows for LN, 2025-09-30 */
+SELECT
+    d.END_OF_MONTH_DATE,
+    d.CONTRACT_SOURCE_SYSTEM,
+    d.RC_CODE,
+    d.ACCOUNT_IDENTIFIER,
+    COALESCE(d.SOURCE_SYSTEM_BALANCE,0) AS balance,
+    COUNT(*) OVER (PARTITION BY d.ACCOUNT_IDENTIFIER) AS dup_count
+FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+WHERE d.CONTRACT_SOURCE_SYSTEM = 'LN'
+  AND d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  AND d.END_OF_MONTH_DATE = DATE '2025-09-30'
+  /* keep only IDs that occur more than once */
+  AND d.ACCOUNT_IDENTIFIER IN (
+        SELECT ACCOUNT_IDENTIFIER
+        FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+        WHERE CONTRACT_SOURCE_SYSTEM = 'LN'
+          AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+          AND END_OF_MONTH_DATE = DATE '2025-09-30'
+        GROUP BY ACCOUNT_IDENTIFIER
+        HAVING COUNT(*) > 1
+      )
+ORDER BY d.ACCOUNT_IDENTIFIER, d.RC_CODE, d.SOURCE_SYSTEM_BALANCE DESC;
+
+
+
+
+
 SELECT
   d.ACCOUNT_IDENTIFIER,
   COUNT(*)                                         AS row_count,
@@ -27063,22 +27091,4 @@ SELECT
     WHEN b.actual > (b.forecast_val + 1.9599 * b.sigma_est) THEN TRUE
     ELSE FALSE
   END AS outside_95_band
-FROM backtest_split b
-JOIN latest_join lj
-  ON lj.CONTRACT_SOURCE_SYSTEM = b.CONTRACT_SOURCE_SYSTEM
- AND lj.max_eom                = b.forecast_period
-WHERE b.is_synthetic = 0
-
-UNION ALL
-
-/* F) Latest close (t = latest) anomaly detection — SYNTHETIC */
-SELECT
-  'SUMMARY_ANOMALY_DETECTION_SYNTH' AS row_type,
-  b.CONTRACT_SOURCE_SYSTEM,
-  b.forecast_period                 AS period_date,
-  b.actual,
-  b.forecast_val,
-  b.sigma_est,
-  (b.forecast_val - 1.9599 * b.sigma_est) AS pi95_lo,
-  (b.forecast_val + 1.9599 * b.sigma_est) AS pi95_hi,
-  (b.actual - b.forecast_val)             AS d
+FROM backtest_spli
