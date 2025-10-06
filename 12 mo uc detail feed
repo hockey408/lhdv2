@@ -1,3 +1,182 @@
+/* Trend + Forecast + R² per account (Netezza-safe)
+   - Choose method: 'REG' (linear regression) or 'MA' (6-month moving average)
+*/
+
+WITH
+params AS ( SELECT 'REG'::VARCHAR(3) AS method ),    -- << set to 'REG' or 'MA'
+
+base AS (
+  SELECT
+    d.ACCOUNT_IDENTIFIER,
+    d.CONTRACT_SOURCE_SYSTEM,
+    CAST(d.END_OF_MONTH_DATE AS DATE) AS month_end,
+    /* monthly time index: year*12 + month */
+    (EXTRACT(YEAR  FROM d.END_OF_MONTH_DATE)::INT * 12
+   + EXTRACT(MONTH FROM d.END_OF_MONTH_DATE)::INT)   AS t_num,
+    SUM(COALESCE(d.SOURCE_SYSTEM_BALANCE,0))::FLOAT8 AS bal
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+  WHERE d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND d.ACCOUNT_IDENTIFIER IN ('ACC1','ACC2','ACC3','ACC4','ACC5')  -- << your 5 accounts
+  GROUP BY d.ACCOUNT_IDENTIFIER, d.CONTRACT_SOURCE_SYSTEM, CAST(d.END_OF_MONTH_DATE AS DATE),
+           (EXTRACT(YEAR FROM d.END_OF_MONTH_DATE)::INT * 12 + EXTRACT(MONTH FROM d.END_OF_MONTH_DATE)::INT)
+),
+
+/* mean per account for SST */
+mean_y AS (
+  SELECT ACCOUNT_IDENTIFIER, AVG(bal)::FLOAT8 AS mean_bal
+  FROM base
+  GROUP BY ACCOUNT_IDENTIFIER
+),
+
+/* Regression sums per account (no POWER() usage) */
+reg_sums AS (
+  SELECT
+    b.ACCOUNT_IDENTIFIER,
+    COUNT(*)::INT        AS n_obs,
+    SUM(b.t_num)::FLOAT8 AS sumX,
+    SUM(b.bal)::FLOAT8   AS sumY,
+    SUM(b.t_num * b.bal) AS sumXY,
+    SUM(b.t_num * b.t_num) AS sumX2
+  FROM base b
+  GROUP BY b.ACCOUNT_IDENTIFIER
+),
+
+/* Regression coefficients per account */
+reg_coef AS (
+  SELECT
+    s.ACCOUNT_IDENTIFIER,
+    s.n_obs,
+    s.sumX, s.sumY, s.sumXY, s.sumX2,
+    (s.n_obs*s.sumXY - s.sumX*s.sumY) /
+      NULLIF( (s.n_obs*s.sumX2 - s.sumX*s.sumX), 0 )  AS slope,
+    /* intercept = (sumY - slope*sumX)/n */
+    (s.sumY - ((s.n_obs*s.sumXY - s.sumX*s.sumY) /
+      NULLIF( (s.n_obs*s.sumX2 - s.sumX*s.sumX), 0 )) * s.sumX) / NULLIF(s.n_obs,0) AS intercept
+  FROM reg_sums s
+),
+
+/* Regression forecast per row */
+forecast_reg AS (
+  SELECT
+    b.ACCOUNT_IDENTIFIER,
+    b.CONTRACT_SOURCE_SYSTEM,
+    b.month_end,
+    b.t_num,
+    b.bal AS actual,
+    (c.intercept + c.slope * b.t_num)::FLOAT8 AS fc_reg
+  FROM base b
+  JOIN reg_coef c USING (ACCOUNT_IDENTIFIER)
+),
+
+/* MA6 forecast per row */
+ma6 AS (
+  SELECT
+    b.ACCOUNT_IDENTIFIER,
+    b.CONTRACT_SOURCE_SYSTEM,
+    b.month_end,
+    b.t_num,
+    b.bal AS actual,
+    AVG(b.bal) OVER (
+      PARTITION BY b.ACCOUNT_IDENTIFIER
+      ORDER BY b.month_end
+      ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+    )::FLOAT8 AS fc_ma6
+  FROM base b
+),
+
+/* SSE for regression per account */
+sse_reg AS (
+  SELECT
+    f.ACCOUNT_IDENTIFIER,
+    SUM( (f.actual - f.fc_reg) * (f.actual - f.fc_reg) )::FLOAT8 AS sse_reg,
+    COUNT(*)::INT AS n_reg
+  FROM forecast_reg f
+  WHERE f.fc_reg IS NOT NULL
+  GROUP BY f.ACCOUNT_IDENTIFIER
+),
+
+/* SSE for MA per account */
+sse_ma AS (
+  SELECT
+    m.ACCOUNT_IDENTIFIER,
+    SUM( (m.actual - m.fc_ma6) * (m.actual - m.fc_ma6) )::FLOAT8 AS sse_ma,
+    COUNT(*)::INT AS n_ma
+  FROM ma6 m
+  WHERE m.fc_ma6 IS NOT NULL
+  GROUP BY m.ACCOUNT_IDENTIFIER
+),
+
+/* SST per account */
+sst AS (
+  SELECT
+    b.ACCOUNT_IDENTIFIER,
+    SUM( (b.bal - y.mean_bal) * (b.bal - y.mean_bal) )::FLOAT8 AS sst_all,
+    COUNT(*)::INT AS n_all
+  FROM base b
+  JOIN mean_y y USING (ACCOUNT_IDENTIFIER)
+  GROUP BY b.ACCOUNT_IDENTIFIER
+),
+
+/* R² per account for both methods */
+fit AS (
+  SELECT
+    x.ACCOUNT_IDENTIFIER,
+    /* R² = 1 - SSE/SST (guard SST=0) */
+    CASE WHEN s.sst_all > 0 AND r.sse_reg IS NOT NULL
+         THEN 1.0 - (r.sse_reg / s.sst_all) END AS r2_reg,
+    CASE WHEN s.sst_all > 0 AND m.sse_ma  IS NOT NULL
+         THEN 1.0 - (m.sse_ma  / s.sst_all) END AS r2_ma
+  FROM (SELECT DISTINCT ACCOUNT_IDENTIFIER FROM base) x
+  LEFT JOIN sse_reg r USING (ACCOUNT_IDENTIFIER)
+  LEFT JOIN sse_ma  m USING (ACCOUNT_IDENTIFIER)
+  LEFT JOIN sst     s USING (ACCOUNT_IDENTIFIER)
+),
+
+/* Choose the forecast per row based on params.method */
+chosen AS (
+  SELECT
+    b.ACCOUNT_IDENTIFIER,
+    b.CONTRACT_SOURCE_SYSTEM,
+    b.month_end,
+    b.t_num,
+    b.bal AS actual,
+    CASE WHEN (SELECT method FROM params) = 'REG'
+         THEN fr.fc_reg
+         ELSE ma.fc_ma6
+    END AS forecast,
+    CASE WHEN (SELECT method FROM params) = 'REG'
+         THEN fr.fc_reg - b.bal   /* not used outside; kept for symmetry */
+         ELSE ma.fc_ma6 - b.bal
+    END AS dummy_diff
+  FROM base b
+  LEFT JOIN forecast_reg fr
+    ON fr.ACCOUNT_IDENTIFIER = b.ACCOUNT_IDENTIFIER
+   AND fr.month_end = b.month_end
+  LEFT JOIN ma6 ma
+    ON ma.ACCOUNT_IDENTIFIER = b.ACCOUNT_IDENTIFIER
+   AND ma.month_end = b.month_end
+)
+
+SELECT
+  c.ACCOUNT_IDENTIFIER,
+  c.CONTRACT_SOURCE_SYSTEM,
+  c.month_end,
+  c.actual,
+  c.forecast,
+  (c.actual - c.forecast)::FLOAT8 AS resid,
+  /* R² for the chosen method, plus both for reference */
+  CASE WHEN (SELECT method FROM params) = 'REG' THEN f.r2_reg ELSE f.r2_ma END AS r2_selected,
+  f.r2_reg,
+  f.r2_ma,
+  (SELECT method FROM params) AS method_used
+FROM chosen c
+LEFT JOIN fit f USING (ACCOUNT_IDENTIFIER)
+ORDER BY c.ACCOUNT_IDENTIFIER, c.month_end;
+
+
+
+
+
 /* Historical Trend + Forecast for specific accounts (Netezza-safe)
    Supports regression or moving-average forecasting.
 */
@@ -27033,77 +27212,4 @@ calc AS (
   SELECT
     r.*,
 
-    /* rolling mean (6) */
-    CASE WHEN r.n6 > 0 THEN r.sum6_y / CAST(r.n6 AS FLOAT8) ELSE NULL END AS roll_mean_6,
-
-    /* rolling sample std (6) */
-    CASE
-      WHEN r.n6 > 1 THEN
-        SQRT( GREATEST( (r.sum6_y2 - ( (r.sum6_y * r.sum6_y) / CAST(r.n6 AS FLOAT8) )), 0.0 )
-             / CAST(r.n6 - 1 AS FLOAT8) )
-      ELSE NULL
-    END AS roll_std_6,
-
-    /* 12-row regression slope & intercept */
-    CASE
-      WHEN r.n12 >= 2 AND ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) ) <> 0.0
-        THEN ( (CAST(r.n12 AS FLOAT8) * r.sum12_xy) - (r.sum12_x * r.sum12_y) )
-             / ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) )
-      ELSE NULL
-    END AS regr_slope_12,
-
-    CASE
-      WHEN r.n12 >= 1 THEN
-        ( r.sum12_y
-          - ( COALESCE(
-                CASE
-                  WHEN r.n12 >= 2 AND ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) ) <> 0.0
-                    THEN ( (CAST(r.n12 AS FLOAT8) * r.sum12_xy) - (r.sum12_x * r.sum12_y) )
-                         / ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) )
-                  ELSE NULL
-                END, 0.0) * r.sum12_x ) ) / CAST(r.n12 AS FLOAT8)
-      ELSE NULL
-    END AS regr_intercept_12
-  FROM roll r
-),
-
-/* ========== 7) latest month per system ========== */
-latest_per_sys AS (
-  SELECT CONTRACT_SOURCE_SYSTEM, MAX(END_OF_MONTH_DATE) AS max_eom
-  FROM calc
-  GROUP BY CONTRACT_SOURCE_SYSTEM
-),
-
-/* ========== 8) 12-month rolling BACKTEST panel (t−1 → t) ========== */
-backtest_12m AS (
-  SELECT
-    p.CONTRACT_SOURCE_SYSTEM,
-    p.END_OF_MONTH_DATE                                   AS model_asof_period,  /* t−1 */
-    c.END_OF_MONTH_DATE                                   AS forecast_period,    /* t   */
-    c.SOURCE_SYSTEM_BALANCE                               AS actual,
-
-    /* forecast from the t−1 row's params (linear → lag12 → mean) */
-    COALESCE(
-      CASE
-        WHEN p.regr_slope_12 IS NOT NULL AND p.regr_intercept_12 IS NOT NULL
-          THEN p.regr_intercept_12 + p.regr_slope_12 * CAST(p.rn + 1 AS FLOAT8)
-        ELSE NULL
-      END,
-      p.lag12_balance,
-      p.roll_mean_6
-    )                                                     AS forecast_val,
-
-    /* sigma from t−1 (rolling std → fallback long-run σ) */
-    COALESCE(
-      p.roll_std_6,
-      CASE WHEN p.cnt_all > 1
-           THEN SQRT( GREATEST(p.avg2_all - (p.avg_all * p.avg_all), 0.0)
-                      * (CAST(p.cnt_all AS FLOAT8) / CAST(p.cnt_all - 1 AS FLOAT8)) )
-           ELSE NULL
-      END
-    )                                                     AS sigma_est,
-
-    p.avg_all                                             AS avg_level_sys
-  FROM calc p
-  JOIN calc c
-    ON c.CONTRACT_SOURCE_SYSTEM
+    /* rolling mean (
