@@ -1,3 +1,107 @@
+/* Historical Trend + Forecast for specific accounts (Netezza-safe)
+   Supports regression or moving-average forecasting.
+*/
+
+WITH
+base AS (
+  SELECT
+      d.ACCOUNT_IDENTIFIER,
+      d.CONTRACT_SOURCE_SYSTEM,
+      d.END_OF_MONTH_DATE,
+      CAST(DATE_PART('month', d.END_OF_MONTH_DATE)
+           + 12 * DATE_PART('year', d.END_OF_MONTH_DATE)) AS t_num,
+      SUM(COALESCE(d.SOURCE_SYSTEM_BALANCE,0))::FLOAT8 AS bal
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+  WHERE d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND d.ACCOUNT_IDENTIFIER IN ('ACC1','ACC2','ACC3','ACC4','ACC5')
+  GROUP BY d.ACCOUNT_IDENTIFIER, d.CONTRACT_SOURCE_SYSTEM, d.END_OF_MONTH_DATE
+),
+
+/* --- Regression prep --- */
+stats AS (
+  SELECT
+      b.ACCOUNT_IDENTIFIER,
+      COUNT(*) AS n_obs,
+      SUM(b.t_num) AS sumX,
+      SUM(b.bal) AS sumY,
+      SUM(b.t_num * b.bal) AS sumXY,
+      SUM(b.t_num * b.t_num) AS sumX2,
+      SUM(POWER(b.bal,2)) AS sumY2
+  FROM base b
+  GROUP BY b.ACCOUNT_IDENTIFIER
+),
+
+reg AS (
+  SELECT
+      b.ACCOUNT_IDENTIFIER,
+      b.CONTRACT_SOURCE_SYSTEM,
+      b.END_OF_MONTH_DATE,
+      b.t_num,
+      b.bal,
+      s.n_obs,
+      s.sumX,
+      s.sumY,
+      s.sumXY,
+      s.sumX2,
+      s.sumY2,
+      (s.n_obs*s.sumXY - s.sumX*s.sumY) /
+      NULLIF((s.n_obs*s.sumX2 - POWER(s.sumX,2)),0) AS slope,
+      (s.sumY - ((s.n_obs*s.sumXY - s.sumX*s.sumY) /
+      NULLIF((s.n_obs*s.sumX2 - POWER(s.sumX,2)),0)) * s.sumX) / s.n_obs AS intercept
+  FROM base b
+  JOIN stats s ON s.ACCOUNT_IDENTIFIER = b.ACCOUNT_IDENTIFIER
+),
+
+forecast_reg AS (
+  SELECT
+      r.ACCOUNT_IDENTIFIER,
+      r.CONTRACT_SOURCE_SYSTEM,
+      r.END_OF_MONTH_DATE,
+      r.bal AS actual_balance,
+      (r.intercept + r.slope * r.t_num) AS forecast_reg
+  FROM reg r
+),
+
+/* --- Moving Average (6-month example) --- */
+ma6 AS (
+  SELECT
+      b.ACCOUNT_IDENTIFIER,
+      b.CONTRACT_SOURCE_SYSTEM,
+      b.END_OF_MONTH_DATE,
+      b.bal,
+      AVG(b.bal) OVER (
+         PARTITION BY b.ACCOUNT_IDENTIFIER
+         ORDER BY b.END_OF_MONTH_DATE
+         ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+      ) AS forecast_ma6
+  FROM base b
+)
+
+/* --- Final output: choose method --- */
+SELECT
+   b.ACCOUNT_IDENTIFIER,
+   b.CONTRACT_SOURCE_SYSTEM,
+   b.END_OF_MONTH_DATE,
+   b.bal AS actual_balance,
+   CASE
+       WHEN 'REG' = 'REG' THEN f.forecast_reg
+       ELSE m.forecast_ma6
+   END AS forecast_value,
+   (b.bal - 
+       CASE WHEN 'REG' = 'REG' THEN f.forecast_reg ELSE m.forecast_ma6 END
+   ) AS resid
+FROM base b
+LEFT JOIN forecast_reg f
+  ON f.ACCOUNT_IDENTIFIER = b.ACCOUNT_IDENTIFIER
+ AND f.END_OF_MONTH_DATE = b.END_OF_MONTH_DATE
+LEFT JOIN ma6 m
+  ON m.ACCOUNT_IDENTIFIER = b.ACCOUNT_IDENTIFIER
+ AND m.END_OF_MONTH_DATE = b.END_OF_MONTH_DATE
+ORDER BY b.ACCOUNT_IDENTIFIER, b.END_OF_MONTH_DATE;
+
+
+
+
 /* Drill-down + reclass detection across CONTRACT_SOURCE_SYSTEM (Netezza-safe)
 
    Parameters to set:
@@ -27002,162 +27106,4 @@ backtest_12m AS (
     p.avg_all                                             AS avg_level_sys
   FROM calc p
   JOIN calc c
-    ON c.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
-   AND c.END_OF_MONTH_DATE      = ADD_MONTHS(p.END_OF_MONTH_DATE, 1)
-  JOIN latest_per_sys l
-    ON l.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
-  WHERE p.END_OF_MONTH_DATE >= ADD_MONTHS(l.max_eom, -12)   /* last ~12 model origins */
-    AND p.END_OF_MONTH_DATE <  l.max_eom                    /* up to month before latest */
-),
-
-/* Split backtest into main vs synthetic; also tag calc rows for HISTORY_LITE */
-backtest_split AS (
-  SELECT b.*, f.is_synthetic
-  FROM backtest_12m b
-  JOIN sys_flags f
-    ON f.CONTRACT_SOURCE_SYSTEM = b.CONTRACT_SOURCE_SYSTEM
-),
-calc_split AS (
-  SELECT c.*, f.is_synthetic
-  FROM calc c
-  JOIN sys_flags f
-    ON f.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
-),
-
-/* Helper for latest-month filtering */
-latest_join AS (
-  SELECT ls.CONTRACT_SOURCE_SYSTEM, ls.max_eom
-  FROM latest_per_sys ls
-)
-
-/* ===================== FINAL OUTPUTS ===================== */
-
-/* A) HISTORY_LITE (latest-only diagnostics) — NON-SYNTHETIC */
-SELECT
-  'HISTORY_LITE_MAIN'    AS row_type,
-  c.CONTRACT_SOURCE_SYSTEM,
-  c.END_OF_MONTH_DATE    AS period_date,
-  c.SOURCE_SYSTEM_BALANCE AS actual,
-  c.roll_std_6           AS sigma_recent,
-  c.regr_slope_12,
-  c.lag12_balance,
-  NULL::FLOAT8           AS forecast_val,
-  NULL::FLOAT8           AS sigma_est,
-  NULL::FLOAT8           AS pi95_lo,
-  NULL::FLOAT8           AS pi95_hi,
-  NULL::FLOAT8           AS dev_abs,
-  NULL::FLOAT8           AS dev_pct,
-  NULL::FLOAT8           AS z_score,
-  NULL::FLOAT8           AS severity_0_100,
-  NULL                    AS outside_95_band
-FROM calc_split c
-JOIN latest_per_sys l
-  ON l.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
- AND l.max_eom = c.END_OF_MONTH_DATE
-WHERE c.is_synthetic = 0
-
-UNION ALL
-
-/* B) HISTORY_LITE (latest-only diagnostics) — SYNTHETIC */
-SELECT
-  'HISTORY_LITE_SYNTH'   AS row_type,
-  c.CONTRACT_SOURCE_SYSTEM,
-  c.END_OF_MONTH_DATE    AS period_date,
-  c.SOURCE_SYSTEM_BALANCE AS actual,
-  c.roll_std_6           AS sigma_recent,
-  c.regr_slope_12,
-  c.lag12_balance,
-  NULL::FLOAT8           AS forecast_val,
-  NULL::FLOAT8           AS sigma_est,
-  NULL::FLOAT8           AS pi95_lo,
-  NULL::FLOAT8           AS pi95_hi,
-  NULL::FLOAT8           AS dev_abs,
-  NULL::FLOAT8           AS dev_pct,
-  NULL::FLOAT8           AS z_score,
-  NULL::FLOAT8           AS severity_0_100,
-  NULL                    AS outside_95_band
-FROM calc_split c
-JOIN latest_per_sys l
-  ON l.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
- AND l.max_eom = c.END_OF_MONTH_DATE
-WHERE c.is_synthetic = 1
-
-UNION ALL
-
-/* C) Historical error (t < latest) — NON-SYNTHETIC */
-SELECT
-  'SUMMARY_HISTORICAL_ERROR_MAIN' AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  forecast_period                  AS period_date,
-  actual,
-  forecast_val,
-  sigma_est,
-  (forecast_val - 1.9599 * sigma_est) AS pi95_lo,
-  (forecast_val + 1.9599 * sigma_est) AS pi95_hi,
-  (actual - forecast_val)             AS dev_abs,
-  CASE WHEN forecast_val <> 0 THEN (actual - forecast_val) / forecast_val ELSE NULL END AS dev_pct,
-  CASE WHEN sigma_est IS NOT NULL AND sigma_est > 0 THEN (actual - forecast_val) / sigma_est ELSE NULL END AS z_score,
-  100.0 * (
-    0.5 * LEAST(ABS(CASE WHEN sigma_est IS NOT NULL AND sigma_est > 0 THEN (actual - forecast_val)/sigma_est ELSE 0 END) / 3.0, 1.0)
-  + 0.3 * LEAST(ABS(CASE WHEN forecast_val <> 0 THEN (actual - forecast_val)/forecast_val ELSE 0 END) / 0.10, 1.0)
-  + 0.2 * LEAST(ABS(actual - forecast_val) / NULLIF(avg_level_sys * 0.10, 0), 1.0)
-  ) AS severity_0_100,
-  CASE
-    WHEN sigma_est IS NULL THEN NULL
-    WHEN actual < (forecast_val - 1.9599 * sigma_est) THEN TRUE
-    WHEN actual > (forecast_val + 1.9599 * sigma_est) THEN TRUE
-    ELSE FALSE
-  END AS outside_95_band
-FROM backtest_split
-JOIN latest_per_sys l
-  ON l.CONTRACT_SOURCE_SYSTEM = backtest_split.CONTRACT_SOURCE_SYSTEM
-WHERE is_synthetic = 0
-  AND forecast_period < l.max_eom
-
-UNION ALL
-
-/* D) Historical error (t < latest) — SYNTHETIC */
-SELECT
-  'SUMMARY_HISTORICAL_ERROR_SYNTH' AS row_type,
-  CONTRACT_SOURCE_SYSTEM,
-  forecast_period                   AS period_date,
-  actual,
-  forecast_val,
-  sigma_est,
-  (forecast_val - 1.9599 * sigma_est) AS pi95_lo,
-  (forecast_val + 1.9599 * sigma_est) AS pi95_hi,
-  (actual - forecast_val)             AS dev_abs,
-  CASE WHEN forecast_val <> 0 THEN (actual - forecast_val) / forecast_val ELSE NULL END AS dev_pct,
-  CASE WHEN sigma_est IS NOT NULL AND sigma_est > 0 THEN (actual - forecast_val) / sigma_est ELSE NULL END AS z_score,
-  100.0 * (
-    0.5 * LEAST(ABS(CASE WHEN sigma_est IS NOT NULL AND sigma_est > 0 THEN (actual - forecast_val)/sigma_est ELSE 0 END) / 3.0, 1.0)
-  + 0.3 * LEAST(ABS(CASE WHEN forecast_val <> 0 THEN (actual - forecast_val)/forecast_val ELSE 0 END) / 0.10, 1.0)
-  + 0.2 * LEAST(ABS(actual - forecast_val) / NULLIF(avg_level_sys * 0.10, 0), 1.0)
-  ) AS severity_0_100,
-  CASE
-    WHEN sigma_est IS NULL THEN NULL
-    WHEN actual < (forecast_val - 1.9599 * sigma_est) THEN TRUE
-    WHEN actual > (forecast_val + 1.9599 * sigma_est) THEN TRUE
-    ELSE FALSE
-  END AS outside_95_band
-FROM backtest_split
-JOIN latest_per_sys l
-  ON l.CONTRACT_SOURCE_SYSTEM = backtest_split.CONTRACT_SOURCE_SYSTEM
-WHERE is_synthetic = 1
-  AND forecast_period < l.max_eom
-
-UNION ALL
-
-/* E) Latest close anomaly detection (t = latest) — NON-SYNTHETIC */
-SELECT
-  'SUMMARY_ANOMALY_DETECTION_MAIN' AS row_type,
-  b.CONTRACT_SOURCE_SYSTEM,
-  b.forecast_period                AS period_date,
-  b.actual,
-  b.forecast_val,
-  b.sigma_est,
-  (b.forecast_val - 1.9599 * b.sigma_est) AS pi95_lo,
-  (b.forecast_val + 1.9599 * b.sigma_est) AS pi95_hi,
-  (b.actual - b.forecast_val)             AS dev_abs,
-  CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val) / b.forecast_val ELSE NULL END AS dev_pct,
-  CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est >
+    ON c.CONTRACT_SOURCE_SYSTEM
