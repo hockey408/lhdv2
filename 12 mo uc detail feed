@@ -1,3 +1,23 @@
+SELECT
+    d.CONTRACT_SOURCE_SYSTEM,
+    d.ACCOUNT_KEY,
+    d.ACCOUNT_IDENTIFIER,
+    COUNT(*) AS record_count,
+    CASE 
+        WHEN COUNT(*) > 1 THEN 'Duplicate'
+        ELSE 'Unique'
+    END AS duplicate_flag
+FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB d
+WHERE d.CONTRACT_SOURCE_SYSTEM = 'LN'
+  AND d.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+GROUP BY d.CONTRACT_SOURCE_SYSTEM, d.ACCOUNT_KEY, d.ACCOUNT_IDENTIFIER
+HAVING COUNT(*) >= 1
+ORDER BY d.ACCOUNT_IDENTIFIER;
+
+
+
+
+
 /* Trend + Forecast + R² per account (Netezza-safe)
    - Choose method: 'REG' (linear regression) or 'MA' (6-month moving average)
 */
@@ -27049,167 +27069,4 @@ SELECT
   CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THEN (b.actual - b.forecast_val) / b.sigma_est ELSE NULL END AS z_score,
   100.0 * (
     0.5 * LEAST(ABS(CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THEN (b.actual - b.forecast_val)/b.sigma_est ELSE 0 END) / 3.0, 1.0)
-  + 0.3 * LEAST(ABS(CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val)/b.forecast_val ELSE 0 END) / 0.10, 1.0)
-  + 0.2 * LEAST(ABS(b.actual - b.forecast_val) / NULLIF(b.avg_level_sys * 0.10, 0), 1.0)
-  ) AS severity_0_100,
-  CASE
-    WHEN b.sigma_est IS NULL THEN NULL
-    WHEN b.actual < (b.forecast_val - 1.9599 * b.sigma_est) THEN TRUE
-    WHEN b.actual > (b.forecast_val + 1.9599 * b.sigma_est) THEN TRUE
-    ELSE FALSE
-  END AS outside_95_band
-FROM backtest_split b
-JOIN latest_join lj
-  ON lj.CONTRACT_SOURCE_SYSTEM = b.CONTRACT_SOURCE_SYSTEM
- AND lj.max_eom                = b.forecast_period
-WHERE b.is_synthetic = 1
-
-ORDER BY CONTRACT_SOURCE_SYSTEM, period_date;
-
-
-
-
-
-
-ACAR01-EXCPTN
-HUBFSV-EXCPTN
-INFL05-EXCPTN
-INFL10-EXCPTN
-LNIQ01-EXCPTN
-SBO001-EXCPTN
-STKY01-EXCPTN
-STRAT1-EXCPTN
-ALL
-GL
-LJ
-SYN
-FRDS_EXCPTN
-ADJ
-SYN
-
-
-
-
-
-/* ================== PARAMETERS ================== */
-/* Maintain list of synthetic systems here (or replace with a SELECT from a reference table) */
-WITH synthetic_list AS (
-  SELECT 'SYS_SYNTH1'::VARCHAR(200) AS CONTRACT_SOURCE_SYSTEM UNION ALL
-  SELECT 'SYS_SYNTH2'::VARCHAR(200) UNION ALL
-  SELECT 'SYS_SYNTH3'::VARCHAR(200)
-),
-
-/* Latest close + 30-month window */
-latest AS (
-  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
-  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
-  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
-),
-rng AS (
-  SELECT ADD_MONTHS(max_eom, -30) AS start_eom, max_eom FROM latest
-),
-
-/* ========== 1) system × month (Total Loans) ========== */
-base AS (
-  SELECT
-    t.END_OF_MONTH_DATE,
-    t.CONTRACT_SOURCE_SYSTEM,
-    CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8) AS SOURCE_SYSTEM_BALANCE
-  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
-  CROSS JOIN rng r
-  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
-    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
-    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
-  GROUP BY 1,2
-),
-
-/* Tag systems as synthetic/non-synthetic */
-sys_flags AS (
-  SELECT DISTINCT
-         b.CONTRACT_SOURCE_SYSTEM,
-         CASE WHEN s.CONTRACT_SOURCE_SYSTEM IS NOT NULL THEN 1 ELSE 0 END AS is_synthetic
-  FROM base b
-  LEFT JOIN synthetic_list s
-    ON s.CONTRACT_SOURCE_SYSTEM = b.CONTRACT_SOURCE_SYSTEM
-),
-
-/* ========== 2) row index per system ========== */
-idx1 AS (
-  SELECT
-    b.*,
-    ROW_NUMBER() OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS rn
-  FROM base b
-),
-
-/* ========== 3) float index (materialized) ========== */
-idx2 AS (
-  SELECT
-    i.*,
-    CAST(i.rn AS FLOAT8) AS rn_f
-  FROM idx1 i
-),
-
-/* ========== 4) cumulative sums (windows only) ========== */
-csum AS (
-  SELECT
-    x.*,
-
-    /* cumulative sums for y and y^2 */
-    SUM(x.SOURCE_SYSTEM_BALANCE) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_y,
-
-    SUM(CAST(x.SOURCE_SYSTEM_BALANCE * x.SOURCE_SYSTEM_BALANCE AS FLOAT8)) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_y2,
-
-    /* cumulative x, x^2, and x*y */
-    SUM(x.rn_f) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_x,
-
-    SUM(CAST(x.rn_f * x.rn_f AS FLOAT8)) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_x2,
-
-    SUM(CAST(x.rn_f * x.SOURCE_SYSTEM_BALANCE AS FLOAT8)) OVER (
-      PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE
-    ) AS csum_xy,
-
-    /* per-system overall stats (for fallback sigma) */
-    COUNT(*) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM) AS cnt_all,
-    AVG(x.SOURCE_SYSTEM_BALANCE) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM) AS avg_all,
-    AVG(CAST(x.SOURCE_SYSTEM_BALANCE * x.SOURCE_SYSTEM_BALANCE AS FLOAT8))
-      OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM) AS avg2_all
-  FROM idx2 x
-),
-
-/* ========== 5) rolling windows from cumulative sums + lag12 ========== */
-roll AS (
-  SELECT
-    c.*,
-
-    LEAST(c.rn, 6)  AS n6,
-    LEAST(c.rn, 12) AS n12,
-
-    /* 6-row rolling sums */
-    (c.csum_y  - COALESCE(LAG(c.csum_y,  6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y,
-    (c.csum_y2 - COALESCE(LAG(c.csum_y2, 6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y2,
-
-    /* 12-row rolling sums (for regression) */
-    (c.csum_x  - COALESCE(LAG(c.csum_x,  12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_x,
-    (c.csum_y  - COALESCE(LAG(c.csum_y,  12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_y,
-    (c.csum_x2 - COALESCE(LAG(c.csum_x2, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_x2,
-    (c.csum_xy - COALESCE(LAG(c.csum_xy, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_xy,
-
-    /* simple seasonal anchor */
-    LAG(c.SOURCE_SYSTEM_BALANCE, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE) AS lag12_balance
-  FROM csum c
-),
-
-/* ========== 6) per-row stats (no window here) ========== */
-calc AS (
-  SELECT
-    r.*,
-
-    /* rolling mean (
+  + 0.3 * LEAST(ABS(CASE WHEN b.forecast_val <> 0 THEN (b.actual - b
