@@ -1,3 +1,169 @@
+/* Balance > 0 flags & transition state */
+(CASE WHEN COALESCE(j.prev_balance,0) > 0 THEN 1 ELSE 0 END) AS prev_pos_bal_flag,
+(CASE WHEN COALESCE(j.curr_balance,0) > 0 THEN 1 ELSE 0 END) AS curr_pos_bal_flag,
+CASE
+  WHEN COALESCE(j.prev_balance,0) > 0 AND COALESCE(j.curr_balance,0) > 0 THEN 'POS→POS'
+  WHEN COALESCE(j.prev_balance,0) > 0 AND COALESCE(j.curr_balance,0) <= 0 THEN 'POS→ZERO'
+  WHEN COALESCE(j.prev_balance,0) <= 0 AND COALESCE(j.curr_balance,0) > 0 THEN 'ZERO→POS'
+  ELSE 'ZERO→ZERO'
+END AS pos_state,
+
+
+
+CASE
+  WHEN (COALESCE(j.prev_non_accrual_flag,'N') <> 'Y') AND (j.curr_non_accrual_flag = 'Y') THEN
+    CASE
+      WHEN COALESCE(j.prev_balance,0) <= 0 AND COALESCE(j.curr_balance,0) > 0 THEN 'Downgrade to NA + Balance resurfaced (ZERO→POS)'
+      ELSE 'Downgrade to Non-Accrual'
+    END
+  WHEN (j.prev_non_accrual_flag = 'Y') AND (COALESCE(j.curr_non_accrual_flag,'N') <> 'Y') THEN
+    CASE
+      WHEN COALESCE(j.prev_balance,0) > 0 AND COALESCE(j.curr_balance,0) <= 0 THEN 'Drop from NA + Balance zeroed (POS→ZERO)'
+      ELSE 'Upgrade to Accrual / Drop'
+    END
+  WHEN (j.prev_non_accrual_flag = 'Y') AND (j.curr_non_accrual_flag = 'Y') THEN
+    CASE
+      WHEN COALESCE(j.prev_balance,0) > 0 AND COALESCE(j.curr_balance,0) <= 0 THEN 'Still NA but zeroed (POS→ZERO)'
+      WHEN COALESCE(j.prev_balance,0) <= 0 AND COALESCE(j.curr_balance,0) > 0 THEN 'Still NA with resurfaced bal (ZERO→POS)'
+      ELSE 'Still NA'
+    END
+  ELSE 'Not in Non-Accrual population'
+END AS reason_class,
+
+
+
+/* ==========================================================
+   Non-Accrual MoM Summary (with >0 flags & strict KPIs)
+   ========================================================== */
+WITH params AS (
+  SELECT DATE '2025-08-31' AS as_of_date
+),
+p AS (
+  SELECT ADD_MONTHS(as_of_date, -1) AS prev_as_of_date
+  FROM params
+),
+
+/* ---- Snapshot base (no >0 filter here) ---- */
+base_for_date AS (
+  SELECT
+      t.END_OF_MONTH_DATE,
+      CASE
+        WHEN t.CONTRACT_SOURCE_SYSTEM IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN') THEN 'L-SVB'
+        WHEN t.CONTRACT_SOURCE_SYSTEM = 'ALL' AND t.GL_ACCOUNT_CODE IN
+             ('1051872','1061833','1041344','1041211','1041345','1041364','1041210','1042127','1042213','1042048','1042368','1042408','1042409','1042424','1100001','1142067','1042886','1043008') THEN 'L-SVB'
+        WHEN t.CONTRACT_SOURCE_SYSTEM IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO') THEN 'L-FCB'
+        WHEN t.CONTRACT_SOURCE_SYSTEM IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN','INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001','SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN','STRAT1','STRAT1-EXCPTN') THEN 'L-CIT'
+        ELSE 'NULL-Need to Research'
+      END AS bank,
+      t.Account_Identifier,
+      CAST(t.Source_System_Balance AS FLOAT8) AS Source_System_Balance,
+      t.Non_Accrual_Flag
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+  WHERE t.GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+),
+
+curr AS (
+  SELECT * FROM base_for_date
+  WHERE END_OF_MONTH_DATE = (SELECT as_of_date FROM params)
+),
+prev AS (
+  SELECT * FROM base_for_date
+  WHERE END_OF_MONTH_DATE = (SELECT prev_as_of_date FROM p)
+),
+
+joined AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+    COALESCE(c.bank, p.bank)                             AS bank,
+    /* Prev */
+    p.Non_Accrual_Flag        AS prev_non_accrual_flag,
+    p.Source_System_Balance   AS prev_balance,
+    /* Curr */
+    c.Non_Accrual_Flag        AS curr_non_accrual_flag,
+    c.Source_System_Balance   AS curr_balance
+  FROM prev p
+  FULL OUTER JOIN curr c
+    ON c.Account_Identifier = p.Account_Identifier
+),
+
+final AS (
+  SELECT
+    j.*,
+    /* Movement */
+    CASE
+      WHEN (j.prev_non_accrual_flag = 'Y') AND (j.curr_non_accrual_flag = 'Y') THEN 'PERSIST'
+      WHEN (COALESCE(j.prev_non_accrual_flag,'N') <> 'Y') AND (j.curr_non_accrual_flag = 'Y') THEN 'ADD'
+      WHEN (j.prev_non_accrual_flag = 'Y') AND (COALESCE(j.curr_non_accrual_flag,'N') <> 'Y') THEN 'DROP'
+      ELSE 'NOT_IN_NONACCRUAL'
+    END AS nonaccrual_movement,
+
+    /* >0 flags and state */
+    (CASE WHEN COALESCE(j.prev_balance,0) > 0 THEN 1 ELSE 0 END) AS prev_pos_bal_flag,
+    (CASE WHEN COALESCE(j.curr_balance,0) > 0 THEN 1 ELSE 0 END) AS curr_pos_bal_flag,
+    CASE
+      WHEN COALESCE(j.prev_balance,0) > 0 AND COALESCE(j.curr_balance,0) > 0 THEN 'POS→POS'
+      WHEN COALESCE(j.prev_balance,0) > 0 AND COALESCE(j.curr_balance,0) <= 0 THEN 'POS→ZERO'
+      WHEN COALESCE(j.prev_balance,0) <= 0 AND COALESCE(j.curr_balance,0) > 0 THEN 'ZERO→POS'
+      ELSE 'ZERO→ZERO'
+    END AS pos_state
+  FROM joined j
+  WHERE (COALESCE(j.prev_non_accrual_flag,'N') = 'Y')
+     OR (COALESCE(j.curr_non_accrual_flag,'N') = 'Y')
+),
+
+/* ---- by-bank summary (both "all" and "strict") ---- */
+by_bank AS (
+  SELECT
+    bank,
+    /* All rows (unrestricted) */
+    COUNT(CASE WHEN nonaccrual_movement='ADD'     THEN 1 END) AS adds_all,
+    COUNT(CASE WHEN nonaccrual_movement='DROP'    THEN 1 END) AS drops_all,
+    COUNT(CASE WHEN nonaccrual_movement='PERSIST' THEN 1 END) AS persist_all,
+    SUM(COALESCE(curr_balance,0))                                 AS curr_bal_all,
+    SUM(COALESCE(prev_balance,0))                                 AS prev_bal_all,
+    SUM(COALESCE(curr_balance,0)) - SUM(COALESCE(prev_balance,0)) AS mom_bal_delta_all,
+
+    /* “Strict” KPIs that require positive balances on each side */
+    COUNT(CASE WHEN nonaccrual_movement='ADD'     AND curr_pos_bal_flag=1                THEN 1 END) AS adds_strict,
+    COUNT(CASE WHEN nonaccrual_movement='DROP'    AND prev_pos_bal_flag=1                THEN 1 END) AS drops_strict,
+    COUNT(CASE WHEN nonaccrual_movement='PERSIST' AND prev_pos_bal_flag=1 AND curr_pos_bal_flag=1 THEN 1 END) AS persist_strict,
+
+    SUM(CASE WHEN curr_pos_bal_flag=1 THEN COALESCE(curr_balance,0) ELSE 0 END) AS curr_bal_strict,
+    SUM(CASE WHEN prev_pos_bal_flag=1 THEN COALESCE(prev_balance,0) ELSE 0 END) AS prev_bal_strict,
+    SUM(CASE WHEN curr_pos_bal_flag=1 THEN COALESCE(curr_balance,0) ELSE 0 END)
+  - SUM(CASE WHEN prev_pos_bal_flag=1 THEN COALESCE(prev_balance,0) ELSE 0 END) AS mom_bal_delta_strict
+  FROM final
+  GROUP BY bank
+),
+
+all_row AS (
+  SELECT
+    'ALL' AS bank,
+    SUM(adds_all)   AS adds_all,
+    SUM(drops_all)  AS drops_all,
+    SUM(persist_all)AS persist_all,
+    SUM(curr_bal_all) AS curr_bal_all,
+    SUM(prev_bal_all) AS prev_bal_all,
+    SUM(mom_bal_delta_all) AS mom_bal_delta_all,
+
+    SUM(adds_strict)   AS adds_strict,
+    SUM(drops_strict)  AS drops_strict,
+    SUM(persist_strict)AS persist_strict,
+    SUM(curr_bal_strict) AS curr_bal_strict,
+    SUM(prev_bal_strict) AS prev_bal_strict,
+    SUM(mom_bal_delta_strict) AS mom_bal_delta_strict
+  FROM by_bank
+)
+
+/* ---- Output: by bank + ALL, ordered predictably ---- */
+SELECT * FROM by_bank
+UNION ALL
+SELECT * FROM all_row
+ORDER BY CASE WHEN bank='ALL' THEN 1 ELSE 0 END, bank;
+
+
+
+
 /* ============================================
    Non-Accrual MoM Summary (standalone Query B)
    ============================================ */
@@ -27355,147 +27521,4 @@ latest_per_sys AS (
   GROUP BY c.CONTRACT_SOURCE_SYSTEM
 ),
 
-/* ====== 8) Backtest panel t-1 -> t (last ~12 origins) ====== */
-backtest_12m AS (
-  SELECT
-    p.CONTRACT_SOURCE_SYSTEM,
-    p.END_OF_MONTH_DATE AS model_asof_period,
-    c.END_OF_MONTH_DATE AS forecast_period,
-    c.SOURCE_SYSTEM_BALANCE AS actual,
-    COALESCE(
-      CASE
-        WHEN p.regr_slope_12 IS NOT NULL AND p.regr_intercept_12 IS NOT NULL
-          THEN p.regr_intercept_12 + p.regr_slope_12 * CAST(p.rn + 1 AS FLOAT8)
-        ELSE NULL
-      END,
-      p.lag12_balance,
-      p.roll_mean_6
-    ) AS forecast_val,
-    COALESCE(
-      p.roll_std_6,
-      CASE WHEN p.cnt_all > 1
-           THEN SQRT( GREATEST(p.avg2_all - (p.avg_all * p.avg_all), 0.0)
-                      * (CAST(p.cnt_all AS FLOAT8) / CAST(p.cnt_all - 1 AS FLOAT8)) )
-           ELSE NULL
-      END
-    ) AS sigma_est,
-    p.avg_all AS avg_level_sys
-  FROM calc p
-  JOIN calc c
-    ON c.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
-   AND c.END_OF_MONTH_DATE      = ADD_MONTHS(p.END_OF_MONTH_DATE, 1)
-  JOIN latest_per_sys l
-    ON l.CONTRACT_SOURCE_SYSTEM = p.CONTRACT_SOURCE_SYSTEM
-  WHERE p.END_OF_MONTH_DATE >= ADD_MONTHS(l.max_eom, -12)
-    AND p.END_OF_MONTH_DATE <  l.max_eom
-),
-
-/* add synthetic flags */
-backtest_split AS (
-  SELECT b.CONTRACT_SOURCE_SYSTEM,
-         b.model_asof_period,
-         b.forecast_period,
-         b.actual,
-         b.forecast_val,
-         b.sigma_est,
-         b.avg_level_sys,
-         f.is_synthetic
-  FROM backtest_12m b
-  JOIN sys_flags f
-    ON f.CONTRACT_SOURCE_SYSTEM = b.CONTRACT_SOURCE_SYSTEM
-),
-calc_split AS (
-  SELECT c.CONTRACT_SOURCE_SYSTEM,
-         c.END_OF_MONTH_DATE,
-         c.SOURCE_SYSTEM_BALANCE,
-         c.roll_std_6,
-         c.regr_slope_12,
-         c.lag12_balance,
-         f.is_synthetic
-  FROM calc c
-  JOIN sys_flags f
-    ON f.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
-),
-
-/* handy join for “t = latest” */
-latest_join AS (
-  SELECT l.CONTRACT_SOURCE_SYSTEM, l.max_eom
-  FROM latest_per_sys l
-)
-
-/* ====== FINAL UNION (unified 16 columns) ====== */
-SELECT * FROM (
-  /* A) HISTORY_LITE — latest only, non-synth */
-  SELECT
-    'HISTORY_LITE_MAIN'      AS row_type,
-    c.CONTRACT_SOURCE_SYSTEM AS CONTRACT_SOURCE_SYSTEM,
-    c.END_OF_MONTH_DATE      AS period_date,
-    c.SOURCE_SYSTEM_BALANCE  AS actual,
-    NULL::FLOAT8             AS forecast_val,
-    NULL::FLOAT8             AS sigma_est,
-    NULL::FLOAT8             AS pi95_lo,
-    NULL::FLOAT8             AS pi95_hi,
-    NULL::FLOAT8             AS dev_abs,
-    NULL::FLOAT8             AS dev_pct,
-    NULL::FLOAT8             AS z_score,
-    NULL::FLOAT8             AS severity_0_100,
-    NULL                     AS outside_95_band,
-    c.roll_std_6             AS sigma_recent,
-    c.regr_slope_12          AS regr_slope_12,
-    c.lag12_balance          AS lag12_balance
-  FROM calc_split c
-  JOIN latest_per_sys l
-    ON l.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
-   AND l.max_eom                = c.END_OF_MONTH_DATE
-  WHERE c.is_synthetic = 0
-
-  UNION ALL
-
-  /* B) HISTORY_LITE — latest only, synth */
-  SELECT
-    'HISTORY_LITE_SYNTH'     AS row_type,
-    c.CONTRACT_SOURCE_SYSTEM AS CONTRACT_SOURCE_SYSTEM,
-    c.END_OF_MONTH_DATE      AS period_date,
-    c.SOURCE_SYSTEM_BALANCE  AS actual,
-    NULL::FLOAT8             AS forecast_val,
-    NULL::FLOAT8             AS sigma_est,
-    NULL::FLOAT8             AS pi95_lo,
-    NULL::FLOAT8             AS pi95_hi,
-    NULL::FLOAT8             AS dev_abs,
-    NULL::FLOAT8             AS dev_pct,
-    NULL::FLOAT8             AS z_score,
-    NULL::FLOAT8             AS severity_0_100,
-    NULL                     AS outside_95_band,
-    c.roll_std_6             AS sigma_recent,
-    c.regr_slope_12          AS regr_slope_12,
-    c.lag12_balance          AS lag12_balance
-  FROM calc_split c
-  JOIN latest_per_sys l
-    ON l.CONTRACT_SOURCE_SYSTEM = c.CONTRACT_SOURCE_SYSTEM
-   AND l.max_eom                = c.END_OF_MONTH_DATE
-  WHERE c.is_synthetic = 1
-
-  UNION ALL
-
-  /* C) Historical error (t < latest) — non-synth */
-  SELECT
-    'SUMMARY_HISTORICAL_ERROR_MAIN' AS row_type,
-    b.CONTRACT_SOURCE_SYSTEM        AS CONTRACT_SOURCE_SYSTEM,
-    b.forecast_period               AS period_date,
-    b.actual                        AS actual,
-    b.forecast_val                  AS forecast_val,
-    b.sigma_est                     AS sigma_est,
-    (b.forecast_val - 1.9599 * b.sigma_est) AS pi95_lo,
-    (b.forecast_val + 1.9599 * b.sigma_est) AS pi95_hi,
-    (b.actual - b.forecast_val)             AS dev_abs,
-    CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val) / b.forecast_val ELSE NULL END AS dev_pct,
-    CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THEN (b.actual - b.forecast_val) / b.sigma_est ELSE NULL END AS z_score,
-    100.0 * (
-      0.5 * LEAST(ABS(CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THEN (b.actual - b.forecast_val)/b.sigma_est ELSE 0 END) / 3.0, 1.0)
-    + 0.3 * LEAST(ABS(CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val)/b.forecast_val ELSE 0 END) / 0.10, 1.0)
-    + 0.2 * LEAST(ABS(b.actual - b.forecast_val) / NULLIF(b.avg_level_sys * 0.10, 0), 1.0)
-    ) AS severity_0_100,
-    CASE
-      WHEN b.sigma_est IS NULL THEN NULL
-      WHEN b.actual < (b.forecast_val - 1.9599 * b.sigma_est) THEN TRUE
-      WHEN b.actual > (
+/* ====== 8) Backtest panel t-1 -> t (last ~12 origi
