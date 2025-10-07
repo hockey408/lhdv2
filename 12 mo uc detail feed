@@ -1,3 +1,30 @@
+=LET(
+  rc,[@RC_CODE],
+  ybar, SUMIFS(T[Actual],T[RC_CODE],rc) / COUNTIFS(T[RC_CODE],rc),
+  sse,  SUMPRODUCT( (T[RC_CODE]=rc) * (T[Actual]-T[Forecast_Selected])^2 ),
+  sst,  SUMPRODUCT( (T[RC_CODE]=rc) * (T[Actual]-ybar)^2 ),
+  IF(sst=0,0,1 - sse/sst)
+)
+
+=LET(
+  rc,[@RC_CODE],
+  n, COUNTIFS(T[RC_CODE],rc),
+  IF(n=0,0, SQRT( SUMPRODUCT((T[RC_CODE]=rc)*(T[Actual]-T[Forecast_Selected])^2) / n ))
+)
+
+=LET(rc,[@RC_CODE], IFERROR( AVERAGEIFS(ABS(T[Actual]-T[Forecast_Selected]), T[RC_CODE], rc), 0 ))
+
+
+=LET(rc,[@RC_CODE], IFERROR( AVERAGEIFS(T[Resid], T[RC_CODE], rc), 0 ))
+
+
+=LET(rc,[@RC_CODE], STDEV.S( IF(T[RC_CODE]=rc, T[Resid]) ))
+
+
+
+
+
+
 =LET(rc,[@RC_CODE],
 y,FILTER(T[Actual],T[RC_CODE]=rc),
 yhat,FILTER(T[Forecast_Selected],T[RC_CODE]=rc),
