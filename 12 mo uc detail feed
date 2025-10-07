@@ -1,3 +1,13 @@
+CASE WHEN ps.max_abs_resid > 0 AND LN(1.0 + ps.max_abs_resid) > 0
+     THEN LN(1.0 + x.AbsResid) / LN(1.0 + ps.max_abs_resid)
+     ELSE 0 END
+CASE WHEN ps.max_mom_abs > 0 AND LN(1.0 + ps.max_mom_abs) > 0
+     THEN LN(1.0 + x.MoM_Abs)  / LN(1.0 + ps.max_mom_abs)
+     ELSE 0 END
+
+
+
+
 CASE
   WHEN (s.Actual < 0 OR s.prev_bal < 0
         OR (s.prev_bal IS NOT NULL AND s.prev_bal <> 0 AND (s.Actual * s.prev_bal) < 0))
