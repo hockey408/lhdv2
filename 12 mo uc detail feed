@@ -1,3 +1,36 @@
+=1 - (SUMXMY2(T[Actual],T[Forecast_Selected]) / SUMPRODUCT((T[Actual]-AVERAGE(T[Actual]))^2))
+
+=LET(
+lm,$H$2,
+Amean,SUMIFS(T[Actual],T[Month_End],lm)/COUNTIFS(T[Month_End],lm),
+SSE,SUMPRODUCT((T[Month_End]=lm)*(T[Actual]-T[Forecast_Selected])^2),
+SST,SUMPRODUCT((T[Month_End]=lm)*(T[Actual]-Amean)^2),
+IF(SST=0,0,1 - SSE/SST)
+)
+
+=SQRT( SUMXMY2(T[Actual],T[Forecast_Selected]) / COUNT(T[Actual]) )
+
+
+=LET(lm,$H$2, SQRT(SUMPRODUCT((T[Month_End]=lm)*(T[Actual]-T[Forecast_Selected])^2) / COUNTIFS(T[Month_End],lm)))
+
+=AVERAGE(ABS(T[Actual]-T[Forecast_Selected]))
+
+=AVERAGEIFS(ABS(T[Actual]-T[Forecast_Selected]), T[Month_End], $H$2)
+
+=AVERAGE(IFERROR(ABS((T[Actual]-T[Forecast_Selected])/T[Actual]),NA()))
+
+
+=AVERAGE(T[Actual]-T[Forecast_Selected])
+
+
+=STDEV.S(T[Actual]-T[Forecast_Selected])
+
+
+
+
+
+
+
 =SUMIFS(T[Actual], T[Month_End], $H$2, T[Severity_0_100], ">=70")
 
 
