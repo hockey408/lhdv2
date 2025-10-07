@@ -1,3 +1,7 @@
+=AVERAGEIFS(T[AbsResid], T[RC_CODE], [@RC_CODE])
+
+
+
 =LET(
   rc,[@RC_CODE],
   ybar, SUMIFS(T[Actual],T[RC_CODE],rc) / COUNTIFS(T[RC_CODE],rc),
