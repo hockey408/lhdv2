@@ -1,3 +1,17 @@
+=IF(OR([@Actual]<0,[@prev_bal]<0, AND([@prev_bal]<>0, [@Actual]*[@prev_bal]<0)), "Offsets/negative",
+ IF([@MoM_Pct_Abs]>=1, "Reclassification candidate (≥100% MoM)",
+ IF(AND(OR([@prev_bal]=0,ISBLANK([@prev_bal])), [@Actual]>0), "New activity",
+ IF(AND([@prev_bal]>0, [@Actual]=0), "Run-off/closure",
+ IF(AND(ABS([@Z_Peer])>=2, ABS([@Z_Resid])<1.5), "Peer (portfolio) shift",
+ IF(ABS([@Z_Resid])>=2.5, "Idiosyncratic model miss",
+ IF([@Persist_3m]>=0.67, "Persistent anomaly",
+ IF(OR([@PctRank_AbsResid_Month]>=0.7, ABS([@Z_Resid])>=2), "Large $ / model miss", "Mixed"))))))))
+
+=IF([@Resid]>0,"Upward surprise", IF([@Resid]<0,"Downward surprise","On forecast"))
+
+
+
+
 =IFERROR(
   AVERAGEIFS(T[MoM_Abs], T[month_end], [@month_end]),
 0)
@@ -27324,28 +27338,4 @@ base AS (
     a.RC_DESCRIPTION,
     a.GL_ACCOUNT_HIER_LEVEL_4,
     a.GL_ACCOUNT_CODE,
-    a.GL_ACCOUNT_DESCRIPTION,
-    a.NON_ACCRUAL_FLAG,
-    a.STATUS_CODE_DESCRIPTION,
-    a.MATURITY_DATE,
-
-    -- Measures
-    m.SOURCE_SYSTEM_BALANCE,
-    m.GL_BALANCE,
-    m.AVAILABLE_BALANCE,
-    m.COMMITMENT_BALANCE,
-    m.CHARGE_OFF_AMOUNT_ITD,
-    m.RECOVERY_AMOUNT_ITD,
-    m.NET_CHARGE_OFF_ITD
-  FROM measures m
-  LEFT JOIN attr_snapshot a
-    ON a.END_OF_MONTH_DATE       = m.END_OF_MONTH_DATE
-   AND a.CONTRACT_SOURCE_SYSTEM  = m.CONTRACT_SOURCE_SYSTEM
-   AND a.ACCOUNT_KEY             = m.ACCOUNT_KEY
-),
-
-/* 4) Tag current vs prior to enable clean pivoting. */
-tagged AS (
-  SELECT
-    b.*,
-    CASE W
+    a.GL_
