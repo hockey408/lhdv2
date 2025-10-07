@@ -1,3 +1,11 @@
+CASE
+  WHEN (s.Actual < 0 OR s.prev_bal < 0
+        OR (s.prev_bal IS NOT NULL AND s.prev_bal <> 0 AND (s.Actual * s.prev_bal) < 0))
+  THEN 'Offsets / negative balance'
+
+
+
+
 WITH
 /* ==================== 0) Base ==================== */
 base AS (
