@@ -1,3 +1,19 @@
+=LET(rc,[@RC_CODE],
+y,FILTER(T[Actual],T[RC_CODE]=rc),
+yhat,FILTER(T[Forecast_Selected],T[RC_CODE]=rc),
+ybar,AVERAGE(y),
+SSE,SUMPRODUCT((y-yhat)^2),
+SST,SUMPRODUCT((y-ybar)^2),
+IF(SST=0,0,1-SSE/SST))
+
+=SUMPRODUCT(Summary[R2_per_RC],Summary[Latest_Exposure]) / SUM(Summary[Latest_Exposure])
+
+=COUNTIF(Summary[R2_per_RC],"<0.5")/COUNTA(Summary[R2_per_RC])
+
+
+
+
+
 =1 - (SUMXMY2(T[Actual],T[Forecast_Selected]) / SUMPRODUCT((T[Actual]-AVERAGE(T[Actual]))^2))
 
 =LET(
