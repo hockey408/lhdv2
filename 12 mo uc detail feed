@@ -1,3 +1,186 @@
+/* ===========================================================
+   Non-Accrual MoM DETAIL (with >0 flags & reason heuristics)
+   =========================================================== */
+WITH params AS (
+  /* >>> Set your current month-end here <<< */
+  SELECT DATE '2025-08-31' AS as_of_date
+),
+p AS (
+  SELECT ADD_MONTHS(as_of_date, -1) AS prev_as_of_date
+  FROM params
+),
+
+/* ---- Common monthly snapshot base with bank mapping (no NA / >0 filter here) ---- */
+base_for_date AS (
+  SELECT
+      t.END_OF_MONTH_DATE,
+      CASE
+        WHEN t.CONTRACT_SOURCE_SYSTEM IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN') THEN 'L-SVB'
+        WHEN t.CONTRACT_SOURCE_SYSTEM = 'ALL' AND t.GL_ACCOUNT_CODE IN
+             ('1051872','1061833','1041344','1041211','1041345','1041364','1041210','1042127','1042213','1042048','1042368','1042408','1042409','1042424','1100001','1142067','1042886','1043008') THEN 'L-SVB'
+        WHEN t.CONTRACT_SOURCE_SYSTEM IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO') THEN 'L-FCB'
+        WHEN t.CONTRACT_SOURCE_SYSTEM IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN','INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001','SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN','STRAT1','STRAT1-EXCPTN') THEN 'L-CIT'
+        ELSE 'NULL-Need to Research'
+      END AS bank,
+      t.Account_Name,
+      t.Contract_Source_System,
+      t.CIS_Customer_Number,
+      t.Facility_ID,
+      t.Account_Identifier,
+      t.Account_Key,
+      t.Status_Code_Description,
+      t.GL_Account_Hier_Level_4,
+      CAST(t.Source_System_Balance AS FLOAT8) AS Source_System_Balance,
+      CAST(t.GL_Balance AS FLOAT8)            AS GL_Balance,
+      CAST(t.Available_Balance AS FLOAT8)     AS Available_Balance,
+      t.Borrower_Risk_Rating,
+      t.PD_Grade,
+      t.Days_Past_Due,
+      t.Non_Accrual_Flag,
+      t.PROD_HIER_LEVEL_5,
+      t.RBC_Code
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+  WHERE t.GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+),
+
+/* ---- Current & previous month snapshots (keep accrual too for transition detection) ---- */
+curr AS (
+  SELECT * FROM base_for_date
+  WHERE END_OF_MONTH_DATE = (SELECT as_of_date FROM params)
+),
+prev AS (
+  SELECT * FROM base_for_date
+  WHERE END_OF_MONTH_DATE = (SELECT prev_as_of_date FROM p)
+),
+
+/* ---- Full outer join to find adds/drops/persists ---- */
+joined AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier)        AS Account_Identifier,
+    COALESCE(c.bank, p.bank)                                     AS bank,
+
+    /* prefer current descriptors when present */
+    COALESCE(c.Account_Name, p.Account_Name)                     AS Account_Name,
+    COALESCE(c.Contract_Source_System, p.Contract_Source_System) AS Contract_Source_System,
+    COALESCE(c.CIS_Customer_Number, p.CIS_Customer_Number)       AS CIS_Customer_Number,
+    COALESCE(c.Facility_ID, p.Facility_ID)                       AS Facility_ID,
+    COALESCE(c.Account_Key, p.Account_Key)                       AS Account_Key,
+    COALESCE(c.PROD_HIER_LEVEL_5, p.PROD_HIER_LEVEL_5)           AS PROD_HIER_LEVEL_5,
+    COALESCE(c.RBC_Code, p.RBC_Code)                             AS RBC_Code,
+
+    (SELECT prev_as_of_date FROM p) AS prev_month_end,
+    (SELECT as_of_date FROM params) AS curr_month_end,
+
+    /* prev values */
+    p.Non_Accrual_Flag            AS prev_non_accrual_flag,
+    p.Source_System_Balance       AS prev_balance,
+    p.GL_Balance                  AS prev_gl_balance,
+    p.Borrower_Risk_Rating        AS prev_brr,
+    p.PD_Grade                    AS prev_pd_grade,
+    p.Days_Past_Due               AS prev_dpd,
+    p.Status_Code_Description     AS prev_status_desc,
+
+    /* curr values */
+    c.Non_Accrual_Flag            AS curr_non_accrual_flag,
+    c.Source_System_Balance       AS curr_balance,
+    c.GL_Balance                  AS curr_gl_balance,
+    c.Borrower_Risk_Rating        AS curr_brr,
+    c.PD_Grade                    AS curr_pd_grade,
+    c.Days_Past_Due               AS curr_dpd,
+    c.Status_Code_Description     AS curr_status_desc
+  FROM prev p
+  FULL OUTER JOIN curr c
+    ON c.Account_Identifier = p.Account_Identifier
+),
+
+final AS (
+  SELECT
+    j.*,
+
+    /* DPD buckets */
+    CASE
+      WHEN j.prev_dpd IS NULL THEN NULL
+      WHEN j.prev_dpd = 0 THEN 'Zero Days'
+      WHEN j.prev_dpd BETWEEN 1  AND 30  THEN '1-30 Days'
+      WHEN j.prev_dpd BETWEEN 31 AND 90  THEN '31-90 Days'
+      WHEN j.prev_dpd BETWEEN 91 AND 180 THEN '91-180 Days'
+      WHEN j.prev_dpd > 180 THEN '180+ Days'
+      ELSE 'Unknown'
+    END AS prev_dpd_bucket,
+    CASE
+      WHEN j.curr_dpd IS NULL THEN NULL
+      WHEN j.curr_dpd = 0 THEN 'Zero Days'
+      WHEN j.curr_dpd BETWEEN 1  AND 30  THEN '1-30 Days'
+      WHEN j.curr_dpd BETWEEN 31 AND 90  THEN '31-90 Days'
+      WHEN j.curr_dpd BETWEEN 91 AND 180 THEN '91-180 Days'
+      WHEN j.curr_dpd > 180 THEN '180+ Days'
+      ELSE 'Unknown'
+    END AS curr_dpd_bucket,
+
+    /* Movement classification across NA population */
+    CASE
+      WHEN (j.prev_non_accrual_flag = 'Y') AND (j.curr_non_accrual_flag = 'Y') THEN 'PERSIST'
+      WHEN (COALESCE(j.prev_non_accrual_flag,'N') <> 'Y') AND (j.curr_non_accrual_flag = 'Y') THEN 'ADD'
+      WHEN (j.prev_non_accrual_flag = 'Y') AND (COALESCE(j.curr_non_accrual_flag,'N') <> 'Y') THEN 'DROP'
+      ELSE 'NOT_IN_NONACCRUAL'
+    END AS nonaccrual_movement,
+
+    /* >0 balance flags & state */
+    (CASE WHEN COALESCE(j.prev_balance,0) > 0 THEN 1 ELSE 0 END) AS prev_pos_bal_flag,
+    (CASE WHEN COALESCE(j.curr_balance,0) > 0 THEN 1 ELSE 0 END) AS curr_pos_bal_flag,
+    CASE
+      WHEN COALESCE(j.prev_balance,0) > 0 AND COALESCE(j.curr_balance,0) > 0 THEN 'POS→POS'
+      WHEN COALESCE(j.prev_balance,0) > 0 AND COALESCE(j.curr_balance,0) <= 0 THEN 'POS→ZERO'
+      WHEN COALESCE(j.prev_balance,0) <= 0 AND COALESCE(j.curr_balance,0) > 0 THEN 'ZERO→POS'
+      ELSE 'ZERO→ZERO'
+    END AS pos_state,
+
+    /* Balance deltas */
+    COALESCE(j.curr_balance,0) - COALESCE(j.prev_balance,0) AS mom_balance_delta,
+    CASE WHEN j.prev_balance IS NOT NULL AND j.prev_balance <> 0
+         THEN (COALESCE(j.curr_balance,0) - j.prev_balance) / j.prev_balance
+         ELSE NULL END AS mom_balance_delta_pct,
+
+    /* Reason heuristics (upgrade/downgrade/payoff/charge-off/timing-ish) */
+    CASE
+      WHEN (COALESCE(j.prev_non_accrual_flag,'N') <> 'Y') AND (j.curr_non_accrual_flag = 'Y') THEN
+        CASE
+          WHEN COALESCE(j.prev_balance,0) <= 0 AND COALESCE(j.curr_balance,0) > 0 THEN 'Downgrade to NA + Balance resurfaced (ZERO→POS)'
+          ELSE 'Downgrade to Non-Accrual'
+        END
+      WHEN (j.prev_non_accrual_flag = 'Y') AND (COALESCE(j.curr_non_accrual_flag,'N') <> 'Y') THEN
+        CASE
+          WHEN j.curr_non_accrual_flag = 'N' THEN 'Upgrade to Accrual'
+          WHEN COALESCE(j.curr_balance,0) <= 0 THEN 'Drop from NA + Balance zeroed (POS→ZERO)'
+          ELSE 'Drop (other)'
+        END
+      WHEN (j.prev_non_accrual_flag = 'Y') AND (j.curr_non_accrual_flag = 'Y') THEN
+        CASE
+          WHEN COALESCE(j.prev_balance,0) > 0 AND COALESCE(j.curr_balance,0) <= 0 THEN 'Still NA but zeroed (POS→ZERO)'
+          WHEN COALESCE(j.prev_balance,0) <= 0 AND COALESCE(j.curr_balance,0) > 0 THEN 'Still NA with resurfaced bal (ZERO→POS)'
+          ELSE 'Still NA'
+        END
+      ELSE 'Not in Non-Accrual population'
+    END AS reason_class,
+
+    /* Short hints based on status text (optional, keeps visibility without joins) */
+    TRIM(
+      COALESCE(CASE WHEN UPPER(COALESCE(j.prev_status_desc,'')) LIKE '%PAYOFF%' THEN 'Prev status: payoff. ' END,'')
+      || COALESCE(CASE WHEN UPPER(COALESCE(j.prev_status_desc,'')) LIKE '%CHARGE%' THEN 'Prev status: charge-off. ' END,'')
+      || COALESCE(CASE WHEN UPPER(COALESCE(j.curr_status_desc,'')) LIKE '%PAYOFF%' THEN 'Curr status: payoff. ' END,'')
+      || COALESCE(CASE WHEN UPPER(COALESCE(j.curr_status_desc,'')) LIKE '%CHARGE%' THEN 'Curr status: charge-off. ' END,'')
+    ) AS reason_hint
+  FROM joined j
+  WHERE (COALESCE(j.prev_non_accrual_flag,'N') = 'Y')
+     OR (COALESCE(j.curr_non_accrual_flag,'N') = 'Y')
+)
+SELECT *
+FROM final
+ORDER BY bank, Account_Name, Account_Identifier;
+
+
+
+
 /* Balance > 0 flags & transition state */
 (CASE WHEN COALESCE(j.prev_balance,0) > 0 THEN 1 ELSE 0 END) AS prev_pos_bal_flag,
 (CASE WHEN COALESCE(j.curr_balance,0) > 0 THEN 1 ELSE 0 END) AS curr_pos_bal_flag,
@@ -27336,189 +27519,4 @@ SELECT * FROM (
     CASE WHEN b.sigma_est  IS NOT NULL AND b.sigma_est > 0
          THEN (b.actual - b.forecast_val) / b.sigma_est ELSE NULL END AS z_score,
     100.0 * (
-      0.5 * LEAST(ABS(CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THEN (b.actual - b.forecast_val)/b.sigma_est ELSE 0 END) / 3.0, 1.0)
-    + 0.3 * LEAST(ABS(CASE WHEN b.forecast_val <> 0 THEN (b.actual - b.forecast_val)/b.forecast_val ELSE 0 END) / 0.10, 1.0)
-    + 0.2 * LEAST(ABS(b.actual - b.forecast_val) / NULLIF(0.10 * NULLIF(ABS(b.forecast_val),0), 0), 1.0)
-    ) AS severity_0_100,
-    CASE
-      WHEN b.sigma_est IS NULL THEN NULL
-      WHEN b.actual < (b.forecast_val - 1.9599 * b.sigma_est) THEN TRUE
-      WHEN b.actual > (b.forecast_val + 1.9599 * b.sigma_est) THEN TRUE
-      ELSE FALSE
-    END AS outside_95_band,
-    NULL::FLOAT8  AS sigma_recent,
-    NULL::FLOAT8  AS regr_slope_12,
-    NULL::FLOAT8  AS lag12_balance
-  FROM backtest b
-  WHERE b.forecast_period = b.max_eom
-    AND b.is_overdraft = 1
-
-) final
-ORDER BY CONTRACT_SOURCE_SYSTEM, period_date;
-
-
-
-
-
-WITH
-/* ====== PARAMETERS / WINDOW ====== */
-latest AS (
-  SELECT MAX(END_OF_MONTH_DATE) AS max_eom
-  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
-  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
-),
-rng AS (
-  SELECT ADD_MONTHS(max_eom, -30) AS start_eom, max_eom FROM latest
-),
-
-/* ====== SYNTHETIC SYSTEMS (inline list) ====== */
-synthetic_list AS (
-  SELECT 'ACAR01-EXCPTN' AS CONTRACT_SOURCE_SYSTEM UNION ALL
-  SELECT 'HUBFSV-EXCPTN' UNION ALL
-  SELECT 'INFL05-EXCPTN' UNION ALL
-  SELECT 'INFL10-EXCPTN' UNION ALL
-  SELECT 'LNIQ01-EXCPTN' UNION ALL
-  SELECT 'SBO001-EXCPTN' UNION ALL
-  SELECT 'STKY01-EXCPTN' UNION ALL
-  SELECT 'STRAT1-EXCPTN' UNION ALL
-  SELECT 'ALL'           UNION ALL
-  SELECT 'GL'            UNION ALL
-  SELECT 'LJ'            UNION ALL
-  SELECT 'SYN'           UNION ALL
-  SELECT 'FRDS_EXCPTN'   UNION ALL
-  SELECT 'ADJ'
-),
-
-/* ====== 1) Monthly totals (Total Loans) ====== */
-base AS (
-  SELECT
-    t.END_OF_MONTH_DATE,
-    t.CONTRACT_SOURCE_SYSTEM,
-    CAST(SUM(t.SOURCE_SYSTEM_BALANCE) AS FLOAT8) AS SOURCE_SYSTEM_BALANCE
-  FROM V_DPRT_CREDIT_INSTRUMENTS_ME t
-  CROSS JOIN rng r
-  WHERE t.SOURCE_SYSTEM_BALANCE IS NOT NULL
-    AND t.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
-    AND t.END_OF_MONTH_DATE BETWEEN r.start_eom AND r.max_eom
-  GROUP BY t.END_OF_MONTH_DATE, t.CONTRACT_SOURCE_SYSTEM
-),
-
-/* synthetic flag once */
-sys_flags AS (
-  SELECT DISTINCT
-         b.CONTRACT_SOURCE_SYSTEM,
-         CASE WHEN s.CONTRACT_SOURCE_SYSTEM IS NOT NULL THEN 1 ELSE 0 END AS is_synthetic
-  FROM base b
-  LEFT JOIN synthetic_list s
-    ON s.CONTRACT_SOURCE_SYSTEM = b.CONTRACT_SOURCE_SYSTEM
-),
-
-/* ====== 2) Row index per system ====== */
-idx1 AS (
-  SELECT
-    b.END_OF_MONTH_DATE,
-    b.CONTRACT_SOURCE_SYSTEM,
-    b.SOURCE_SYSTEM_BALANCE,
-    ROW_NUMBER() OVER (PARTITION BY b.CONTRACT_SOURCE_SYSTEM ORDER BY b.END_OF_MONTH_DATE) AS rn
-  FROM base b
-),
-
-/* ====== 3) Materialize float index ====== */
-idx2 AS (
-  SELECT
-    i.END_OF_MONTH_DATE,
-    i.CONTRACT_SOURCE_SYSTEM,
-    i.SOURCE_SYSTEM_BALANCE,
-    i.rn,
-    CAST(i.rn AS FLOAT8) AS rn_f
-  FROM idx1 i
-),
-
-/* ====== 4) Cumulative sums ====== */
-csum AS (
-  SELECT
-    x.END_OF_MONTH_DATE,
-    x.CONTRACT_SOURCE_SYSTEM,
-    x.SOURCE_SYSTEM_BALANCE,
-    x.rn,
-    x.rn_f,
-    SUM(x.SOURCE_SYSTEM_BALANCE) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE) AS csum_y,
-    SUM(CAST(x.SOURCE_SYSTEM_BALANCE * x.SOURCE_SYSTEM_BALANCE AS FLOAT8)) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE) AS csum_y2,
-    SUM(x.rn_f) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE) AS csum_x,
-    SUM(CAST(x.rn_f * x.rn_f AS FLOAT8)) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE) AS csum_x2,
-    SUM(CAST(x.rn_f * x.SOURCE_SYSTEM_BALANCE AS FLOAT8)) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM ORDER BY x.END_OF_MONTH_DATE) AS csum_xy,
-    COUNT(*) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM) AS cnt_all,
-    AVG(x.SOURCE_SYSTEM_BALANCE) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM) AS avg_all,
-    AVG(CAST(x.SOURCE_SYSTEM_BALANCE * x.SOURCE_SYSTEM_BALANCE AS FLOAT8)) OVER (PARTITION BY x.CONTRACT_SOURCE_SYSTEM) AS avg2_all
-  FROM idx2 x
-),
-
-/* ====== 5) Rolling windows via csum - lag(csum) + lag12 ====== */
-roll AS (
-  SELECT
-    c.END_OF_MONTH_DATE,
-    c.CONTRACT_SOURCE_SYSTEM,
-    c.SOURCE_SYSTEM_BALANCE,
-    c.rn,
-    c.rn_f,
-    c.csum_y, c.csum_y2, c.csum_x, c.csum_x2, c.csum_xy,
-    c.cnt_all, c.avg_all, c.avg2_all,
-    LEAST(c.rn, 6)  AS n6,
-    LEAST(c.rn, 12) AS n12,
-    (c.csum_y  - COALESCE(LAG(c.csum_y,  6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y,
-    (c.csum_y2 - COALESCE(LAG(c.csum_y2, 6) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum6_y2,
-    (c.csum_x  - COALESCE(LAG(c.csum_x,  12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_x,
-    (c.csum_y  - COALESCE(LAG(c.csum_y,  12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_y,
-    (c.csum_x2 - COALESCE(LAG(c.csum_x2, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_x2,
-    (c.csum_xy - COALESCE(LAG(c.csum_xy, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE), 0.0)) AS sum12_xy,
-    LAG(c.SOURCE_SYSTEM_BALANCE, 12) OVER (PARTITION BY c.CONTRACT_SOURCE_SYSTEM ORDER BY c.END_OF_MONTH_DATE) AS lag12_balance
-  FROM csum c
-),
-
-/* ====== 6) Per-row stats ====== */
-calc AS (
-  SELECT
-    r.END_OF_MONTH_DATE,
-    r.CONTRACT_SOURCE_SYSTEM,
-    r.SOURCE_SYSTEM_BALANCE,
-    r.rn, r.rn_f,
-    r.csum_y, r.csum_y2, r.csum_x, r.csum_x2, r.csum_xy,
-    r.cnt_all, r.avg_all, r.avg2_all,
-    r.n6, r.n12,
-    r.sum6_y, r.sum6_y2, r.sum12_x, r.sum12_y, r.sum12_x2, r.sum12_xy,
-    r.lag12_balance,
-    CASE WHEN r.n6 > 0 THEN r.sum6_y / CAST(r.n6 AS FLOAT8) ELSE NULL END AS roll_mean_6,
-    CASE
-      WHEN r.n6 > 1 THEN
-        SQRT( GREATEST( (r.sum6_y2 - ( (r.sum6_y * r.sum6_y) / CAST(r.n6 AS FLOAT8) )), 0.0 ) / CAST(r.n6 - 1 AS FLOAT8) )
-      ELSE NULL
-    END AS roll_std_6,
-    CASE
-      WHEN r.n12 >= 2 AND ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) ) <> 0.0
-        THEN ( (CAST(r.n12 AS FLOAT8) * r.sum12_xy) - (r.sum12_x * r.sum12_y) )
-             / ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) )
-      ELSE NULL
-    END AS regr_slope_12,
-    CASE
-      WHEN r.n12 >= 1 THEN
-        ( r.sum12_y
-          - ( COALESCE(
-                CASE
-                  WHEN r.n12 >= 2 AND ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) ) <> 0.0
-                    THEN ( (CAST(r.n12 AS FLOAT8) * r.sum12_xy) - (r.sum12_x * r.sum12_y) )
-                         / ( (CAST(r.n12 AS FLOAT8) * r.sum12_x2) - (r.sum12_x * r.sum12_x) )
-                  ELSE NULL
-                END, 0.0) * r.sum12_x ) ) / CAST(r.n12 AS FLOAT8)
-      ELSE NULL
-    END AS regr_intercept_12
-  FROM roll r
-),
-
-/* ====== 7) Latest month per system ====== */
-latest_per_sys AS (
-  SELECT c.CONTRACT_SOURCE_SYSTEM, MAX(c.END_OF_MONTH_DATE) AS max_eom
-  FROM calc c
-  GROUP BY c.CONTRACT_SOURCE_SYSTEM
-),
-
-/* ====== 8) Backtest panel t-1 -> t (last ~12 origi
+      0.5 * LEAST(ABS(CASE WHEN b.sigma_est IS NOT NULL AND b.sigma_est > 0 THE
