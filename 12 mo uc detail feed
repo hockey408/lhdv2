@@ -1,4 +1,43 @@
 =IFERROR(
+  AVERAGEIFS(T[MoM_Abs], T[month_end], [@month_end]),
+0)
+
+=IFERROR(
+  STDEV.S(IF(T[month_end]=[@month_end], T[MoM_Abs])),
+0)
+
+=IF([@Peer_SD_MoMAbs]=0, 0, ([@MoM_Abs]-[@Peer_Mean_MoMAbs]) / [@Peer_SD_MoMAbs])
+
+=IFERROR(
+  PERCENTRANK.INC(
+    IF(T[month_end]=[@month_end], T[AbsResid]),
+    [@AbsResid]
+  ),
+0)
+
+=IFERROR(
+  PERCENTRANK.INC(
+    IF(T[month_end]=[@month_end], T[MoM_Abs]),
+    [@MoM_Abs]
+  ),
+0)
+
+=ROUND(
+  100*(1-EXP(-(
+    0.45*ABS([@Z_Resid]) +
+    0.20*ABS([@Z_Peer]) +
+    0.20*[@PctRank_AbsResid_Month] +
+    0.10*ABS([@Z_MoM_Abs]) +
+    0.05*[@Persist_3m]
+  ))),
+0)
+
+
+
+
+
+
+=IFERROR(
   SUMIFS(T[Flag_Anom], T[RC_CODE],[@RC_CODE], T[month_end],">=" & EDATE($H$2,-2), T[month_end],"<=" & $H$2)
   /
   COUNTIFS(T[RC_CODE],[@RC_CODE], T[month_end],">=" & EDATE($H$2,-2), T[month_end],"<=" & $H$2),
@@ -27309,12 +27348,4 @@ base AS (
 tagged AS (
   SELECT
     b.*,
-    CASE WHEN b.END_OF_MONTH_DATE = (SELECT max_eom FROM latest_month) THEN 'CURR' ELSE 'PREV' END AS tag
-  FROM base b
-),
-
-/* 5) Pivot to prev/curr columns and compute deltas and flags. */
-final_pivot AS (
-  SELECT
-    t.ACCOUNT_KEY,
- 
+    CASE W
