@@ -1,3 +1,7 @@
+=SUMIFS(T[Actual], T[Month_End], $H$2, T[Severity_0_100], ">=70")
+
+
+
 =COUNTIFS(T[Month_End],$H$2,T[Severity_0_100],">=70") / COUNTIFS(T[Month_End],$H$2)
 
 
