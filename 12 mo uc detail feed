@@ -1,3 +1,67 @@
+/* Base helpers */
+Total Exposure $ := SUM ( T[Actual] )
+Residual := SUMX ( T, T[Actual] - T[Forecast_Selected] )      -- context-aware
+Residual^2 := SUMX ( T, (T[Actual]-T[Forecast_Selected])^2 )  -- context-aware
+
+/* Per-context RMSE, MAE, Bias */
+RMSE :=
+VAR n = COUNTROWS ( T )
+RETURN IF ( n = 0, BLANK(), SQRT ( [Residual^2] / n ) )
+
+MAE :=
+VAR n = COUNTROWS ( T )
+VAR s = SUMX ( T, ABS ( T[Actual]-T[Forecast_Selected] ) )
+RETURN DIVIDE ( s, n )
+
+Bias (Mean Residual) :=
+VAR n = COUNTROWS ( T )
+RETURN DIVIDE ( [Residual], n )
+
+/* Portfolio-style R² in current filter context (RC or portfolio, over selected time window) */
+R2 :=
+VAR mu  = AVERAGE ( T[Actual] )
+VAR SSE = [Residual^2]
+VAR SST = SUMX ( T, ( T[Actual] - mu )^2 )
+RETURN IF ( SST = 0, BLANK(), 1 - DIVIDE ( SSE, SST ) )
+
+/* MAPE excluding zero Actuals */
+MAPE % :=
+VAR tbl =
+    FILTER ( T, NOT ISBLANK ( T[Actual] ) && T[Actual] <> 0 )
+VAR n = COUNTROWS ( tbl )
+VAR s = SUMX ( tbl, ABS ( ( T[Actual]-T[Forecast_Selected] ) / T[Actual] ) )
+RETURN DIVIDE ( s, n )
+
+
+
+/* Average of per-RC R² in the current time window */
+Avg R2 by RC :=
+AVERAGEX ( VALUES ( T[RC_CODE] ), [R2] )
+
+/* Exposure-weighted RMSE over RCs (optional) */
+Weighted RMSE :=
+VAR byRC =
+    ADDCOLUMNS (
+        VALUES ( T[RC_CODE] ),
+        "rmse", [RMSE],
+        "w", CALCULATE ( [Total Exposure $] )
+    )
+VAR num = SUMX ( byRC, [rmse] * [w] )
+VAR den = SUMX ( byRC, [w] )
+RETURN DIVIDE ( num, den )
+
+/* Latest-month exposure for the selected RC (for scatter size or tooltips) */
+Latest Month := MAX ( T[Month_End] )
+
+Latest Exposure $ (for RC) :=
+VAR lm = [Latest Month]
+RETURN CALCULATE ( [Total Exposure $], T[Month_End] = lm )
+
+
+
+
+
+
 MoM % :=
 VAR curMonth = MAX ( T[Month_End] )
 VAR prevVal  =
