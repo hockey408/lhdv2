@@ -1,4 +1,64 @@
 =LET(
+  /* weights */
+  wZ, W_ZResid, wPeer, W_ZPeer, wAbs, W_PctAbs, wMoM, W_ZMoM,
+  Wtot, wZ+wPeer+wAbs+wMoM + (wZ+wPeer+wAbs+wMoM=0),
+
+  /* terms */
+  zTerm,     wZ   * ABS(IFERROR([@Z_Resid],0)),
+  peerTerm,  wPeer* ABS(IFERROR([@Z_Peer],0)),
+  absTerm,   wAbs * IFERROR([@PctRank_AbsResid_Month],
+                     /* fallback: compute rank within LatestMonth if your column is missing */
+                     IFERROR(PERCENTRANK.INC(IF(T[Month_End]=LatestMonth, T[AbsResid]), [@AbsResid]), 0)
+           ),
+  momTerm,   wMoM * ABS(IFERROR([@Z_MoM_Abs],0)),
+
+  raw, (zTerm + peerTerm + absTerm + momTerm) / Wtot,
+  ROUND(100*(1-EXP(-raw)),0)
+)
+
+
+=--([@Severity_Core] >= FlagThreshold)
+
+
+=LET(
+  rc, [@RC_CODE],
+  me, [@Month_End],
+  look, PersistLookback,                /* named cell, e.g., 3 */
+  start, EDATE(me, -(look-1)),
+  num, SUMIFS(T[Flag_Anom_Core], T[RC_CODE], rc, T[Month_End], ">="&start, T[Month_End], "<="&me),
+  den, COUNTIFS(T[RC_CODE], rc, T[Month_End], ">="&start, T[Month_End], "<="&me),
+  IF(den=0, 0, num/den)
+)
+
+
+=LET(
+  wZ, W_ZResid, wPeer, W_ZPeer, wAbs, W_PctAbs, wMoM, W_ZMoM, wPers, W_Persist,
+  Wtot, wZ+wPeer+wAbs+wMoM+wPers + (wZ+wPeer+wAbs+wMoM+wPers=0),
+
+  raw, (
+        wZ   * ABS(IFERROR([@Z_Resid],0)) +
+        wPeer* ABS(IFERROR([@Z_Peer],0)) +
+        wAbs * IFERROR([@PctRank_AbsResid_Month],
+                       IFERROR(PERCENTRANK.INC(IF(T[Month_End]=LatestMonth, T[AbsResid]), [@AbsResid]), 0)) +
+        wMoM * ABS(IFERROR([@Z_MoM_Abs],0)) +
+        wPers* IFERROR([@Persist_3m],0)
+       ) / Wtot,
+
+  ROUND(100*(1-EXP(-raw)),0)
+)
+
+
+=--([@Severity_Final_v5] >= FlagThreshold)
+
+
+
+
+
+
+
+
+
+=LET(
   lm, LatestMonth,
   wZ, W_ZResid, wMZ, W_ZMoM, wA, W_Abs, wMA, W_MoMAbs,
   Wtot, wZ+wMZ+wA+wMA + (wZ+wMZ+wA+wMA=0),
