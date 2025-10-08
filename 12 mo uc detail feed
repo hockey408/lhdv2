@@ -1,3 +1,57 @@
+=LET(
+  lm, LatestMonth,
+  wZ, W_ZResid, wMZ, W_ZMoM, wA, W_Abs, wMA, W_MoMAbs,
+  Wtot, wZ+wMZ+wA+wMA + (wZ+wMZ+wA+wMA=0),
+
+  /* latest-month ranks without FILTER (avoids empty spills) */
+  vecAbs, IF(T[Month_End]=lm, T[AbsResid]),
+  vecMoM, IF(T[Month_End]=lm, T[MoM_Abs]),
+  nLM,   SUM(--(T[Month_End]=lm)),
+  rAbs,  IF(nLM=0, 0, IFERROR(PERCENTRANK.INC(vecAbs, [@AbsResid]), 0)),
+  rMoM,  IF(nLM=0, 0, IFERROR(PERCENTRANK.INC(vecMoM, [@MoM_Abs]), 0)),
+
+  raw, ( wZ*ABS(IFERROR([@Z_Resid],0))
+       + wMZ*ABS(IFERROR([@Z_MoM_Abs],0))
+       + wA*rAbs
+       + wMA*rMoM ) / Wtot,
+
+  ROUND(100*(1-EXP(-raw)),0)
+)
+
+
+
+=--([@Severity_Core] >= FlagThreshold)
+
+
+=LET(
+  rc, [@RC_CODE],
+  me, [@Month_End],
+  look, PersistLookback,                 /* e.g., 3; or hardcode 3 */
+  start, EDATE(me, -(look-1)),
+  num, SUMIFS(T[Flag_Anom_Core], T[RC_CODE], rc, T[Month_End], ">="&start, T[Month_End], "<="&me),
+  den, COUNTIFS(T[RC_CODE], rc, T[Month_End], ">="&start, T[Month_End], "<="&me),
+  IF(den=0, 0, num/den)
+)
+
+
+=LET(
+  boost, PersistBoost,           /* e.g., 15; or hardcode 15 */
+  MIN(100, ROUND([@Severity_Core] + boost*[@Persist_3m], 0))
+)
+
+
+=LET(
+  mult, 1 + 0.25*[@Persist_3m],         /* up to +25% */
+  MIN(100, ROUND([@Severity_Core]*mult, 0))
+)
+
+
+=--([@Severity_Final] >= FlagThreshold)
+
+
+
+
+
 /* Base helpers */
 Total Exposure $ := SUM ( T[Actual] )
 Residual := SUMX ( T, T[Actual] - T[Forecast_Selected] )      -- context-aware
