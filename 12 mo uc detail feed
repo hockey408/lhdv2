@@ -1,3 +1,68 @@
+Metrics_Definitions =
+DATATABLE (
+    "Metric", STRING,
+    "Definition", STRING,
+    "Calc_Type", STRING,
+    "Formula_Text", STRING,
+    "Unit", STRING,
+{
+    { "Actual", "Recorded month-end balance for the RC_Code.", "Column", "T[Actual]", "$" },
+    { "Forecast_Selected", "Chosen forecast after model & seasonality selection.", "Column/Calc", "Selected model (REG12/REG36/MA6/MA12) × seasonal lift.", "$" },
+    { "Residual", "Difference between Actual and Forecast.", "Row Calc", "Actual − Forecast_Selected", "$" },
+    { "AbsResid", "Magnitude of the residual.", "Row Calc", "ABS(Residual)", "$" },
+    { "MoM_Abs", "Month-over-month absolute change in balance.", "Row Calc", "ABS(Actual − Prev_Month_Actual)", "$" },
+    { "MoM_Pct_Abs", "Absolute % change vs prior month.", "Row Calc", "ABS((Actual − Prev)/Prev)", "%" },
+    { "Z_Resid", "Standardized residual vs own history.", "Window Stat", "(AbsResid − mean_abs_resid) / sd_abs_resid", "Z" },
+    { "Z_MoM_Abs", "Standardized MoM $ change vs own history.", "Window Stat", "(MoM_Abs − mean_mom_abs) / sd_mom_abs", "Z" },
+    { "Z_MoM_Pct", "Standardized MoM % change vs own history.", "Window Stat", "(MoM_Pct_Abs − mean_mom_pct) / sd_mom_pct", "Z" },
+
+    { "Severity_Raw", "Weighted signal combining Z-scores and $ impact.", "Row Calc",
+      "0.65*|Z_Resid| + 0.07*|Z_MoM_Abs| + 0.25*RankLM(AbsResid) + 0.03*RankLM(MoM_Abs)", "unitless" },
+
+    { "Severity_0_100_v5", "0–100 nonlinear scaling of Severity_Raw.", "Row Calc",
+      "ROUND(100*(1 − EXP(−Severity_Raw)),0)", "0–100" },
+
+    { "Flag_Anom", "Anomaly flag for latest month (severity above threshold).", "Row Flag",
+      "IF(Severity_0_100_v5 ≥ Threshold, 1, 0)", "0/1" },
+
+    { "Persist_3m", "Share of last N months flagged (recurrence).", "Cohort Stat",
+      "AVG(Flag_Anom over last N months)", "0–1" },
+
+    { "Latest_Exposure", "Actual balance for the latest month.", "Agg (Latest)",
+      "SUMX( rows where Month_End = MAX(Month_End), Actual )", "$" },
+
+    { "Portfolio R²", "Fit quality: variance explained by forecasts.", "Portfolio Stat",
+      "1 − SSE/SST; SSE=Σ(Act−Fcst)², SST=Σ(Act−mean(Act))²", "0–1" },
+
+    { "RMSE", "Root mean square error (typical $ forecast error).", "Stat",
+      "SQRT( AVG( (Act−Fcst)² ) )", "$" },
+
+    { "MAE", "Mean absolute error (typical |$| error).", "Stat",
+      "AVG( ABS(Act−Fcst) )", "$" },
+
+    { "MAPE", "Mean absolute % error (scale-independent).", "Stat",
+      "AVG( ABS((Act−Fcst)/Act) ), ignoring Act=0", "%" },
+
+    { "Bias (Mean Residual)", "Average signed error (over/under-forecast).", "Stat",
+      "AVG( Act−Fcst )", "$" },
+
+    { "Best_Model", "Model picked per RC based on fit rules.", "Label",
+      "Argmin(RMSE) with R² guardrails → REG12/REG36/MA6/MA12", "-" },
+
+    { "Seasonal Lift (lift_final)", "Quarterly adjustment damped for spikes.", "Window Calc",
+      "Capped & shrunk quarter lift; extra damp if recent spikes.", "multiplier" },
+
+    { "Flagged Exposure %", "Share of exposure in flagged RCs (latest).", "Portfolio KPI",
+      "SUM(Actual where Severity≥Thr) / SUM(Actual)", "%" },
+
+    { "Severity_Category", "Bucketed bands for communication.", "Label",
+      "Low<40, Moderate 40–69, High 70–84, Critical 85+", "-" }
+})
+
+
+
+
+
 Flow_Steps =
 DATATABLE (
     "Step_ID", INTEGER,
