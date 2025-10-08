@@ -1,3 +1,60 @@
+MoM % :=
+VAR curMonth = MAX ( T[Month_End] )
+VAR prevVal  =
+    CALCULATE (
+        [Total Exposure $],
+        FILTER ( ALL ( T[Month_End] ), T[Month_End] = EOMONTH ( curMonth, -1 ) )
+    )
+RETURN
+DIVIDE ( [Total Exposure $] - prevVal, prevVal )
+
+
+Severity Delta :=
+VAR curMonth = MAX ( T[Month_End] )
+VAR prevSev  =
+    CALCULATE (
+        [Severity (Avg)],
+        FILTER ( ALL ( T[Month_End] ), T[Month_End] = EOMONTH ( curMonth, -1 ) )
+    )
+RETURN
+[Severity (Avg)] - prevSev
+
+
+Flag Change :=
+VAR curMonth = MAX ( T[Month_End] )
+VAR curFlag  = [Current Flag]     -- 0 or 1
+VAR prevFlag =
+    CALCULATE (
+        MAX ( T[Flag_Anom] ),
+        FILTER ( ALL ( T[Month_End] ), T[Month_End] = EOMONTH ( curMonth, -1 ) )
+    )
+RETURN
+SWITCH (
+    TRUE(),
+    curFlag = 1 && prevFlag = 0, "🆕 New Flag",
+    curFlag = 0 && prevFlag = 1, "✅ Cleared",
+    curFlag = 1 && prevFlag = 1, "↔ Still Flagged",
+    "—"
+)
+
+Indicator Tag (Current) :=
+SELECTEDVALUE ( T[Indicator_Tag], "—" )
+
+Indicator Tag (Latest) :=
+VAR lm =
+    CALCULATE ( MAX ( T[Month_End] ), ALLEXCEPT ( T, T[RC_CODE] ) )
+RETURN
+CALCULATE ( SELECTEDVALUE ( T[Indicator_Tag], "—" ), T[Month_End] = lm )
+
+
+
+
+
+
+
+
+
+
 Metrics_Definitions =
 DATATABLE (
     "Metric", STRING,
