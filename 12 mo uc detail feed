@@ -1,3 +1,22 @@
+Flow_Steps =
+DATATABLE (
+    "Step_ID", INTEGER,
+    "Step_Label", STRING,
+    "Step_Description", STRING,
+    "Icon", STRING,
+    {
+        { 1, "Detect Anomalies", "Identify RC_Codes or systems with unusual changes.", "🔍" },
+        { 2, "Rank Severity", "Rank anomalies based on severity score (0–100).", "⚖️" },
+        { 3, "Investigate RC_Code", "Drill into RC_Code details and variance metrics.", "🧩" },
+        { 4, "Drill to Accounts", "Analyze top accounts driving residuals.", "📊" },
+        { 5, "Tag Cause", "Assign likely cause (structural change, timing, etc.)", "🏷️" },
+        { 6, "Report Summary", "Summarize findings and portfolio impact.", "📈" }
+    }
+)
+
+
+
+
 =AVERAGEIFS(T[AbsResid], T[RC_CODE], [@RC_CODE])
 
 =LET(rc,[@RC_CODE], IFERROR( AVERAGEIFS(T[Resid], T[RC_CODE], rc), 0 ))
