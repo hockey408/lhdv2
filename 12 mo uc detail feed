@@ -1,3 +1,155 @@
+-- PARAMETERS
+-- change the date literal to your target EOM
+WITH
+base AS (
+  SELECT
+      a.End_of_Month_Date      AS EOM,
+      a.Account_Key,
+      a.Contract_Source_System AS Source_System,
+      a.Portfolio_Type,
+      a.RC_Code,
+      a.KDE_Name,
+      a.Current_Value,
+      a.Prior_Value,
+      (a.Current_Value - a.Prior_Value) AS Variance,
+      a.Anomaly_Flag,
+      a.Severity_0_100
+  FROM ANOMALY_OUT a
+  WHERE a.End_of_Month_Date = DATE '2025-09-30'  -- << set EOM
+),
+event_map AS (
+  SELECT
+      e.Account_Key,
+      CASE
+        WHEN e.Event_Type IN ('CHARGEOFF','CO') THEN 'ChargeOff'
+        WHEN e.Event_Type IN ('PAYOFF','PO')    THEN 'Payoff'
+        WHEN e.Event_Type IN ('DOWNGRADE')      THEN 'Rating_Downgrade'
+        WHEN e.Event_Type IN ('UPGRADE')        THEN 'Rating_Upgrade'
+        ELSE 'Other_Credit_Event'
+      END AS Event_Bucket
+  FROM EVENTS_CREDIT e
+  WHERE DATE_TRUNC('month', e.Event_Date) = DATE '2025-09-01'   -- month of EOM
+  GROUP BY e.Account_Key,
+           CASE
+             WHEN e.Event_Type IN ('CHARGEOFF','CO') THEN 'ChargeOff'
+             WHEN e.Event_Type IN ('PAYOFF','PO')    THEN 'Payoff'
+             WHEN e.Event_Type IN ('DOWNGRADE')      THEN 'Rating_Downgrade'
+             WHEN e.Event_Type IN ('UPGRADE')        THEN 'Rating_Upgrade'
+             ELSE 'Other_Credit_Event'
+           END
+),
+topside_map AS (
+  SELECT DISTINCT Account_Key, 1 AS Is_Topside
+  FROM TOPSIDE_LEDGER
+  WHERE As_Of_EOM = DATE '2025-09-30'
+),
+timing_map AS (
+  SELECT
+      s.Account_Key,
+      s.Source_System,
+      CASE
+        WHEN DATE(MAX(s.Last_Update_Timestamp)) > DATE '2025-09-30' THEN 1 ELSE 0
+      END AS Post_Close_Update
+  FROM SYSTEM_TIMESTAMPS s
+  GROUP BY s.Account_Key, s.Source_System
+),
+compose AS (
+  SELECT
+      b.EOM, b.Portfolio_Type, b.RC_Code, b.KDE_Name, b.Source_System, b.Account_Key,
+      b.Variance, b.Anomaly_Flag, b.Severity_0_100,
+      COALESCE(em.Event_Bucket,'No_Credit_Event') AS Event_Bucket,
+      COALESCE(tm.Post_Close_Update,0)            AS Post_Close_Update,
+      COALESCE(t.Is_Topside,0)                    AS Is_Topside
+  FROM base b
+  LEFT JOIN event_map  em ON em.Account_Key = b.Account_Key
+  LEFT JOIN timing_map tm ON tm.Account_Key = b.Account_Key AND tm.Source_System = b.Source_System
+  LEFT JOIN topside_map t ON t.Account_Key  = b.Account_Key
+)
+SELECT
+    EOM,
+    Portfolio_Type,
+    RC_Code,
+    KDE_Name,
+    Source_System,
+    Event_Bucket,
+    CASE
+      WHEN Is_Topside=1 THEN 'Topside'
+      WHEN Post_Close_Update=1 THEN 'Timing/Data'
+      ELSE 'None'
+    END AS Data_System_Driver,
+    SUM(Variance) AS Variance_Sum,
+    SUM(ABS(Variance)) AS Variance_AbsSum,
+    SUM(CASE WHEN Anomaly_Flag=1 THEN ABS(Variance) ELSE 0 END) AS Anom_Abs_Variance,
+    AVG(Severity_0_100) AS Avg_Severity,
+    SUM(CASE WHEN Anomaly_Flag=1 THEN 1 ELSE 0 END) AS Count_Anomalies,
+    COUNT(DISTINCT Account_Key) AS Accounts_Count
+FROM compose
+GROUP BY 1,2,3,4,5,6,7
+ORDER BY ABS(SUM(Variance)) DESC;
+
+
+
+-- Netezza / ANSI
+SELECT
+  KDE_Name,
+  AVG(CASE WHEN Anomaly_Flag=1 THEN (Current_Value - Prior_Value) END) AS Avg_Delta_Anom,
+  AVG(CASE WHEN Anomaly_Flag=0 THEN (Current_Value - Prior_Value) END) AS Avg_Delta_Norm,
+  (AVG(CASE WHEN Anomaly_Flag=1 THEN (Current_Value - Prior_Value) END)
+   - AVG(CASE WHEN Anomaly_Flag=0 THEN (Current_Value - Prior_Value) END)) AS Peer_Diff
+FROM ANOMALY_OUT
+WHERE End_of_Month_Date = DATE '2025-09-30'
+GROUP BY KDE_Name
+ORDER BY ABS(
+  (AVG(CASE WHEN Anomaly_Flag=1 THEN (Current_Value - Prior_Value) END)
+   - AVG(CASE WHEN Anomaly_Flag=0 THEN (Current_Value - Prior_Value) END))
+) DESC;
+
+
+
+
+-- Netezza / ANSI; run after the first CTE block if you want precise mapping,
+-- or reuse ANOMALY_OUT + EVENTS/Topside as shown
+WITH drivers AS (
+  /* paste the 'compose' CTE from the big query, or simplify: */
+  SELECT
+      a.Account_Key,
+      (a.Current_Value - a.Prior_Value) AS Variance,
+      CASE
+        WHEN t.Account_Key IS NOT NULL THEN 'Topside'
+        WHEN CAST(s.Last_Update_Timestamp AS DATE) > DATE '2025-09-30' THEN 'Timing/Data'
+        ELSE 'None'
+      END AS Data_System_Driver,
+      CASE
+        WHEN e.Event_Type IN ('PAYOFF','PO') THEN 'Payoffs'
+        WHEN e.Event_Type IN ('CHARGEOFF','CO') THEN 'ChargeOffs'
+        WHEN e.Event_Type='DOWNGRADE' THEN 'Rating_Downgrades'
+        WHEN e.Event_Type='UPGRADE'   THEN 'Rating_Upgrades'
+        ELSE 'Other'
+      END AS Event_Driver
+  FROM ANOMALY_OUT a
+  LEFT JOIN TOPSIDE_LEDGER t ON t.Account_Key=a.Account_Key AND t.As_Of_EOM=DATE '2025-09-30'
+  LEFT JOIN SYSTEM_TIMESTAMPS s ON s.Account_Key=a.Account_Key AND s.Source_System=a.Contract_Source_System
+  LEFT JOIN EVENTS_CREDIT e ON e.Account_Key=a.Account_Key
+    AND DATE_TRUNC('month', e.Event_Date)=DATE '2025-09-01'
+  WHERE a.End_of_Month_Date=DATE '2025-09-30'
+)
+SELECT Driver, SUM(Variance) AS Impact
+FROM (
+  SELECT Event_Driver AS Driver, Variance FROM drivers
+  UNION ALL SELECT 'Topside_Adjustments', Variance FROM drivers WHERE Data_System_Driver='Topside'
+  UNION ALL SELECT 'Timing/Data', Variance FROM drivers WHERE Data_System_Driver='Timing/Data'
+) x
+GROUP BY Driver
+ORDER BY ABS(SUM(Variance)) DESC;
+
+
+
+
+
+
+
+
+
 Portfolio_R2_Latest =
 VAR lm       = EOMONTH ( MAX ( T[Month_End] ), 0 )
 VAR winStart = EOMONTH ( lm, -11 )
