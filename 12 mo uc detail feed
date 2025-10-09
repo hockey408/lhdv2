@@ -1,3 +1,43 @@
+Portfolio_R2_Latest =
+VAR lm       = EOMONTH ( MAX ( T[Month_End] ), 0 )
+VAR winStart = EOMONTH ( lm, -11 )
+RETURN
+AVERAGEX (
+    VALUES ( T[RC_CODE] ),
+    CALCULATE (
+        [R2],                                  -- your existing R2 measure
+        FILTER (
+            ALL ( T[Month_End] ),              -- remove month filter, then apply window
+            T[Month_End] >= winStart
+                && T[Month_End] <= lm
+        )
+    )
+)
+
+
+
+Portfolio_R2_Latest =
+VAR lm       = EOMONTH ( MAX ( T[Month_End] ), 0 )
+VAR winStart = EOMONTH ( lm, -11 )
+RETURN
+AVERAGEX (
+    VALUES ( T[RC_CODE] ),
+    CALCULATE (
+        [R2],
+        REMOVEFILTERS ( T[Month_End] ),
+        T[Month_End] >= winStart,
+        T[Month_End] <= lm
+    )
+)
+
+
+
+
+
+
+
+
+
 =LET(
   /* weights */
   wZ, W_ZResid, wPeer, W_ZPeer, wAbs, W_PctAbs, wMoM, W_ZMoM,
