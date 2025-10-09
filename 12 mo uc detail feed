@@ -1,6 +1,49 @@
 Portfolio_R2_Latest =
 VAR lm       = EOMONTH ( MAX ( T[Month_End] ), 0 )
 VAR winStart = EOMONTH ( lm, -11 )
+
+/* Keep only RCs with at least 2 months in the window */
+VAR RC_Eligible =
+    FILTER (
+        VALUES ( T[RC_CODE] ),
+        CALCULATE (
+            DISTINCTCOUNT ( T[Month_End] ),
+            REMOVEFILTERS ( T[Month_End] ),
+            T[Month_End] >= winStart, T[Month_End] <= lm
+        ) >= 2
+    )
+
+/* Sum SSE and SST per RC, then pool */
+VAR SSE_Sum =
+    SUMX (
+        RC_Eligible,
+        CALCULATE (
+            SUMX ( T, ( T[Actual] - T[Forecast_Selected] ) ^ 2 ),
+            REMOVEFILTERS ( T[Month_End] ),
+            T[Month_End] >= winStart, T[Month_End] <= lm
+        )
+    )
+
+VAR SST_Sum =
+    SUMX (
+        RC_Eligible,
+        CALCULATE (
+            VAR mu = AVERAGE ( T[Actual] )
+            RETURN SUMX ( T, ( T[Actual] - mu ) ^ 2 ),
+            REMOVEFILTERS ( T[Month_End] ),
+            T[Month_End] >= winStart, T[Month_End] <= lm
+        )
+    )
+
+RETURN
+IF ( SST_Sum = 0, BLANK(), 1 - DIVIDE ( SSE_Sum, SST_Sum ) )
+
+
+
+
+Portfolio_R2_Latest =
+VAR lm       = EOMONTH ( MAX ( T[Month_End] ), 0 )
+VAR winStart = EOMONTH ( lm, -11 )
 RETURN
 AVERAGEX (
     VALUES ( T[RC_CODE] ),
