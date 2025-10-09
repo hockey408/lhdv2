@@ -1,3 +1,21 @@
+Portfolio_R2_Avg :=
+VAR eom = MAX ( 'Date'[MonthEnd] )
+VAR base =
+    FILTER (
+        ADDCOLUMNS (
+            -- pick the grain you compute R2 at (KDE, segment, model id, etc.)
+            SUMMARIZE ( ALLSELECTED ( T ), T[KDE_Name] ),
+            "R2m",
+                CALCULATE ( [R2], KEEPFILTERS ( T[End_of_Month_Date] = eom ) )
+        ),
+        NOT ISBLANK ( [R2m] )
+    )
+RETURN
+COALESCE ( AVERAGEX ( base, [R2m] ), 0 )
+
+
+
+
 -- PARAMETERS
 -- change the date literal to your target EOM
 WITH
