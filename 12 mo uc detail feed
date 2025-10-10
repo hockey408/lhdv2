@@ -1,3 +1,247 @@
+-- KDE Changes-Only History + Trend (Netezza-safe)
+-- Ranking: 1) exp_changed DESC, 2) cnt_changed_pct DESC (NULLs last)
+-- Window: set your start/end month-ends below
+
+WITH params AS (
+  SELECT
+    DATE '2025-01-31' AS start_eom,
+    DATE '2025-09-30' AS end_eom
+),
+
+-- Distinct month-ends in range, and previous month for each
+months AS (
+  SELECT DISTINCT End_of_Month_Date
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+  JOIN params p ON t.End_of_Month_Date BETWEEN p.start_eom AND p.end_eom
+),
+months_seq AS (
+  SELECT
+    End_of_Month_Date,
+    ROW_NUMBER() OVER (ORDER BY End_of_Month_Date)                 AS t_idx,
+    LAG(End_of_Month_Date) OVER (ORDER BY End_of_Month_Date)       AS prev_eom
+  FROM months
+),
+
+-- Base rows (exposure chosen as Derived -> Amortized)
+base AS (
+  SELECT
+    t.End_of_Month_Date,
+    t.Account_Identifier,
+    CAST(COALESCE(t.DERIVED_AMORTIZED_COST_BASIS, t.AMORTIZED_COST_BASIS, 0) AS DECIMAL(18,2)) AS Exposure,
+
+    t.CRE_FLAG, t.PD_GRADE, t.FDIC_CALL_CODE, t.NON_ACCRUAL_FLAG,
+    t.INDUSTRY_CODE, t.LTV, t.GL_ACCOUNT_CODE, t.DAYS_PAST_DUE, t.RBC_CODE,
+    t.MATURITY_DATE, t.NAICS_CODE, t.RC_CODE, t.REVOLVING_CODE, t.NEXT_RATE_CHANGE_DATE,
+    t.ACCOUNT_OFFICER_NAME, t.BOOK_DATE, t.BUS_UNIT_CODE, t.COLLATERAL_CODE,
+    t.ISSUE_DATE, t.OCCUPANCY_CODE, t.PAST_DUE_FLAG, t.PROD_HIER_LEVEL_5,
+    t.PURPOSE_CODE, t.STATUS_CODE, t.RISK_UNIT
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+  JOIN params p
+    ON t.End_of_Month_Date BETWEEN p.start_eom AND p.end_eom
+),
+
+-- UNPIVOT via UNION ALL (cast to VARCHAR for type alignment)
+kde_long AS (
+  SELECT End_of_Month_Date, Account_Identifier, Exposure, 'CRE_FLAG'              AS KDE_NAME, CAST(CRE_FLAG              AS VARCHAR(200)) AS KDE_VALUE FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'PD_GRADE',               CAST(PD_GRADE               AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'FDIC_CALL_CODE',         CAST(FDIC_CALL_CODE         AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'NON_ACCRUAL_FLAG',       CAST(NON_ACCRUAL_FLAG       AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'INDUSTRY_CODE',          CAST(INDUSTRY_CODE          AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'LTV',                    CAST(LTV                    AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'GL_ACCOUNT_CODE',        CAST(GL_ACCOUNT_CODE        AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'DAYS_PAST_DUE',          CAST(DAYS_PAST_DUE          AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'RBC_CODE',               CAST(RBC_CODE               AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'MATURITY_DATE',          CAST(MATURITY_DATE          AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'NAICS_CODE',             CAST(NAICS_CODE             AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'RC_CODE',                CAST(RC_CODE                AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'REVOLVING_CODE',         CAST(REVOLVING_CODE         AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'NEXT_RATE_CHANGE_DATE',  CAST(NEXT_RATE_CHANGE_DATE  AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'ACCOUNT_OFFICER_NAME',   CAST(ACCOUNT_OFFICER_NAME   AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'BOOK_DATE',              CAST(BOOK_DATE              AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'BUS_UNIT_CODE',          CAST(BUS_UNIT_CODE          AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'COLLATERAL_CODE',        CAST(COLLATERAL_CODE        AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'ISSUE_DATE',             CAST(ISSUE_DATE             AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'OCCUPANCY_CODE',         CAST(OCCUPANCY_CODE         AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'PAST_DUE_FLAG',          CAST(PAST_DUE_FLAG          AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'PROD_HIER_LEVEL_5',      CAST(PROD_HIER_LEVEL_5      AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'PURPOSE_CODE',           CAST(PURPOSE_CODE           AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'STATUS_CODE',            CAST(STATUS_CODE            AS VARCHAR(200)) FROM base
+  UNION ALL SELECT End_of_Month_Date, Account_Identifier, Exposure, 'RISK_UNIT',              CAST(RISK_UNIT              AS VARCHAR(200)) FROM base
+),
+
+-- For each month, pair with its previous month to detect changes
+prev_kde AS (
+  SELECT l.*, m.t_idx
+  FROM kde_long l
+  JOIN months_seq m ON l.End_of_Month_Date = m.prev_eom
+),
+curr_kde AS (
+  SELECT l.*, m.t_idx
+  FROM kde_long l
+  JOIN months_seq m ON l.End_of_Month_Date = m.End_of_Month_Date
+),
+
+joined AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+    COALESCE(c.KDE_NAME, p.KDE_NAME)                     AS KDE_NAME,
+    c.t_idx                                              AS t_idx,            -- index for "current" month
+    -- month key
+    MAX(c.End_of_Month_Date) AS this_eom,
+    MAX(p.End_of_Month_Date) AS prev_eom,
+
+    p.KDE_VALUE AS KDE_VALUE_Prev,
+    c.KDE_VALUE AS KDE_VALUE_Curr,
+    p.Exposure  AS Exp_Prev_Row,
+    c.Exposure  AS Exp_Curr_Row
+  FROM prev_kde p
+  FULL OUTER JOIN curr_kde c
+    ON  p.Account_Identifier = c.Account_Identifier
+    AND p.KDE_NAME           = c.KDE_NAME
+    AND p.t_idx              = c.t_idx     -- ensure pairing to the same month step
+  GROUP BY
+    COALESCE(c.Account_Identifier, p.Account_Identifier),
+    COALESCE(c.KDE_NAME, p.KDE_NAME),
+    c.t_idx
+),
+
+row_flags AS (
+  SELECT
+    KDE_NAME,
+    t_idx,
+    this_eom,
+
+    -- change flag (NULL-safe)
+    CASE
+      WHEN (KDE_VALUE_Prev IS NULL AND KDE_VALUE_Curr IS NOT NULL)
+        OR (KDE_VALUE_Prev IS NOT NULL AND KDE_VALUE_Curr IS NULL)
+        OR (KDE_VALUE_Prev IS NOT NULL AND KDE_VALUE_Curr IS NOT NULL AND KDE_VALUE_Prev <> KDE_VALUE_Curr)
+      THEN 1 ELSE 0 END AS changed_flag,
+
+    COALESCE(Exp_Curr_Row, Exp_Prev_Row, 0) AS exp_changed_row,
+
+    -- participation by month (non-NULL)
+    CASE WHEN KDE_VALUE_Prev IS NOT NULL THEN 1 ELSE 0 END AS prev_flag,
+    CASE WHEN KDE_VALUE_Curr IS NOT NULL THEN 1 ELSE 0 END AS curr_flag,
+    COALESCE(Exp_Prev_Row, 0) AS exp_prev_row,
+    COALESCE(Exp_Curr_Row, 0) AS exp_curr_row
+  FROM joined
+),
+
+-- Monthly KDE rollups (per KDE per month)
+roll_monthly AS (
+  SELECT
+    KDE_NAME,
+    t_idx,
+    MAX(this_eom)                                         AS this_eom,
+
+    -- changes-only
+    SUM(changed_flag)                                     AS cnt_changed,
+    SUM(CASE WHEN changed_flag=1 THEN exp_changed_row ELSE 0 END) AS exp_changed,
+
+    -- MoM totals (non-NULL each month)
+    SUM(prev_flag)                                        AS cnt_prev,
+    SUM(curr_flag)                                        AS cnt_curr,
+    SUM(exp_prev_row * CASE WHEN prev_flag=1 THEN 1 ELSE 0 END)   AS exp_prev,
+    SUM(exp_curr_row * CASE WHEN curr_flag=1 THEN 1 ELSE 0 END)   AS exp_curr
+  FROM row_flags
+  GROUP BY KDE_NAME, t_idx
+),
+
+metrics_monthly AS (
+  SELECT
+    KDE_NAME,
+    this_eom,
+    t_idx,
+
+    -- changes-only
+    cnt_changed,
+    CAST(exp_changed AS DECIMAL(18,2)) AS exp_changed,
+    CASE WHEN cnt_prev <> 0 THEN (cnt_changed * 1.0) / cnt_prev ELSE NULL END AS cnt_changed_pct,
+
+    -- official MoM
+    cnt_prev,
+    cnt_curr,
+    (cnt_curr - cnt_prev) AS cnt_mom_delta,
+    CASE WHEN cnt_prev <> 0 THEN (cnt_curr - cnt_prev) * 1.0 / cnt_prev ELSE NULL END AS cnt_mom_pct,
+
+    CAST(exp_prev AS DECIMAL(18,2)) AS exp_prev,
+    CAST(exp_curr AS DECIMAL(18,2)) AS exp_curr,
+    CAST(exp_curr - exp_prev AS DECIMAL(18,2)) AS exp_mom_delta,
+    CASE WHEN exp_prev <> 0 THEN (exp_curr - exp_prev) / (exp_prev * 1.0) ELSE NULL END AS exp_mom_pct
+  FROM roll_monthly
+),
+
+-- Trend features across the whole window (per KDE)
+trend AS (
+  SELECT
+    KDE_NAME,
+    -- linear trend of exp_changed vs month index across the window
+    REGR_SLOPE(exp_changed * 1.0, t_idx * 1.0) OVER (PARTITION BY KDE_NAME)  AS exp_changed_trend_slope,
+
+    -- trailing 12-month stats for exp_changed (if <12 months available, uses what exists)
+    AVG(exp_changed)     OVER (PARTITION BY KDE_NAME ORDER BY t_idx ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS exp_changed_ma12,
+    STDDEV_SAMP(exp_changed) OVER (PARTITION BY KDE_NAME ORDER BY t_idx ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS exp_changed_sd12,
+
+    KDE_NAME AS k2, t_idx  -- carry keys
+  FROM metrics_monthly
+),
+
+trend_joined AS (
+  SELECT
+    m.*,
+    t.exp_changed_trend_slope,
+    t.exp_changed_ma12,
+    t.exp_changed_sd12,
+    CASE
+      WHEN t.exp_changed_sd12 IS NULL OR t.exp_changed_sd12 = 0 THEN NULL
+      ELSE (m.exp_changed - t.exp_changed_ma12) / t.exp_changed_sd12
+    END AS exp_changed_z12
+  FROM metrics_monthly m
+  JOIN trend t
+    ON t.KDE_NAME = m.KDE_NAME
+   AND t.t_idx    = m.t_idx
+),
+
+-- latest month only, with ranking
+rank_prep AS (
+  SELECT
+    x.*,
+    CASE WHEN cnt_changed_pct IS NULL THEN 1 ELSE 0 END AS cnt_changed_pct_is_null
+  FROM trend_joined x
+  WHERE x.this_eom = (SELECT MAX(End_of_Month_Date) FROM months_seq)
+)
+
+SELECT
+  KDE_NAME,
+  this_eom,
+
+  -- changes-only (ranking keys)
+  exp_changed,
+  cnt_changed,
+  cnt_changed_pct,
+
+  -- context
+  cnt_prev, cnt_curr, cnt_mom_delta, cnt_mom_pct,
+  exp_prev, exp_curr, exp_mom_delta, exp_mom_pct,
+
+  -- trend features across the window
+  exp_changed_trend_slope,
+  exp_changed_ma12,
+  exp_changed_sd12,
+  exp_changed_z12,
+
+  RANK() OVER (
+    ORDER BY exp_changed DESC,
+             cnt_changed_pct_is_null ASC,
+             cnt_changed_pct DESC
+  ) AS rank_by_changes_only_exp_then_cntpct
+FROM rank_prep
+ORDER BY exp_changed DESC, cnt_changed_pct_is_null ASC, cnt_changed_pct DESC, KDE_NAME;
+
+
+
+
 -- KDE changes-only + MoM % summary (Netezza) 
 -- Table: V_SECURE_PORTFOLIO_DETAIL_LOANHUB
 -- Entity key: Account_Identifier
