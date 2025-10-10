@@ -1,3 +1,21 @@
+kde_long AS (
+  SELECT End_of_Month_Date, Account_ID, Exposure, 'RC_Code' AS KDE_NAME, 
+         CAST(RC_Code AS VARCHAR(50)) AS KDE_VALUE 
+  FROM base
+  UNION ALL
+  SELECT End_of_Month_Date, Account_ID, Exposure, 'PD_Grade' AS KDE_NAME, 
+         CAST(PD_Grade AS VARCHAR(50)) AS KDE_VALUE 
+  FROM base
+  UNION ALL
+  SELECT End_of_Month_Date, Account_ID, Exposure, 'Industry_Code' AS KDE_NAME, 
+         CAST(Industry_Code AS VARCHAR(50)) AS KDE_VALUE 
+  FROM base
+),
+
+
+
+
+
 -- Simple KDE MoM change analysis (Netezza)
 -- How to use:
 --   1) Set the two month-end dates in the params CTE (DATE 'YYYY-MM-DD')
