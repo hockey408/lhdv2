@@ -1,3 +1,172 @@
+-- KDE changes-only + MoM % summary (Netezza-safe)
+
+WITH params AS (
+  SELECT DATE '2025-09-30' AS this_eom, DATE '2025-08-31' AS prev_eom
+),
+
+base AS (
+  SELECT
+    t.End_of_Month_Date,
+    t.Account_ID,
+    CAST(t.Exposure_Amount AS DECIMAL(18,2)) AS Exposure,
+    CAST(t.RC_Code        AS VARCHAR(100))   AS RC_Code,
+    CAST(t.PD_Grade       AS VARCHAR(100))   AS PD_Grade,
+    CAST(t.Industry_Code  AS VARCHAR(100))   AS Industry_Code
+  FROM dbo.Your_MonthEnd_Table t
+  JOIN params p ON t.End_of_Month_Date IN (p.this_eom, p.prev_eom)
+  WHERE t.Source_System_Balance > 0
+),
+
+prev_m AS (
+  SELECT * FROM base b JOIN params p ON b.End_of_Month_Date = p.prev_eom
+),
+curr_m AS (
+  SELECT * FROM base b JOIN params p ON b.End_of_Month_Date = p.this_eom
+),
+
+joined AS (
+  SELECT
+    COALESCE(c.Account_ID, p.Account_ID) AS Account_ID,
+    -- Use current exposure when present, else prior (for changes-only exposure)
+    COALESCE(c.Exposure, p.Exposure)     AS Exposure,
+
+    -- Prev vs Curr values by KDE
+    p.RC_Code        AS RC_Prev,   c.RC_Code        AS RC_Curr,
+    p.PD_Grade       AS PD_Prev,   c.PD_Grade       AS PD_Curr,
+    p.Industry_Code  AS Ind_Prev,  c.Industry_Code  AS Ind_Curr,
+
+    -- For official MoM totals, we need month-specific participation & exposure
+    -- Prev month fields
+    CASE WHEN p.RC_Code       IS NOT NULL THEN 1 ELSE 0 END AS rc_prev_flag,
+    CASE WHEN p.PD_Grade      IS NOT NULL THEN 1 ELSE 0 END AS pd_prev_flag,
+    CASE WHEN p.Industry_Code IS NOT NULL THEN 1 ELSE 0 END AS ind_prev_flag,
+    COALESCE(p.Exposure,0) AS exp_prev_row,
+    -- Curr month fields
+    CASE WHEN c.RC_Code       IS NOT NULL THEN 1 ELSE 0 END AS rc_curr_flag,
+    CASE WHEN c.PD_Grade      IS NOT NULL THEN 1 ELSE 0 END AS pd_curr_flag,
+    CASE WHEN c.Industry_Code IS NOT NULL THEN 1 ELSE 0 END AS ind_curr_flag,
+    COALESCE(c.Exposure,0) AS exp_curr_row
+  FROM prev_m p
+  FULL OUTER JOIN curr_m c
+    ON p.Account_ID = c.Account_ID
+),
+
+-- NULL-safe change flags per KDE (counts an account if its KDE changed in any direction)
+flags AS (
+  SELECT
+    Exposure,
+
+    CASE
+      WHEN (RC_Prev IS NULL AND RC_Curr IS NOT NULL)
+        OR (RC_Prev IS NOT NULL AND RC_Curr IS NULL)
+        OR (RC_Prev IS NOT NULL AND RC_Curr IS NOT NULL AND RC_Prev <> RC_Curr)
+      THEN 1 ELSE 0 END AS rc_changed,
+
+    CASE
+      WHEN (PD_Prev IS NULL AND PD_Curr IS NOT NULL)
+        OR (PD_Prev IS NOT NULL AND PD_Curr IS NULL)
+        OR (PD_Prev IS NOT NULL AND PD_Curr IS NOT NULL AND PD_Prev <> PD_Curr)
+      THEN 1 ELSE 0 END AS pd_changed,
+
+    CASE
+      WHEN (Ind_Prev IS NULL AND Ind_Curr IS NOT NULL)
+        OR (Ind_Prev IS NOT NULL AND Ind_Curr IS NULL)
+        OR (Ind_Prev IS NOT NULL AND Ind_Curr IS NOT NULL AND Ind_Prev <> Ind_Curr)
+      THEN 1 ELSE 0 END AS ind_changed,
+
+    -- For official MoM totals at KDE level
+    rc_prev_flag, rc_curr_flag, pd_prev_flag, pd_curr_flag, ind_prev_flag, ind_curr_flag,
+    exp_prev_row, exp_curr_row
+  FROM joined
+),
+
+-- Aggregate to KDE level: changes-only metrics + official MoM totals and %
+roll AS (
+  SELECT
+    'RC_Code' AS KDE_NAME,
+    SUM(rc_changed)                                            AS cnt_changed,
+    SUM(CASE WHEN rc_changed=1 THEN Exposure ELSE 0 END)       AS exp_changed,
+
+    SUM(rc_prev_flag)                                          AS cnt_prev,
+    SUM(rc_curr_flag)                                          AS cnt_curr,
+    SUM(exp_prev_row * CASE WHEN rc_prev_flag=1 THEN 1 ELSE 0 END) AS exp_prev,
+    SUM(exp_curr_row * CASE WHEN rc_curr_flag=1 THEN 1 ELSE 0 END) AS exp_curr
+
+  FROM flags
+  UNION ALL
+  SELECT
+    'PD_Grade',
+    SUM(pd_changed),
+    SUM(CASE WHEN pd_changed=1 THEN Exposure ELSE 0 END),
+    SUM(pd_prev_flag),
+    SUM(pd_curr_flag),
+    SUM(exp_prev_row * CASE WHEN pd_prev_flag=1 THEN 1 ELSE 0 END),
+    SUM(exp_curr_row * CASE WHEN pd_curr_flag=1 THEN 1 ELSE 0 END)
+  FROM flags
+  UNION ALL
+  SELECT
+    'Industry_Code',
+    SUM(ind_changed),
+    SUM(CASE WHEN ind_changed=1 THEN Exposure ELSE 0 END),
+    SUM(ind_prev_flag),
+    SUM(ind_curr_flag),
+    SUM(exp_prev_row * CASE WHEN ind_prev_flag=1 THEN 1 ELSE 0 END),
+    SUM(exp_curr_row * CASE WHEN ind_curr_flag=1 THEN 1 ELSE 0 END)
+  FROM flags
+),
+
+metrics AS (
+  SELECT
+    KDE_NAME,
+
+    -- Changes-only
+    cnt_changed,
+    CAST(exp_changed AS DECIMAL(18,2)) AS exp_changed,
+
+    -- Official MoM totals & % (non-NULL participation for that KDE)
+    cnt_prev,
+    cnt_curr,
+    (cnt_curr - cnt_prev)                               AS cnt_mom_delta,
+    CASE WHEN cnt_prev <> 0
+         THEN (cnt_curr - cnt_prev) * 1.0 / cnt_prev
+         ELSE NULL END                                  AS cnt_mom_pct,
+
+    CAST(exp_prev AS DECIMAL(18,2))                     AS exp_prev,
+    CAST(exp_curr AS DECIMAL(18,2))                     AS exp_curr,
+    CAST(exp_curr - exp_prev AS DECIMAL(18,2))          AS exp_mom_delta,
+    CASE WHEN exp_prev <> 0
+         THEN (exp_curr - exp_prev) / (exp_prev * 1.0)
+         ELSE NULL END                                  AS exp_mom_pct
+  FROM roll
+),
+
+rank_prep AS (
+  SELECT
+    m.*,
+    CASE WHEN m.exp_mom_pct IS NULL THEN 1 ELSE 0 END AS exp_pct_is_null,
+    ABS(m.exp_mom_pct) AS exp_mom_pct_abs
+  FROM metrics m
+)
+
+SELECT
+  KDE_NAME,
+
+  -- Changes-only signal
+  cnt_changed,
+  exp_changed,
+
+  -- MoM totals & %
+  cnt_prev, cnt_curr, cnt_mom_delta, cnt_mom_pct,
+  exp_prev, exp_curr, exp_mom_delta, exp_mom_pct,
+
+  RANK() OVER (ORDER BY exp_pct_is_null ASC, exp_mom_pct_abs DESC) AS rank_by_abs_exp_mom_pct
+FROM rank_prep
+ORDER BY exp_pct_is_null ASC, exp_mom_pct_abs DESC, KDE_NAME;
+
+
+
+
+
 -- KDE changes-only summary (Netezza-safe)
 -- Shows ONLY rows (accounts) where the KDE changed between prev and current month
 -- Change definition includes: NULL->value, value->NULL, and value->different value
