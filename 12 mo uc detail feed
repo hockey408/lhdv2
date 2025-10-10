@@ -1,3 +1,30 @@
+joined AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+    COALESCE(c.KDE_NAME,         p.KDE_NAME)             AS KDE_NAME,
+    COALESCE(c.t_idx,            p.t_idx)                AS t_idx,
+
+    /* month keys (no aggregation needed) */
+    c.End_of_Month_Date AS this_eom,
+    p.End_of_Month_Date AS prev_eom,
+
+    /* values to compare (no aggregation) */
+    p.KDE_VALUE AS KDE_VALUE_Prev,
+    c.KDE_VALUE AS KDE_VALUE_Curr,
+
+    /* exposures by month */
+    p.Exposure  AS Exp_Prev_Row,
+    c.Exposure  AS Exp_Curr_Row
+  FROM prev_kde p
+  FULL OUTER JOIN curr_kde c
+    ON  p.Account_Identifier = c.Account_Identifier
+    AND p.KDE_NAME           = c.KDE_NAME
+    AND p.t_idx              = c.t_idx
+)
+
+
+
+
 -- KDE Changes-Only History + Trend (Netezza-safe)
 -- Ranking: 1) exp_changed DESC, 2) cnt_changed_pct DESC (NULLs last)
 -- Window: set your start/end month-ends below
