@@ -6,6 +6,76 @@ base AS (
     t.End_of_Month_Date,
     t.Account_ID,
     CAST(t.Exposure_Amount AS DECIMAL(18,2)) AS Exposure,
+    CAST(t.RC_Code AS VARCHAR(100))       AS RC_Code,
+    CAST(t.PD_Grade AS VARCHAR(100))      AS PD_Grade,
+    CAST(t.Industry_Code AS VARCHAR(100)) AS Industry_Code
+  FROM dbo.Your_MonthEnd_Table t
+  JOIN params p ON t.End_of_Month_Date IN (p.this_eom, p.prev_eom)
+  WHERE t.Source_System_Balance > 0
+),
+prev_m AS (
+  SELECT * FROM base b JOIN params p ON b.End_of_Month_Date = p.prev_eom
+),
+curr_m AS (
+  SELECT * FROM base b JOIN params p ON b.End_of_Month_Date = p.this_eom
+),
+joined AS (
+  SELECT
+    COALESCE(c.Account_ID, p.Account_ID) AS Account_ID,
+    COALESCE(c.Exposure, p.Exposure)     AS Exposure,
+    p.RC_Code       AS RC_Prev,       c.RC_Code       AS RC_Curr,
+    p.PD_Grade      AS PD_Prev,       c.PD_Grade      AS PD_Curr,
+    p.Industry_Code AS Ind_Prev,      c.Industry_Code AS Ind_Curr
+  FROM prev_m p
+  FULL OUTER JOIN curr_m c ON p.Account_ID = c.Account_ID
+),
+flags AS (
+  SELECT
+    CASE WHEN RC_Prev IS DISTINCT FROM RC_Curr THEN 1 ELSE 0 END AS RC_Changed,
+    CASE WHEN PD_Prev IS DISTINCT FROM PD_Curr THEN 1 ELSE 0 END AS PD_Changed,
+    CASE WHEN Ind_Prev IS DISTINCT FROM Ind_Curr THEN 1 ELSE 0 END AS Ind_Changed,
+    Exposure
+  FROM joined
+),
+summary AS (
+  SELECT
+    'RC_Code'       AS KDE_NAME,
+    SUM(RC_Changed) AS Cnt_Changed,
+    SUM(CASE WHEN RC_Changed=1 THEN Exposure ELSE 0 END) AS Exp_Changed
+  FROM flags
+  UNION ALL
+  SELECT
+    'PD_Grade',
+    SUM(PD_Changed),
+    SUM(CASE WHEN PD_Changed=1 THEN Exposure ELSE 0 END)
+  FROM flags
+  UNION ALL
+  SELECT
+    'Industry_Code',
+    SUM(Ind_Changed),
+    SUM(CASE WHEN Ind_Changed=1 THEN Exposure ELSE 0 END)
+  FROM flags
+)
+SELECT
+  KDE_NAME,
+  Cnt_Changed,
+  CAST(Exp_Changed AS DECIMAL(18,2)) AS Exp_Changed,
+  RANK() OVER (ORDER BY Exp_Changed DESC) AS Rank_By_Exposure_Change
+FROM summary
+ORDER BY Exp_Changed DESC;
+
+
+
+
+
+WITH params AS (
+  SELECT DATE '2025-09-30' AS this_eom, DATE '2025-08-31' AS prev_eom
+),
+base AS (
+  SELECT
+    t.End_of_Month_Date,
+    t.Account_ID,
+    CAST(t.Exposure_Amount AS DECIMAL(18,2)) AS Exposure,
     t.RC_Code,
     t.PD_Grade,
     t.Industry_Code
