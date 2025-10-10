@@ -1,3 +1,136 @@
+-- Simple KDE MoM change analysis (Netezza)
+-- How to use:
+--   1) Set the two month-end dates in the params CTE (DATE 'YYYY-MM-DD')
+--   2) Point `FROM` at your month-end table
+--   3) List your KDE columns in the UNION ALL block (kde_long CTE)
+
+WITH params AS (
+  SELECT
+    DATE '2025-09-30' AS this_eom,          -- target month end
+    DATE '2025-08-31' AS prev_eom           -- prior month end
+),
+base AS (
+  /* Replace dbo.Your_MonthEnd_Table + columns with your real source/fields.
+     Required cols: End_of_Month_Date, Account_ID, Exposure, KDE columns.
+     Optional filter: Source_System_Balance > 0 (stabilize MoM) */
+  SELECT
+    t.End_of_Month_Date,
+    t.Account_ID,                               -- unique loan/instrument key
+    CAST(t.Exposure_Amount AS DECIMAL(18,2)) AS Exposure,
+    t.RC_Code,                                  -- KDE example 1
+    t.PD_Grade,                                 -- KDE example 2
+    t.Industry_Code,                            -- KDE example 3
+    t.Source_System_Balance
+  FROM dbo.Your_MonthEnd_Table t
+  JOIN params p
+    ON t.End_of_Month_Date IN (p.this_eom, p.prev_eom)
+  WHERE t.Source_System_Balance > 0             -- optional; remove if not desired
+),
+kde_long AS (
+  /* UNPIVOT via UNION ALL (Netezza-safe) — add/remove KDEs as needed */
+  SELECT End_of_Month_Date, Account_ID, Exposure, 'RC_Code'       AS KDE_NAME, RC_Code       AS KDE_VALUE FROM base
+  UNION ALL
+  SELECT End_of_Month_Date, Account_ID, Exposure, 'PD_Grade'      AS KDE_NAME, PD_Grade      AS KDE_VALUE FROM base
+  UNION ALL
+  SELECT End_of_Month_Date, Account_ID, Exposure, 'Industry_Code' AS KDE_NAME, Industry_Code AS KDE_VALUE FROM base
+),
+agg AS (
+  /* Aggregate by month + KDE */
+  SELECT
+    End_of_Month_Date,
+    KDE_NAME,
+    KDE_VALUE,
+    COUNT(DISTINCT Account_ID)       AS Cnt,
+    SUM(Exposure)                    AS Exp
+  FROM kde_long
+  GROUP BY End_of_Month_Date, KDE_NAME, KDE_VALUE
+),
+split AS (
+  /* Split into current vs prior sets for an easy FULL OUTER JOIN */
+  SELECT a.* FROM agg a JOIN params p ON a.End_of_Month_Date = p.this_eom
+),
+split_prev AS (
+  SELECT a.* FROM agg a JOIN params p ON a.End_of_Month_Date = p.prev_eom
+),
+joined AS (
+  SELECT
+    COALESCE(c.KDE_NAME,  p.KDE_NAME)  AS KDE_NAME,
+    COALESCE(c.KDE_VALUE, p.KDE_VALUE) AS KDE_VALUE,
+
+    /* Current month */
+    MAX(CASE WHEN c.End_of_Month_Date IS NOT NULL THEN c.End_of_Month_Date END) AS This_Month_End,
+    COALESCE(c.Cnt, 0) AS Cnt_Curr,
+    COALESCE(c.Exp, 0) AS Exp_Curr,
+
+    /* Prior month */
+    MAX(CASE WHEN p.End_of_Month_Date IS NOT NULL THEN p.End_of_Month_Date END) AS Prev_Month_End,
+    COALESCE(p.Cnt, 0) AS Cnt_Prev,
+    COALESCE(p.Exp, 0) AS Exp_Prev
+  FROM split c
+  FULL OUTER JOIN split_prev p
+    ON  c.KDE_NAME  = p.KDE_NAME
+    AND c.KDE_VALUE = p.KDE_VALUE
+  GROUP BY
+    COALESCE(c.KDE_NAME,  p.KDE_NAME),
+    COALESCE(c.KDE_VALUE, p.KDE_VALUE),
+    COALESCE(c.Cnt, 0), COALESCE(c.Exp, 0),
+    COALESCE(p.Cnt, 0), COALESCE(p.Exp, 0)
+),
+metrics AS (
+  SELECT
+    KDE_NAME,
+    KDE_VALUE,
+    Prev_Month_End,
+    This_Month_End,
+
+    Cnt_Prev,
+    Cnt_Curr,
+    (Cnt_Curr - Cnt_Prev)                                  AS Cnt_Delta,
+    CASE WHEN Cnt_Prev <> 0
+         THEN (Cnt_Curr - Cnt_Prev) * 1.0 / Cnt_Prev
+         ELSE NULL
+    END                                                    AS Cnt_Pct_Change,
+
+    CAST(Exp_Prev AS DECIMAL(18,2))                        AS Exp_Prev,
+    CAST(Exp_Curr AS DECIMAL(18,2))                        AS Exp_Curr,
+    CAST(Exp_Curr - Exp_Prev AS DECIMAL(18,2))             AS Exp_Delta,
+    CASE WHEN Exp_Prev <> 0
+         THEN (Exp_Curr - Exp_Prev) / Exp_Prev
+         ELSE NULL
+    END                                                    AS Exp_Pct_Change,
+
+    /* For ranking: absolute % change on exposure (tweak if you prefer count) */
+    ABS(CASE WHEN Exp_Prev <> 0
+             THEN (Exp_Curr - Exp_Prev) / Exp_Prev
+             ELSE NULL
+        END)                                               AS Exp_Pct_Change_Abs
+  FROM joined
+)
+SELECT
+  KDE_NAME,
+  KDE_VALUE,
+  Prev_Month_End,
+  This_Month_End,
+
+  Cnt_Prev,
+  Cnt_Curr,
+  Cnt_Delta,
+  Cnt_Pct_Change,
+
+  Exp_Prev,
+  Exp_Curr,
+  Exp_Delta,
+  Exp_Pct_Change,
+
+  RANK() OVER (ORDER BY Exp_Pct_Change_Abs DESC NULLS LAST) AS Rank_By_Abs_Exp_%Change
+FROM metrics
+-- Optional: limit to “material” changes
+-- WHERE (Exp_Pct_Change IS NULL OR ABS(Exp_Pct_Change) >= 0.05)
+ORDER BY Exp_Pct_Change_Abs DESC NULLS LAST, KDE_NAME, KDE_VALUE;
+
+
+
+
 Portfolio_R2_Avg :=
 VAR eom = MAX ( 'Date'[MonthEnd] )
 VAR base =
