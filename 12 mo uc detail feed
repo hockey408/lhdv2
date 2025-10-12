@@ -1,3 +1,13 @@
+tbl = "KDE_Summary3[#All]"   # note the [#All]
+df = xl(tbl).copy()
+print(df.shape, list(df.columns))
+
+
+df = xl("KDE_Summary3").copy()
+
+
+
+
 import pandas as pd
 
 tbl = "KDE_Summary3"  # <-- make sure this matches Table Design > Table Name exactly
