@@ -1,3 +1,25 @@
+import pandas as pd
+import numpy as np
+
+# Pull the Excel table into pandas
+df = xl("KDE_Summary").copy()
+
+# Basic typing & ordering
+df["this_eom"] = pd.to_datetime(df["this_eom"])
+num_cols = ["exp_changed","cnt_changed","cnt_changed_pct","exp_prev","exp_curr","exp_mom_delta","exp_mom_pct"]
+for c in num_cols:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+df = df.sort_values(["KDE_NAME","this_eom"]).reset_index(drop=True)
+
+# Show a peek
+df.tail(10)
+
+
+
+
+
 import matplotlib.pyplot as plt
 
 kde = xl("SelectedKDE") if "SelectedKDE" in dir() else None
