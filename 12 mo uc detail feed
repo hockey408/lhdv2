@@ -1,5 +1,23 @@
 import pandas as pd
 
+# data body (no headers) comes from the table name
+dat = xl("KDE_Summary3").copy()
+
+# headers come from the named range you just created
+hdr = xl("KDE_Summary3_headers").copy()
+header_row = hdr.iloc[0].astype(str).tolist()
+cols = [h.replace("\n"," ").strip().lower().replace(" ", "_") for h in header_row]
+
+dat.columns = cols
+
+print("rows:", len(dat), "| cols:", cols)
+dat  # returns full table with proper headers
+
+
+
+
+import pandas as pd
+
 TBL = "KDE_Summary3"   # exact Table Name from Table Design
 
 # Read the header row and the data body separately
