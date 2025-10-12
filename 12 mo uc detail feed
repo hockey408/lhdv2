@@ -1,3 +1,10 @@
+Error:Python
+KeyError: "Couldn't find a KDE identifier column. Expected one of ['kde_name', 'kde', 'key_data_element', 'field_name', 'attribute_name', 'attribute']. Got: ['next_rate_change_date', '2025-09-30_00:00:00', '71809863129.06', '100970', '0.583402', '173071', '171867', '-1204', '-0.006957', '92887577678.95', '93253920099.4', '366342420.45', '0.003944', '-1085822458.44966', '70338547296.7333', '7053855244.00191', '0.208583218882717', '1']"
+
+
+
+
+
 import pandas as pd
 import numpy as np
 
