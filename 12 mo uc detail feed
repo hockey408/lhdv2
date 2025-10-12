@@ -1,4 +1,27 @@
 import pandas as pd
+
+TBL = "KDE_Summary3"   # exact Table Name from Table Design
+
+# Read the header row and the data body separately
+hdr = xl(f"{TBL}[#Headers]").copy()
+dat = xl(f"{TBL}[#Data]").copy()
+
+# Convert the single header row to a list of strings, then clean the names
+header_row = hdr.iloc[0].astype(str).tolist()
+cols = [h.replace("\n"," ").strip().lower().replace(" ", "_") for h in header_row]
+
+# Apply headers to the data body
+dat.columns = cols
+
+# Show a quick summary and the FULL dataframe (no .head/.tail)
+print("rows:", len(dat), "cols:", cols)
+dat
+
+
+
+
+
+import pandas as pd
 df = xl("KDE_Summary3").copy()
 print(list(df.columns))
 df.head(3)
