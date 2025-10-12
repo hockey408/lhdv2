@@ -1,4 +1,13 @@
 import pandas as pd
+
+df = xl("KDE_Clean").copy()
+print("rows:", len(df))
+print("columns:", list(df.columns))
+df.head()
+
+
+
+import pandas as pd
 import numpy as np
 
 df = xl("KDE_Clean").copy()
