@@ -1,4 +1,49 @@
 import pandas as pd
+import numpy as np
+
+# Read the whole table (headers + data) via the named range
+raw = xl("KDE_Clean_all").copy()
+
+# Promote first row to headers
+header = raw.iloc[0].astype(str).tolist()
+df = raw.iloc[1:].copy()
+df.columns = [h.replace("\n"," ").strip().lower().replace(" ", "_") for h in header]
+
+# Sanity check
+print("rows:", len(df))
+print("cols:", list(df.columns))
+
+# Types
+df["this_eom"]    = pd.to_datetime(df["this_eom"], errors="coerce")
+for c in ["exp_changed","cnt_changed","cnt_changed_pct","exp_prev","exp_curr","exp_mom_delta","exp_mom_pct"]:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# Rolling features per KDE
+def add_roll(g):
+    g = g.sort_values("this_eom").copy()
+    g["exp_changed_ma12"] = g["exp_changed"].rolling(12, min_periods=3).mean()
+    g["exp_changed_sd12"] = g["exp_changed"].rolling(12, min_periods=3).std(ddof=0)
+    g["exp_changed_z12"]  = (g["exp_changed"] - g["exp_changed_ma12"]) / g["exp_changed_sd12"]
+    # simple slope
+    t = np.arange(len(g), dtype=float); y = g["exp_changed"].astype(float).to_numpy()
+    if len(g) >= 2 and np.isfinite(y).sum() >= 2:
+        t_c, y_c = t - t.mean(), y - np.nanmean(y)
+        denom = (t_c**2).sum()
+        slope = float((t_c*y_c).sum()/denom) if denom else np.nan
+    else:
+        slope = np.nan
+    g["exp_changed_trend_slope"] = slope
+    return g
+
+df_feat = df.groupby("kde_name", group_keys=False).apply(add_roll).reset_index(drop=True)
+df_feat
+
+
+
+
+
+import pandas as pd
 
 df = xl("KDE_Clean").copy()
 print("rows:", len(df))
