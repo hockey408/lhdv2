@@ -1,3 +1,567 @@
+/* ================= RC_Code Anomaly Detection — PBI-safe (no views, no POWER) ================ */
+
+WITH
+/* 0) Base */
+base AS (
+  SELECT
+    RC_CODE,
+    RC_DESCRIPTION,
+    CAST(END_OF_MONTH_DATE AS DATE)      AS month_end,
+    SUM(SOURCE_SYSTEM_BALANCE)::FLOAT8   AS bal_num
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+  GROUP BY RC_CODE, RC_DESCRIPTION, CAST(END_OF_MONTH_DATE AS DATE)
+),
+
+/* 1) Index and tmax; also prev_bal and Month/Quarter tags */
+idx AS (
+  SELECT
+    b.*,
+    ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY month_end) AS t
+  FROM base b
+),
+idx_tm AS (
+  SELECT
+    i.*,
+    MAX(i.t) OVER (PARTITION BY i.RC_CODE) AS tmax,
+    LAG(i.bal_num) OVER (PARTITION BY i.RC_CODE ORDER BY i.month_end) AS prev_bal,
+    EXTRACT(MONTH   FROM i.month_end)::INT AS mnum,
+    ((EXTRACT(MONTH FROM i.month_end)::INT + 2) / 3)::INT AS qnum
+  FROM idx i
+),
+
+/* 2) Evaluation windows */
+last12 AS ( SELECT * FROM idx_tm WHERE t >= tmax - 11 ),
+last36 AS ( SELECT * FROM idx_tm WHERE t >= tmax - 35 ),
+
+/* 3) Regression params (grouped) */
+reg12_params AS (
+  SELECT
+    RC_CODE,
+    COUNT(*)               AS n12,
+    SUM(t)::FLOAT8         AS sumx12,
+    SUM(bal_num)::FLOAT8   AS sumy12,
+    SUM(t*bal_num)::FLOAT8 AS sumxy12,
+    SUM(t*t)::FLOAT8       AS sumx2_12
+  FROM last12
+  GROUP BY RC_CODE
+),
+reg36_params AS (
+  SELECT
+    RC_CODE,
+    COUNT(*)               AS n36,
+    SUM(t)::FLOAT8         AS sumx36,
+    SUM(bal_num)::FLOAT8   AS sumy36,
+    SUM(t*bal_num)::FLOAT8 AS sumxy36,
+    SUM(t*t)::FLOAT8       AS sumx2_36
+  FROM last36
+  GROUP BY RC_CODE
+),
+
+/* 4) Regression fits */
+reg12_fit AS (
+  SELECT
+    l.RC_CODE, l.month_end, l.RC_DESCRIPTION, l.bal_num, l.t, l.qnum,
+    CASE
+      WHEN p.n12 >= 2 AND (p.n12*p.sumx2_12 - p.sumx12*p.sumx12) <> 0
+      THEN
+        ((p.n12*p.sumxy12 - p.sumx12*p.sumy12) / (p.n12*p.sumx2_12 - p.sumx12*p.sumx12)) * l.t
+        + ( (p.sumy12/p.n12) - ((p.n12*p.sumxy12 - p.sumx12*p.sumy12) / (p.n12*p.sumx2_12 - p.sumx12*p.sumx12)) * (p.sumx12/p.n12) )
+      ELSE NULL
+    END::FLOAT8 AS fc_reg12
+  FROM last12 l
+  JOIN reg12_params p USING (RC_CODE)
+),
+reg36_fit AS (
+  SELECT
+    l.RC_CODE, l.month_end, l.RC_DESCRIPTION, l.bal_num, l.t, l.qnum,
+    CASE
+      WHEN p.n36 >= 2 AND (p.n36*p.sumx2_36 - p.sumx36*p.sumx36) <> 0
+      THEN
+        ((p.n36*p.sumxy36 - p.sumx36*p.sumy36) / (p.n36*p.sumx2_36 - p.sumx36*p.sumx36)) * l.t
+        + ( (p.sumy36/p.n36) - ((p.n36*p.sumxy36 - p.sumx36*p.sumy36) / (p.n36*p.sumx2_36 - p.sumx36*p.sumx36)) * (p.sumx36/p.n36) )
+      ELSE NULL
+    END::FLOAT8 AS fc_reg36
+  FROM last36 l
+  JOIN reg36_params p USING (RC_CODE)
+),
+
+/* 5) Moving averages (then restrict) */
+ma_all AS (
+  SELECT
+    i.RC_CODE, i.month_end, i.RC_DESCRIPTION, i.bal_num, i.t, i.tmax, i.prev_bal, i.qnum,
+    AVG(i.bal_num) OVER (PARTITION BY i.RC_CODE ORDER BY i.month_end ROWS BETWEEN 5 PRECEDING AND CURRENT ROW)::FLOAT8  AS fc_ma6,
+    AVG(i.bal_num) OVER (PARTITION BY i.RC_CODE ORDER BY i.month_end ROWS BETWEEN 11 PRECEDING AND CURRENT ROW)::FLOAT8 AS fc_ma12
+  FROM idx_tm i
+),
+ma6_last12 AS (
+  SELECT m.RC_CODE, m.month_end, m.RC_DESCRIPTION, m.bal_num, m.t, m.prev_bal, m.qnum, m.fc_ma6
+  FROM ma_all m JOIN last12 l USING (RC_CODE, month_end)
+  WHERE m.fc_ma6 IS NOT NULL
+),
+ma12_last36 AS (
+  SELECT m.RC_CODE, m.month_end, m.RC_DESCRIPTION, m.bal_num, m.t, m.prev_bal, m.qnum, m.fc_ma12
+  FROM ma_all m JOIN last36 l USING (RC_CODE, month_end)
+  WHERE m.fc_ma12 IS NOT NULL
+),
+
+/* 6) Means/SST per window */
+mean12 AS ( SELECT RC_CODE, AVG(bal_num)::FLOAT8 AS mean_y12 FROM last12 GROUP BY RC_CODE ),
+mean36 AS ( SELECT RC_CODE, AVG(bal_num)::FLOAT8 AS mean_y36 FROM last36 GROUP BY RC_CODE ),
+
+sst12 AS (
+  SELECT l.RC_CODE, SUM( (l.bal_num - m.mean_y12) * (l.bal_num - m.mean_y12) )::FLOAT8 AS sst12
+  FROM last12 l JOIN mean12 m USING (RC_CODE)
+  GROUP BY l.RC_CODE
+),
+sst36 AS (
+  SELECT l.RC_CODE, SUM( (l.bal_num - m.mean_y36) * (l.bal_num - m.mean_y36) )::FLOAT8 AS sst36
+  FROM last36 l JOIN mean36 m USING (RC_CODE)
+  GROUP BY l.RC_CODE
+),
+
+/* 7) SSE + counts per model/window */
+agg_reg12 AS (
+  SELECT f.RC_CODE,
+         SUM( (f.bal_num - f.fc_reg12) * (f.bal_num - f.fc_reg12) )::FLOAT8 AS sse_reg12,
+         COUNT(*) AS n_reg12
+  FROM reg12_fit f
+  WHERE f.fc_reg12 IS NOT NULL
+  GROUP BY f.RC_CODE
+),
+agg_reg36 AS (
+  SELECT f.RC_CODE,
+         SUM( (f.bal_num - f.fc_reg36) * (f.bal_num - f.fc_reg36) )::FLOAT8 AS sse_reg36,
+         COUNT(*) AS n_reg36
+  FROM reg36_fit f
+  WHERE f.fc_reg36 IS NOT NULL
+  GROUP BY f.RC_CODE
+),
+agg_ma6_12 AS (
+  SELECT m.RC_CODE,
+         SUM( (m.bal_num - m.fc_ma6) * (m.bal_num - m.fc_ma6) )::FLOAT8 AS sse_ma6,
+         COUNT(*) AS n_ma6
+  FROM ma6_last12 m
+  GROUP BY m.RC_CODE
+),
+agg_ma12_36 AS (
+  SELECT m.RC_CODE,
+         SUM( (m.bal_num - m.fc_ma12) * (m.bal_num - m.fc_ma12) )::FLOAT8 AS sse_ma12,
+         COUNT(*) AS n_ma12
+  FROM ma12_last36 m
+  GROUP BY m.RC_CODE
+),
+
+/* 8) Metrics */
+metrics AS (
+  SELECT
+    x.RC_CODE,
+    s12.sst12,  s36.sst36,
+    ar12.sse_reg12, ar12.n_reg12,
+    ar36.sse_reg36, ar36.n_reg36,
+    am6.sse_ma6,    am6.n_ma6,
+    am12.sse_ma12,  am12.n_ma12,
+
+    CASE WHEN ar12.n_reg12 > 1 THEN SQRT(ar12.sse_reg12 / ar12.n_reg12) ELSE NULL END AS rmse_reg12,
+    CASE WHEN s12.sst12   > 0 THEN 1.0 - ar12.sse_reg12 / s12.sst12     ELSE NULL END AS r2_reg12,
+
+    CASE WHEN ar36.n_reg36 > 1 THEN SQRT(ar36.sse_reg36 / ar36.n_reg36) ELSE NULL END AS rmse_reg36,
+    CASE WHEN s36.sst36   > 0 THEN 1.0 - ar36.sse_reg36 / s36.sst36     ELSE NULL END AS r2_reg36,
+
+    CASE WHEN am6.n_ma6    > 1 THEN SQRT(am6.sse_ma6   / am6.n_ma6)     ELSE NULL END AS rmse_ma6,
+    CASE WHEN s12.sst12   > 0 THEN 1.0 - am6.sse_ma6   / s12.sst12      ELSE NULL END AS r2_ma6,
+
+    CASE WHEN am12.n_ma12  > 1 THEN SQRT(am12.sse_ma12 / am12.n_ma12)   ELSE NULL END AS rmse_ma12,
+    CASE WHEN s36.sst36   > 0 THEN 1.0 - am12.sse_ma12 / s36.sst36      ELSE NULL END AS r2_ma12
+  FROM (SELECT DISTINCT RC_CODE FROM idx_tm) x
+  LEFT JOIN sst12 s12          ON s12.RC_CODE = x.RC_CODE
+  LEFT JOIN sst36 s36          ON s36.RC_CODE = x.RC_CODE
+  LEFT JOIN agg_reg12 ar12     ON ar12.RC_CODE = x.RC_CODE
+  LEFT JOIN agg_reg36 ar36     ON ar36.RC_CODE = x.RC_CODE
+  LEFT JOIN agg_ma6_12 am6     ON am6.RC_CODE = x.RC_CODE
+  LEFT JOIN agg_ma12_36 am12   ON am12.RC_CODE = x.RC_CODE
+),
+
+/* 9) In-sample best model (fallback) */
+best_model_insample AS (
+  SELECT
+    m.RC_CODE,
+    CASE
+      WHEN (CASE WHEN m.r2_reg12 IS NOT NULL AND m.r2_reg12 >= 0.5 THEN m.rmse_reg12 ELSE 9e99 END)
+         <= (CASE WHEN m.r2_reg36 IS NOT NULL AND m.r2_reg36 >= 0.5 THEN m.rmse_reg36 ELSE 9e99 END)
+       AND (CASE WHEN m.r2_reg12 IS NOT NULL AND m.r2_reg12 >= 0.5 THEN m.rmse_reg12 ELSE 9e99 END)
+         <= COALESCE(m.rmse_ma6, 9e99)
+       AND (CASE WHEN m.r2_reg12 IS NOT NULL AND m.r2_reg12 >= 0.5 THEN m.rmse_reg12 ELSE 9e99 END)
+         <= COALESCE(m.rmse_ma12, 9e99)
+      THEN 'REG12'
+      WHEN (CASE WHEN m.r2_reg36 IS NOT NULL AND m.r2_reg36 >= 0.5 THEN m.rmse_reg36 ELSE 9e99 END)
+         <= COALESCE(m.rmse_ma6, 9e99)
+       AND (CASE WHEN m.r2_reg36 IS NOT NULL AND m.r2_reg36 >= 0.5 THEN m.rmse_reg36 ELSE 9e99 END)
+         <= COALESCE(m.rmse_ma12, 9e99)
+      THEN 'REG36'
+      WHEN COALESCE(m.rmse_ma6, 9e99) <= COALESCE(m.rmse_ma12, 9e99) THEN 'MA6'
+      ELSE 'MA12'
+    END AS Best_Model_InSample
+  FROM metrics m
+),
+
+/* 10) MoM & spike-aware seasonality (unchanged from your logic) */
+mom_base AS (
+  SELECT
+    t.*,
+    CASE WHEN t.prev_bal IS NULL THEN NULL ELSE (t.bal_num - t.prev_bal) END::FLOAT8 AS mom_abs,
+    CASE
+      WHEN t.prev_bal IS NULL THEN NULL
+      WHEN ABS(t.prev_bal) < 1.0 THEN (t.bal_num - t.prev_bal) / 1.0
+      ELSE (t.bal_num - t.prev_bal) / NULLIF(t.prev_bal,0)
+    END::FLOAT8 AS mom_pct
+  FROM idx_tm t
+),
+mom_stats AS (
+  SELECT RC_CODE, AVG(ABS(mom_abs))::FLOAT8 AS mean_mom_abs
+  FROM mom_base GROUP BY RC_CODE
+),
+mom_flag AS (
+  SELECT
+    b.RC_CODE, b.month_end, b.qnum, b.bal_num,
+    CASE
+      WHEN b.mom_pct IS NOT NULL AND ABS(b.mom_pct) >= 0.40 THEN 1
+      WHEN s.mean_mom_abs IS NOT NULL AND b.mom_abs IS NOT NULL AND ABS(b.mom_abs) >= 3.0 * s.mean_mom_abs THEN 1
+      ELSE 0
+    END AS is_spike
+  FROM mom_base b
+  LEFT JOIN mom_stats s USING (RC_CODE)
+),
+max_me AS ( SELECT RC_CODE, MAX(month_end) AS max_me FROM idx_tm GROUP BY RC_CODE ),
+recent_spike AS (
+  SELECT f.RC_CODE,
+         MAX(CASE WHEN f.month_end >= ADD_MONTHS(m.max_me, -5) AND f.is_spike = 1 THEN 1 ELSE 0 END) AS has_recent_spike
+  FROM mom_flag f
+  JOIN max_me m USING (RC_CODE)
+  GROUP BY f.RC_CODE
+),
+seasonal_q AS (
+  SELECT RC_CODE, qnum,
+         AVG(CASE WHEN is_spike = 0 THEN bal_num ELSE NULL END)::FLOAT8 AS avg_q_nospike,
+         SUM(CASE WHEN is_spike = 0 THEN 1 ELSE 0 END)                  AS n_q
+  FROM mom_flag GROUP BY RC_CODE, qnum
+),
+seasonal_all AS (
+  SELECT RC_CODE,
+         AVG(CASE WHEN is_spike = 0 THEN bal_num ELSE NULL END)::FLOAT8 AS avg_all_nospike
+  FROM mom_flag GROUP BY RC_CODE
+),
+seasonal_lifts AS (
+  SELECT
+    q.RC_CODE, q.qnum,
+    CASE WHEN a.avg_all_nospike IS NULL OR a.avg_all_nospike = 0 THEN 1.0
+         ELSE q.avg_q_nospike / a.avg_all_nospike END::FLOAT8 AS lift_raw,
+    q.n_q
+  FROM seasonal_q q
+  LEFT JOIN seasonal_all a ON a.RC_CODE = q.RC_CODE
+),
+seasonal_final AS (
+  SELECT
+    l.RC_CODE, l.qnum,
+    CASE WHEN l.lift_raw IS NULL THEN 1.0
+         WHEN l.lift_raw < 0.85 THEN 0.85
+         WHEN l.lift_raw > 1.15 THEN 1.15
+         ELSE l.lift_raw END::FLOAT8 AS lift_capped,
+    LEAST(1.0, COALESCE(l.n_q,0)/8.0)::FLOAT8 AS hist_weight
+  FROM seasonal_lifts l
+),
+seasonal_ready AS (
+  SELECT
+    f.RC_CODE, f.qnum,
+    (1.0 + (CASE WHEN r.has_recent_spike = 1 THEN 0.5 ELSE 1.0 END)
+          * f.hist_weight * (f.lift_capped - 1.0))::FLOAT8 AS lift_final
+  FROM seasonal_final f
+  LEFT JOIN recent_spike r USING (RC_CODE)
+),
+
+/* 11) Union forecasts */
+fits_union AS (
+  SELECT RC_CODE, month_end, RC_DESCRIPTION, bal_num, qnum, 'REG12' AS model, fc_reg12 AS forecast
+  FROM reg12_fit WHERE fc_reg12 IS NOT NULL
+  UNION ALL
+  SELECT RC_CODE, month_end, RC_DESCRIPTION, bal_num, qnum, 'REG36', fc_reg36
+  FROM reg36_fit WHERE fc_reg36 IS NOT NULL
+  UNION ALL
+  SELECT RC_CODE, month_end, RC_DESCRIPTION, bal_num, qnum, 'MA6',   fc_ma6
+  FROM ma6_last12 WHERE fc_ma6 IS NOT NULL
+  UNION ALL
+  SELECT RC_CODE, month_end, RC_DESCRIPTION, bal_num, qnum, 'MA12',  fc_ma12
+  FROM ma12_last36 WHERE fc_ma12 IS NOT NULL
+),
+
+/* 12) Apply seasonal lift */
+fits_seasonal AS (
+  SELECT
+    u.RC_CODE, u.month_end, u.RC_DESCRIPTION, u.bal_num, u.qnum, u.model,
+    (u.forecast * COALESCE(s.lift_final, 1.0))::FLOAT8 AS forecast_adj
+  FROM fits_union u
+  LEFT JOIN seasonal_ready s
+    ON s.RC_CODE = u.RC_CODE AND s.qnum = u.qnum
+),
+
+/* 13) Attach prev_bal and pos3_count */
+union_with_prev AS (
+  SELECT
+    f.*,
+    t.prev_bal,
+    SUM(CASE WHEN t.bal_num > 0 THEN 1 ELSE 0 END)
+      OVER (PARTITION BY t.RC_CODE ORDER BY t.month_end ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS pos3_count
+  FROM fits_seasonal f
+  JOIN idx_tm t ON t.RC_CODE = f.RC_CODE AND t.month_end = f.month_end
+),
+
+/* 14) Residual/MoM stats per (RC,Model) */
+union_enriched AS (
+  SELECT
+    x.*,
+    (x.bal_num - x.forecast_adj)::FLOAT8 AS resid,
+    ABS(x.bal_num - x.forecast_adj)::FLOAT8 AS abs_resid,
+    CASE WHEN x.prev_bal IS NULL THEN NULL ELSE ABS(x.bal_num - x.prev_bal) END::FLOAT8 AS mom_abs,
+    CASE
+      WHEN x.prev_bal IS NULL THEN NULL
+      WHEN ABS(x.prev_bal) < 1.0 THEN ABS(x.bal_num - x.prev_bal) / 1.0
+      ELSE ABS(x.bal_num - x.prev_bal) / ABS(x.prev_bal)
+    END::FLOAT8 AS mom_pct_abs,
+    AVG(ABS(x.bal_num - x.forecast_adj)) OVER (PARTITION BY x.RC_CODE, x.model) AS mean_abs_resid,
+    STDDEV_SAMP(ABS(x.bal_num - x.forecast_adj)) OVER (PARTITION BY x.RC_CODE, x.model) AS sd_abs_resid,
+    AVG(CASE WHEN x.prev_bal IS NULL THEN NULL ELSE ABS(x.bal_num - x.prev_bal) END)
+      OVER (PARTITION BY x.RC_CODE, x.model) AS mean_mom_abs,
+    STDDEV_SAMP(CASE WHEN x.prev_bal IS NULL THEN NULL ELSE ABS(x.bal_num - x.prev_bal) END)
+      OVER (PARTITION BY x.RC_CODE, x.model) AS sd_mom_abs,
+    AVG(CASE WHEN x.prev_bal IS NULL THEN NULL
+             WHEN ABS(x.prev_bal) < 1.0 THEN ABS(x.bal_num - x.prev_bal) / 1.0
+             ELSE ABS(x.bal_num - x.prev_bal) / ABS(x.prev_bal) END)
+      OVER (PARTITION BY x.RC_CODE, x.model) AS mean_mom_pct,
+    STDDEV_SAMP(CASE WHEN x.prev_bal IS NULL THEN NULL
+             WHEN ABS(x.prev_bal) < 1.0 THEN ABS(x.bal_num - x.prev_bal) / 1.0
+             ELSE ABS(x.bal_num - x.prev_bal) / ABS(x.prev_bal) END)
+      OVER (PARTITION BY x.RC_CODE, x.model) AS sd_mom_pct
+  FROM union_with_prev x
+),
+
+/* 15) Z-scores */
+union_with_z AS (
+  SELECT
+    e.*,
+    CASE WHEN e.sd_abs_resid IS NULL OR e.sd_abs_resid = 0 THEN 0
+         ELSE (e.abs_resid - e.mean_abs_resid) / e.sd_abs_resid END::FLOAT8 AS Z_Resid,
+    CASE WHEN e.sd_mom_abs   IS NULL OR e.sd_mom_abs   = 0 THEN 0
+         ELSE (e.mom_abs   - e.mean_mom_abs)   / e.sd_mom_abs   END::FLOAT8 AS Z_MoM_Abs,
+    CASE WHEN e.sd_mom_pct   IS NULL OR e.sd_mom_pct   = 0 THEN 0
+         ELSE (e.mom_pct_abs - e.mean_mom_pct) / e.sd_mom_pct   END::FLOAT8 AS Z_MoM_Pct
+  FROM union_enriched e
+),
+
+/* 16) Per-model RMSE for PI */
+rmse_by_model AS (
+  SELECT RC_CODE, 'REG12' AS model, rmse_reg12 AS rmse FROM metrics
+  UNION ALL SELECT RC_CODE, 'REG36', rmse_reg36 FROM metrics
+  UNION ALL SELECT RC_CODE, 'MA6',   rmse_ma6   FROM metrics
+  UNION ALL SELECT RC_CODE, 'MA12',  rmse_ma12  FROM metrics
+),
+
+/* 17) OOS MSE (last 3 months) */
+scored AS (
+  SELECT
+    z.RC_CODE, z.model, z.month_end, z.bal_num, z.forecast_adj,
+    ROW_NUMBER() OVER (PARTITION BY z.RC_CODE, z.model ORDER BY z.month_end DESC) AS rn_desc
+  FROM union_with_z z
+),
+oos AS (
+  SELECT
+    RC_CODE, model,
+    AVG( (bal_num - forecast_adj) * (bal_num - forecast_adj) ) AS mse_oos,
+    COUNT(*) AS n_oos
+  FROM scored
+  WHERE rn_desc <= 3
+  GROUP BY RC_CODE, model
+),
+/* Pivot OOS to columns to avoid correlated subqueries */
+oos_pivot AS (
+  SELECT
+    RC_CODE,
+    MAX(CASE WHEN model='REG12' THEN mse_oos END) AS mse_reg12,
+    MAX(CASE WHEN model='REG36' THEN mse_oos END) AS mse_reg36,
+    MAX(CASE WHEN model='MA6'   THEN mse_oos END) AS mse_ma6,
+    MAX(CASE WHEN model='MA12'  THEN mse_oos END) AS mse_ma12
+  FROM oos
+  GROUP BY RC_CODE
+),
+best_model_oos AS (
+  SELECT
+    m.RC_CODE,
+    CASE
+      /* prefer regressions only if their R2 gate passes */
+      WHEN m.r2_reg12 >= 0.5 AND (COALESCE(o.mse_reg12,9e99) <= COALESCE(o.mse_reg36,9e99))
+                               AND (COALESCE(o.mse_reg12,9e99) <= COALESCE(o.mse_ma6,9e99))
+                               AND (COALESCE(o.mse_reg12,9e99) <= COALESCE(o.mse_ma12,9e99))
+        THEN 'REG12'
+      WHEN m.r2_reg36 >= 0.5 AND (COALESCE(o.mse_reg36,9e99) <= COALESCE(o.mse_ma6,9e99))
+                               AND (COALESCE(o.mse_reg36,9e99) <= COALESCE(o.mse_ma12,9e99))
+        THEN 'REG36'
+      /* otherwise choose the better moving average */
+      WHEN COALESCE(o.mse_ma6,9e99) <= COALESCE(o.mse_ma12,9e99) THEN 'MA6'
+      ELSE 'MA12'
+    END AS Best_Model_OOS
+  FROM metrics m
+  LEFT JOIN oos_pivot o ON o.RC_CODE = m.RC_CODE
+),
+
+/* 18) Final model: OOS if present else in-sample */
+best_model_final AS (
+  SELECT
+    i.RC_CODE,
+    COALESCE(o.Best_Model_OOS, i.Best_Model_InSample) AS Best_Model
+  FROM best_model_insample i
+  LEFT JOIN best_model_oos o ON o.RC_CODE = i.RC_CODE
+),
+
+/* 19) Final rows with PI */
+final AS (
+  SELECT
+    z.RC_CODE,
+    z.RC_DESCRIPTION,
+    z.month_end,
+    bm.Best_Model,
+    z.prev_bal,
+    z.forecast_adj       AS Forecast_Selected,
+    z.bal_num            AS Actual,
+    (z.bal_num - z.forecast_adj)::FLOAT8 AS Resid,
+    ABS(z.bal_num - z.forecast_adj)::FLOAT8 AS AbsResid,
+    CASE WHEN z.prev_bal IS NULL THEN NULL ELSE ABS(z.bal_num - z.prev_bal) END::FLOAT8 AS MoM_Abs,
+    CASE
+      WHEN z.prev_bal IS NULL THEN NULL
+      WHEN ABS(z.prev_bal) < 1.0 THEN ABS(z.bal_num - z.prev_bal) / 1.0
+      ELSE ABS(z.bal_num - z.prev_bal) / ABS(z.prev_bal)
+    END::FLOAT8 AS MoM_Pct_Abs,
+    z.Z_Resid, z.Z_MoM_Abs, z.Z_MoM_Pct,
+    CASE WHEN z.pos3_count >= 1 THEN 1 ELSE 0 END AS Include3_AnyPos,
+    r.rmse,
+    (z.forecast_adj - (1.96 * r.rmse))::FLOAT8 AS PI_Lo,
+    (z.forecast_adj + (1.96 * r.rmse))::FLOAT8 AS PI_Hi
+  FROM union_with_z z
+  JOIN best_model_final bm
+    ON bm.RC_CODE = z.RC_CODE AND z.model = bm.Best_Model
+  LEFT JOIN rmse_by_model r
+    ON r.RC_CODE = z.RC_CODE AND r.model = bm.Best_Model
+),
+
+/* 20) Per-RC P95 via rank (no percentile func) */
+p95_abs AS (
+  SELECT RC_CODE, MIN(AbsResid) AS p95_abs_resid
+  FROM (
+    SELECT RC_CODE, AbsResid,
+           ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY AbsResid) AS rn,
+           COUNT(*)    OVER (PARTITION BY RC_CODE)                     AS n
+    FROM final
+    WHERE AbsResid IS NOT NULL
+  ) q
+  WHERE rn >= CEIL(0.95 * n)
+  GROUP BY RC_CODE
+),
+p95_mom AS (
+  SELECT RC_CODE, MIN(MoM_Abs) AS p95_mom_abs
+  FROM (
+    SELECT RC_CODE, MoM_Abs,
+           ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY MoM_Abs) AS rn,
+           COUNT(*)    OVER (PARTITION BY RC_CODE)                    AS n
+    FROM final
+    WHERE MoM_Abs IS NOT NULL
+  ) q
+  WHERE rn >= CEIL(0.95 * n)
+  GROUP BY RC_CODE
+),
+
+/* 21) Severity (robust scaling) */
+sev AS (
+  SELECT
+    f.*,
+    ( 0.25 * ( f.AbsResid / NULLIF(p95a.p95_abs_resid,0) )
+    + 0.65 * ABS(f.Z_Resid)
+    + 0.07 * ABS(f.Z_MoM_Abs)
+    + 0.03 * ( f.MoM_Abs / NULLIF(p95m.p95_mom_abs,0) )
+    )::FLOAT8 AS Severity_Raw
+  FROM final f
+  LEFT JOIN p95_abs p95a ON p95a.RC_CODE = f.RC_CODE
+  LEFT JOIN p95_mom p95m ON p95m.RC_CODE = f.RC_CODE
+),
+sev_scaled AS (
+  SELECT
+    s.*,
+    ROUND(100.0 * (1.0 - EXP( - CASE WHEN s.Severity_Raw IS NULL OR s.Severity_Raw < 0 THEN 0 ELSE s.Severity_Raw END )), 0)::INTEGER AS Severity_0_100
+  FROM sev s
+),
+
+/* 22) Persistent outlier (3 of last 6 months, threshold 70) */
+pers AS (
+  SELECT
+    x.*,
+    SUM(CASE WHEN x.Severity_0_100 >= 70 THEN 1 ELSE 0 END) OVER (
+      PARTITION BY x.RC_CODE
+      ORDER BY x.month_end
+      ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+    ) AS outlier_6m_sum
+  FROM sev_scaled x
+),
+pers_flag AS (
+  SELECT
+    p.*,
+    CASE WHEN p.outlier_6m_sum >= 3 THEN 1 ELSE 0 END AS Persistent_Outlier_3of6
+  FROM pers p
+),
+
+/* 23) Reason code without GREATEST */
+reasoned AS (
+  SELECT
+    p.*,
+    CASE
+      WHEN ABS(p.Z_Resid) >= CASE
+                               WHEN ABS(COALESCE(p.Z_MoM_Abs,0.0)) >= ABS(COALESCE(p.MoM_Abs,0.0)) THEN ABS(COALESCE(p.Z_MoM_Abs,0.0))
+                               ELSE ABS(COALESCE(p.MoM_Abs,0.0))
+                             END
+        THEN 'Residual spike vs model'
+      WHEN ABS(COALESCE(p.Z_MoM_Abs,0.0)) >= 2 THEN 'Unusual MoM swing'
+      WHEN p.MoM_Abs IS NOT NULL AND p95m.p95_mom_abs IS NOT NULL AND p.MoM_Abs > p95m.p95_mom_abs THEN 'Large absolute MoM'
+      ELSE 'Mixed'
+    END AS Reason_Code
+  FROM pers_flag p
+  LEFT JOIN p95_mom p95m ON p95m.RC_CODE = p.RC_CODE
+)
+
+SELECT
+  RC_CODE,
+  RC_DESCRIPTION,
+  month_end,
+  Best_Model,
+  Forecast_Selected,
+  Actual,
+  Resid,
+  AbsResid,
+  MoM_Abs,
+  MoM_Pct_Abs,
+  Z_Resid,
+  Z_MoM_Abs,
+  Z_MoM_Pct,
+  rmse,
+  PI_Lo,
+  PI_Hi,
+  Severity_0_100,
+  Persistent_Outlier_3of6,
+  Reason_Code
+FROM reasoned
+ORDER BY RC_CODE, month_end;
+
+
+
+
+
+
 /* ======================== RC_Code Anomaly Detection (Enhanced, single query) =========================
    - Models: REG12, REG36, MA6, MA12 with best model chosen by out-of-sample (last 3 months) RMSE,
              falling back to your original in-sample rule if needed.
