@@ -1,6 +1,76 @@
 import pandas as pd
 import numpy as np
 
+# ---- 1) Load the Excel table ----
+# If your table name isn't KDE_Summary, change it here:
+df = xl("KDE_Summary").copy()
+
+# Show raw headers (helps debugging)
+print("Raw columns:", list(df.columns))
+
+# ---- 2) Normalize headers safely (handles non-string headers) ----
+def to_str(x):
+    try:
+        return "_".join(map(str, x)).strip() if isinstance(x, tuple) else str(x).strip()
+    except Exception:
+        return str(x)
+
+df.columns = [to_str(c) for c in df.columns]
+df.columns = [c.replace("\n"," ") for c in df.columns]  # remove line breaks from header cells
+df.columns = [c.lower().replace(" ", "_") for c in df.columns]
+
+print("Normalized columns:", list(df.columns))
+
+# ---- 3) Find the EOM/date column (handles THIS_EOM and common aliases) ----
+aliases = [
+    "this_eom","end_of_month_date","end_of_month","month_end",
+    "eom","eom_date","as_of_eom","as_of_date","report_eom"
+]
+date_col = next((c for c in aliases if c in df.columns), None)
+
+# If not found by name, try to detect a date-like column
+if date_col is None:
+    name_candidates = [c for c in df.columns if any(k in c for k in ["date","eom","month"])]
+    parsed = []
+    for c in name_candidates + list(df.columns):
+        try:
+            s = pd.to_datetime(df[c], errors="coerce")
+            if s.notna().sum() >= max(3, int(0.5*len(s))):  # at least half the rows look like dates
+                parsed.append((c, s))
+        except Exception:
+            pass
+    if parsed:
+        date_col, s = parsed[0]
+        df["this_eom"] = s
+    else:
+        raise KeyError(f"Could not find a date column to use as 'this_eom'. "
+                       f"Available columns: {list(df.columns)}")
+else:
+    df["this_eom"] = pd.to_datetime(df[date_col], errors="coerce")
+
+print("Using date column as this_eom:", date_col)
+
+# ---- 4) Make sure key numeric columns are numeric (skip if absent) ----
+num_cols = ["exp_changed","cnt_changed","cnt_changed_pct","exp_prev","exp_curr","exp_mom_delta","exp_mom_pct"]
+for c in num_cols:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# ---- 5) Sort & preview ----
+key_name = "kde_name" if "kde_name" in df.columns else (next((c for c in df.columns if "kde" in c and "name" in c), None))
+if key_name is None:
+    print("Warning: couldn't find KDE name column (expected 'KDE_NAME'). Continuing without it.")
+    df = df.sort_values(["this_eom"]).reset_index(drop=True)
+else:
+    df = df.sort_values([key_name, "this_eom"]).reset_index(drop=True)
+
+df.tail(10)
+
+
+
+import pandas as pd
+import numpy as np
+
 df = xl("KDE_Summary").copy()
 
 # convert all headers to lowercase
