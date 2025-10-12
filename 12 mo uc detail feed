@@ -1,3 +1,34 @@
+import matplotlib.pyplot as plt
+
+kde = xl("SelectedKDE") if "SelectedKDE" in dir() else None
+if not kde:
+    kde = df_feat["KDE_NAME"].iloc[0]
+
+g = df_feat[df_feat["KDE_NAME"]==kde].sort_values("this_eom")
+
+plt.figure()
+plt.plot(g["this_eom"], g["exp_changed"], label="exp_changed")
+if g["exp_changed_ma12"].notna().any():
+    plt.plot(g["this_eom"], g["exp_changed_ma12"], linestyle=":", label="MA12")
+# add a straight trend line from the slope if you want a visual guide
+if len(g) >= 2 and np.isfinite(g["exp_changed"]).sum() >= 2:
+    t = np.arange(len(g), dtype=float)
+    y = g["exp_changed"].astype(float).values
+    # reconstruct fit using mean-centered form with the slope we computed
+    slope = g["exp_changed_trend_slope"].iloc[-1]
+    y_hat = (t - t.mean()) * slope + np.nanmean(y)
+    plt.plot(g["this_eom"], y_hat, linestyle="--", label="trend")
+
+plt.title(f"{kde} — exp_changed, MA12 & trend")
+plt.xlabel("Month End")
+plt.ylabel("Exposure changed")
+plt.legend()
+plt.tight_layout()
+
+
+
+
+
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 
