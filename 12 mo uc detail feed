@@ -1,4 +1,47 @@
 import pandas as pd
+import numpy as np
+
+df = xl("KDE_Clean").copy()
+# normalize in case of variations
+df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+
+# required
+for col in ["kde_name","this_eom","exp_changed"]:
+    if col not in df.columns:
+        raise KeyError(f"Missing column: {col}. Got: {list(df.columns)}")
+
+# types
+df["this_eom"]    = pd.to_datetime(df["this_eom"], errors="coerce")
+df["exp_changed"] = pd.to_numeric(df["exp_changed"], errors="coerce")
+
+# rolling features per KDE
+def add_roll(g):
+    g = g.sort_values("this_eom").copy()
+    g["exp_changed_ma12"] = g["exp_changed"].rolling(12, min_periods=3).mean()
+    g["exp_changed_sd12"] = g["exp_changed"].rolling(12, min_periods=3).std(ddof=0)
+    g["exp_changed_z12"]  = (g["exp_changed"] - g["exp_changed_ma12"]) / g["exp_changed_sd12"]
+    # simple OLS slope (no sklearn): slope = cov(t,y)/var(t)
+    t = np.arange(len(g), dtype=float)
+    y = g["exp_changed"].to_numpy(dtype=float)
+    if len(g) >= 2 and np.isfinite(y).sum() >= 2:
+        t_c = t - t.mean()
+        y_c = y - np.nanmean(y)
+        denom = (t_c**2).sum()
+        slope = float((t_c * y_c).sum() / denom) if denom else np.nan
+    else:
+        slope = np.nan
+    g["exp_changed_trend_slope"] = slope
+    return g
+
+df_feat = df.groupby("kde_name", group_keys=False).apply(add_roll).reset_index(drop=True)
+
+# return full table; convert to an Excel Table named KDE_Features after it renders
+df_feat
+
+
+
+
+import pandas as pd
 
 # get data body
 dat = xl("KDE_Summary3").copy()
