@@ -1,3 +1,11 @@
+import pandas as pd
+df = xl("KDE_Summary3").copy()
+print(list(df.columns))
+df.head(3)
+
+
+
+
 tbl = "KDE_Summary3[#All]"   # note the [#All]
 df = xl(tbl).copy()
 print(df.shape, list(df.columns))
