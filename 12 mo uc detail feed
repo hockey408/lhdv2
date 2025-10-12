@@ -1,3 +1,16 @@
+import pandas as pd
+from sklearn.linear_model import LinearRegression
+
+df = dataset
+df = df.groupby('KDE_NAME', as_index=False)['exp_changed'].mean()
+model = LinearRegression().fit(df.index.values.reshape(-1,1), df['exp_changed'])
+df['trend'] = model.coef_[0]
+
+
+
+
+
+
 -- HISTORY + TRENDS (Netezza-safe, no POWER(), no analytic REGR_*)
 -- Ranking: 1) exp_changed DESC, 2) cnt_changed_pct DESC (NULLs last)
 
