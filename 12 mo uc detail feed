@@ -1,6 +1,65 @@
 import pandas as pd
 import numpy as np
 
+df_raw = xl("KDE_Summary").copy()
+print("raw rows:", len(df_raw))
+
+# If headers came through as numbers, promote first row to headers
+if all(isinstance(c, (int, float)) for c in df_raw.columns):
+    header = df_raw.iloc[0].tolist()
+    df = df_raw.iloc[1:].copy()
+    df.columns = [str(x).strip() if pd.notna(x) else f"col_{i}" for i, x in enumerate(header)]
+else:
+    df = df_raw.copy()
+
+# normalize headers
+def norm(c): return str(c).replace("\n"," ").strip().lower().replace(" ", "_")
+df.columns = [norm(c) for c in df.columns]
+print("normalized columns:", list(df.columns))
+print("rows after normalization:", len(df))
+
+# find key columns
+kde_candidates  = ["kde_name","kde","key_data_element","field_name","attribute_name","attribute"]
+date_candidates = ["this_eom","end_of_month_date","end_of_month","month_end","eom","eom_date","as_of_eom","as_of_date"]
+
+kde_col  = next((c for c in kde_candidates if c in df.columns), None)
+date_col = next((c for c in date_candidates if c in df.columns), None)
+
+if kde_col is None:
+    raise KeyError(f"Couldn't find a KDE identifier column. Expected one of {kde_candidates}. Got: {list(df.columns)}")
+
+if date_col is None:
+    # try auto-detect a date-like column
+    for c in df.columns:
+        s = pd.to_datetime(df[c], errors="coerce")
+        if s.notna().sum() >= max(3, int(0.5*len(s))):
+            df["this_eom"] = s
+            date_col = "this_eom"
+            break
+else:
+    df["this_eom"] = pd.to_datetime(df[date_col], errors="coerce")
+
+# type-cast numerics where present
+for c in ["exp_changed","cnt_changed","cnt_changed_pct","exp_prev","exp_curr","exp_mom_delta","exp_mom_pct"]:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# sort for readability
+df = df.sort_values([kde_col, "this_eom"]).reset_index(drop=True)
+
+print("kde column:", kde_col, "| date column:", "this_eom")
+print("final row count:", len(df))
+
+# IMPORTANT: return the full DataFrame (no .head() / .tail())
+df
+
+
+
+
+
+import pandas as pd
+import numpy as np
+
 # ---- 1) Load the Excel table ----
 # If your table name isn't KDE_Summary, change it here:
 df = xl("KDE_Summary").copy()
