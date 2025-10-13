@@ -1,3 +1,160 @@
+/* 1) Flatten per KDE (UNION ALL) with explicit VARCHAR sizes */
+kde_flat AS (
+  SELECT 'CRE_FLAG' AS kde_name, Account_Identifier, month_end, exposure,
+         CAST(CRE_FLAG AS VARCHAR(255)) AS kde_value,
+         LAG(CAST(CRE_FLAG AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end) AS prev_kde_value,
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end) AS prev_exposure
+  FROM base
+  UNION ALL
+  SELECT 'PD_GRADE', Account_Identifier, month_end, exposure,
+         CAST(PD_GRADE AS VARCHAR(255)),
+         LAG(CAST(PD_GRADE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'FDIC_CALL_CODE', Account_Identifier, month_end, exposure,
+         CAST(FDIC_CALL_CODE AS VARCHAR(255)),
+         LAG(CAST(FDIC_CALL_CODE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'NON_ACCRUAL_FLAG', Account_Identifier, month_end, exposure,
+         CAST(NON_ACCRUAL_FLAG AS VARCHAR(255)),
+         LAG(CAST(NON_ACCRUAL_FLAG AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'INDUSTRY_CODE', Account_Identifier, month_end, exposure,
+         CAST(INDUSTRY_CODE AS VARCHAR(255)),
+         LAG(CAST(INDUSTRY_CODE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'LTV', Account_Identifier, month_end, exposure,
+         CAST(LTV AS VARCHAR(255)),
+         LAG(CAST(LTV AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'GL_ACCOUNT_CODE', Account_Identifier, month_end, exposure,
+         CAST(GL_ACCOUNT_CODE AS VARCHAR(255)),
+         LAG(CAST(GL_ACCOUNT_CODE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'DAYS_PAST_DUE', Account_Identifier, month_end, exposure,
+         CAST(DAYS_PAST_DUE AS VARCHAR(255)),
+         LAG(CAST(DAYS_PAST_DUE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'RBC_CODE', Account_Identifier, month_end, exposure,
+         CAST(RBC_CODE AS VARCHAR(255)),
+         LAG(CAST(RBC_CODE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'MATURITY_DATE', Account_Identifier, month_end, exposure,
+         CAST(MATURITY_DATE AS VARCHAR(255)),
+         LAG(CAST(MATURITY_DATE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'NAICS_CODE', Account_Identifier, month_end, exposure,
+         CAST(NAICS_CODE AS VARCHAR(255)),
+         LAG(CAST(NAICS_CODE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'RC_CODE', Account_Identifier, month_end, exposure,
+         CAST(RC_CODE AS VARCHAR(255)),
+         LAG(CAST(RC_CODE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'REVOLVING_CODE', Account_Identifier, month_end, exposure,
+         CAST(REVOLVING_CODE AS VARCHAR(255)),
+         LAG(CAST(REVOLVING_CODE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'NEXT_RATE_CHANGE_DATE', Account_Identifier, month_end, exposure,
+         CAST(NEXT_RATE_CHANGE_DATE AS VARCHAR(255)),
+         LAG(CAST(NEXT_RATE_CHANGE_DATE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'ACCOUNT_OFFICER_NAME', Account_Identifier, month_end, exposure,
+         CAST(ACCOUNT_OFFICER_NAME AS VARCHAR(255)),
+         LAG(CAST(ACCOUNT_OFFICER_NAME AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'BOOK_DATE', Account_Identifier, month_end, exposure,
+         CAST(BOOK_DATE AS VARCHAR(255)),
+         LAG(CAST(BOOK_DATE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'BUS_UNIT_CODE', Account_Identifier, month_end, exposure,
+         CAST(BUS_UNIT_CODE AS VARCHAR(255)),
+         LAG(CAST(BUS_UNIT_CODE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'COLLATERAL_CODE', Account_Identifier, month_end, exposure,
+         CAST(COLLATERAL_CODE AS VARCHAR(255)),
+         LAG(CAST(COLLATERAL_CODE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'ISSUE_DATE', Account_Identifier, month_end, exposure,
+         CAST(ISSUE_DATE AS VARCHAR(255)),
+         LAG(CAST(ISSUE_DATE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'OCCUPANCY_CODE', Account_Identifier, month_end, exposure,
+         CAST(OCCUPANCY_CODE AS VARCHAR(255)),
+         LAG(CAST(OCCUPANCY_CODE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'PAST_DUE_FLAG', Account_Identifier, month_end, exposure,
+         CAST(PAST_DUE_FLAG AS VARCHAR(255)),
+         LAG(CAST(PAST_DUE_FLAG AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'PROD_HIER_LEVEL_5', Account_Identifier, month_end, exposure,
+         CAST(PROD_HIER_LEVEL_5 AS VARCHAR(255)),
+         LAG(CAST(PROD_HIER_LEVEL_5 AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'PURPOSE_CODE', Account_Identifier, month_end, exposure,
+         CAST(PURPOSE_CODE AS VARCHAR(255)),
+         LAG(CAST(PURPOSE_CODE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'STATUS_CODE', Account_Identifier, month_end, exposure,
+         CAST(STATUS_CODE AS VARCHAR(255)),
+         LAG(CAST(STATUS_CODE AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL
+  SELECT 'RISK_UNIT', Account_Identifier, month_end, exposure,
+         CAST(RISK_UNIT AS VARCHAR(255)),
+         LAG(CAST(RISK_UNIT AS VARCHAR(255))) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure) OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+)
+
+
+
+
+
 /* ============== KDE MoM Changes — Full History (Netezza-safe) ==============
    - Per KDE x month: totals, CHANGES-ONLY deltas (incl. NULL flips), MoM%, rolling stats,
      Z-scores, Severity 0–100, and per-month ranks.
