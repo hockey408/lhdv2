@@ -1,4 +1,24 @@
 import pandas as pd
+
+latest = df["month_end"].max()
+d = df[df["month_end"]==latest].copy()
+top = d.sort_values("severity_0_100", ascending=False).head(5)
+
+lines = [f"Month: {latest.date()}"]
+lines.append(f"Outside PI: {int((d['outside_pi']).sum())} of {len(d)} RCs")
+lines.append(f"Persistent (3 of 6): {int((d['persistent_outlier_3of6']==1).sum())}")
+
+for _, r in top.iterrows():
+    lines.append(f"- {r['rc_code']}: Sev {int(r['severity_0_100'])} — {r.get('reason_code','')}; "
+                 f\"Δ vs Fcst = {r['actual']-r['forecast_selected']:.0f}; "
+                 f"MoM=$ {r.get('mom_abs',float('nan')):.0f}; Outside PI={bool(r['outside_pi'])}\")
+
+"\n".join(lines)
+
+
+
+
+import pandas as pd
 import numpy as np
 
 # assumes df already loaded/cleaned from Step 1 and has lowercase headers
