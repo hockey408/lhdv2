@@ -1,4 +1,54 @@
 import pandas as pd
+
+d = df.copy()
+latest = d["month_end"].max()
+top = (
+    d[d["month_end"]==latest]
+    .sort_values("severity_0_100", ascending=False)
+    .loc[:, ["rc_code","rc_description","month_end","severity_0_100","outside_pi",
+             "persistent_outlier_3of6","reason_code","z_resid","z_mom_abs","mom_abs"]]
+    .head(25)
+    .reset_index(drop=True)
+)
+top
+
+
+
+import pandas as pd
+import numpy as np
+
+g = df.groupby("rc_code", as_index=False)
+
+def _corr(a,b):
+    a = pd.to_numeric(a, errors="coerce"); b = pd.to_numeric(b, errors="coerce")
+    m = pd.DataFrame({"a":a,"b":b}).dropna()
+    if len(m) < 3: return np.nan
+    return m["a"].corr(m["b"])
+
+diag = g.apply(lambda x: pd.Series({
+    "corr_resid_momabs": _corr(x["absresid"], x["mom_abs"]) if "absresid" in x and "mom_abs" in x else np.nan,
+    "corr_resid_mompct": _corr(x["absresid"], x["mom_pct_abs"]) if "mom_pct_abs" in x else np.nan
+})).reset_index(drop=True)
+
+# Drift signal: 3-mo MSE / prior 9-mo MSE
+df_sorted = df.sort_values(["rc_code","month_end"]).copy()
+df_sorted["se"] = (df_sorted["actual"] - df_sorted["forecast_selected"])**2
+df_sorted["mse_curr3"] = df_sorted.groupby("rc_code")["se"].rolling(3, min_periods=2).mean().reset_index(level=0, drop=True)
+df_sorted["mse_prev9"] = df_sorted.groupby("rc_code")["se"].rolling(12, min_periods=10).mean().reset_index(level=0, drop=True).shift(3)
+drift = (df_sorted
+         .assign(break_ratio=lambda x: np.where((x["mse_prev9"]>0)&np.isfinite(x["mse_prev9"]),
+                                                x["mse_curr3"]/x["mse_prev9"], np.nan))
+         .groupby("rc_code", as_index=False)
+         .apply(lambda x: x.loc[x["month_end"].idxmax(), ["rc_code","break_ratio"]])
+         .droplevel(0)
+)
+diag = diag.merge(drift, on="rc_code", how="left")
+diag
+
+
+
+
+import pandas as pd
 import numpy as np
 
 # If you created RC_Anom_Clean, read that; otherwise reuse df from above cell
