@@ -1,3 +1,307 @@
+/* ============== KDE MoM Changes — Full History (Netezza-safe) ==============
+   - Per KDE x month: totals, CHANGES-ONLY deltas (incl. NULL flips), MoM%, rolling stats,
+     Z-scores, Severity 0–100, and per-month ranks.
+   - No POWER; no views; ANSI/Netezza functions only.
+   ========================================================================== */
+
+WITH
+/* 0) Base monthly rows filtered to Total Loans */
+base AS (
+  SELECT
+    Account_Identifier,
+    CAST(END_OF_MONTH_DATE AS DATE)   AS month_end,
+    SOURCE_SYSTEM_BALANCE::FLOAT8     AS exposure,
+    -- ---- KDE columns ----
+    CRE_FLAG, PD_GRADE, FDIC_CALL_CODE, NON_ACCRUAL_FLAG, INDUSTRY_CODE, LTV,
+    GL_ACCOUNT_CODE, DAYS_PAST_DUE, RBC_CODE, MATURITY_DATE, NAICS_CODE, RC_CODE,
+    REVOLVING_CODE, NEXT_RATE_CHANGE_DATE, ACCOUNT_OFFICER_NAME, BOOK_DATE,
+    BUS_UNIT_CODE, COLLATERAL_CODE, ISSUE_DATE, OCCUPANCY_CODE, PAST_DUE_FLAG,
+    PROD_HIER_LEVEL_5, PURPOSE_CODE, STATUS_CODE, RISK_UNIT
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+
+/* 1) Flatten per KDE (UNION ALL pattern) with current & previous values and exposures */
+kde_flat AS (
+  SELECT 'CRE_FLAG' AS kde_name, Account_Identifier, month_end, exposure,
+         CRE_FLAG::VARCHAR AS kde_value,
+         LAG(CRE_FLAG::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end) AS prev_kde_value,
+         LAG(exposure)        OVER (PARTITION BY Account_Identifier ORDER BY month_end) AS prev_exposure
+  FROM base
+  UNION ALL SELECT 'PD_GRADE', Account_Identifier, month_end, exposure,
+         PD_GRADE::VARCHAR,
+         LAG(PD_GRADE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)          OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'FDIC_CALL_CODE', Account_Identifier, month_end, exposure,
+         FDIC_CALL_CODE::VARCHAR,
+         LAG(FDIC_CALL_CODE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)                OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'NON_ACCRUAL_FLAG', Account_Identifier, month_end, exposure,
+         NON_ACCRUAL_FLAG::VARCHAR,
+         LAG(NON_ACCRUAL_FLAG::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)                  OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'INDUSTRY_CODE', Account_Identifier, month_end, exposure,
+         INDUSTRY_CODE::VARCHAR,
+         LAG(INDUSTRY_CODE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)               OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'LTV', Account_Identifier, month_end, exposure,
+         LTV::VARCHAR,
+         LAG(LTV::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)     OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'GL_ACCOUNT_CODE', Account_Identifier, month_end, exposure,
+         GL_ACCOUNT_CODE::VARCHAR,
+         LAG(GL_ACCOUNT_CODE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)                 OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'DAYS_PAST_DUE', Account_Identifier, month_end, exposure,
+         DAYS_PAST_DUE::VARCHAR,
+         LAG(DAYS_PAST_DUE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)               OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'RBC_CODE', Account_Identifier, month_end, exposure,
+         RBC_CODE::VARCHAR,
+         LAG(RBC_CODE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)          OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'MATURITY_DATE', Account_Identifier, month_end, exposure,
+         MATURITY_DATE::VARCHAR,
+         LAG(MATURITY_DATE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)               OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'NAICS_CODE', Account_Identifier, month_end, exposure,
+         NAICS_CODE::VARCHAR,
+         LAG(NAICS_CODE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)            OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'RC_CODE', Account_Identifier, month_end, exposure,
+         RC_CODE::VARCHAR,
+         LAG(RC_CODE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)         OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'REVOLVING_CODE', Account_Identifier, month_end, exposure,
+         REVOLVING_CODE::VARCHAR,
+         LAG(REVOLVING_CODE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)                OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'NEXT_RATE_CHANGE_DATE', Account_Identifier, month_end, exposure,
+         NEXT_RATE_CHANGE_DATE::VARCHAR,
+         LAG(NEXT_RATE_CHANGE_DATE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)                       OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'ACCOUNT_OFFICER_NAME', Account_Identifier, month_end, exposure,
+         ACCOUNT_OFFICER_NAME::VARCHAR,
+         LAG(ACCOUNT_OFFICER_NAME::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)                      OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'BOOK_DATE', Account_Identifier, month_end, exposure,
+         BOOK_DATE::VARCHAR,
+         LAG(BOOK_DATE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)           OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'BUS_UNIT_CODE', Account_Identifier, month_end, exposure,
+         BUS_UNIT_CODE::VARCHAR,
+         LAG(BUS_UNIT_CODE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)               OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'COLLATERAL_CODE', Account_Identifier, month_end, exposure,
+         COLLATERAL_CODE::VARCHAR,
+         LAG(COLLATERAL_CODE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)                 OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'ISSUE_DATE', Account_Identifier, month_end, exposure,
+         ISSUE_DATE::VARCHAR,
+         LAG(ISSUE_DATE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)            OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'OCCUPANCY_CODE', Account_Identifier, month_end, exposure,
+         OCCUPANCY_CODE::VARCHAR,
+         LAG(OCCUPANCY_CODE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)                OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'PAST_DUE_FLAG', Account_Identifier, month_end, exposure,
+         PAST_DUE_FLAG::VARCHAR,
+         LAG(PAST_DUE_FLAG::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)               OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'PROD_HIER_LEVEL_5', Account_Identifier, month_end, exposure,
+         PROD_HIER_LEVEL_5::VARCHAR,
+         LAG(PROD_HIER_LEVEL_5::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)                   OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'PURPOSE_CODE', Account_Identifier, month_end, exposure,
+         PURPOSE_CODE::VARCHAR,
+         LAG(PURPOSE_CODE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)              OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'STATUS_CODE', Account_Identifier, month_end, exposure,
+         STATUS_CODE::VARCHAR,
+         LAG(STATUS_CODE::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)             OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+  UNION ALL SELECT 'RISK_UNIT', Account_Identifier, month_end, exposure,
+         RISK_UNIT::VARCHAR,
+         LAG(RISK_UNIT::VARCHAR) OVER (PARTITION BY Account_Identifier ORDER BY month_end),
+         LAG(exposure)           OVER (PARTITION BY Account_Identifier ORDER BY month_end)
+  FROM base
+),
+
+/* 2) Row-level changed flag (NULL-safe) + exposure delta */
+chg_rows AS (
+  SELECT
+    kde_name,
+    Account_Identifier,
+    month_end,
+    exposure,
+    prev_exposure,
+    kde_value,
+    prev_kde_value,
+    CASE
+      WHEN (kde_value IS NULL AND prev_kde_value IS NULL) THEN 0
+      WHEN (kde_value IS NULL AND prev_kde_value IS NOT NULL) THEN 1
+      WHEN (kde_value IS NOT NULL AND prev_kde_value IS NULL) THEN 1
+      WHEN (kde_value <> prev_kde_value) THEN 1
+      ELSE 0
+    END AS changed_flag,
+    (exposure - COALESCE(prev_exposure,0.0))::FLOAT8 AS delta_exposure
+  FROM kde_flat
+),
+
+/* 3) Aggregate per KDE x month: totals and changes-only */
+agg_m AS (
+  SELECT
+    kde_name,
+    month_end,
+    COUNT(DISTINCT Account_Identifier)                                   AS total_accts,
+    SUM(exposure)                                                        AS total_exposure,
+    COUNT(DISTINCT CASE WHEN changed_flag=1 THEN Account_Identifier END) AS chg_accts,
+    SUM(CASE WHEN changed_flag=1 THEN delta_exposure ELSE 0.0 END)       AS chg_exposure
+  FROM chg_rows
+  GROUP BY kde_name, month_end
+),
+
+/* 4) Add prior totals, MoM %, and rolling 12m stats */
+with_mom AS (
+  SELECT
+    a.*,
+    LAG(total_accts)    OVER (PARTITION BY kde_name ORDER BY month_end) AS prev_total_accts,
+    LAG(total_exposure) OVER (PARTITION BY kde_name ORDER BY month_end) AS prev_total_exposure,
+
+    /* Overall MoM % (relative to prior total exposure) */
+    CASE WHEN LAG(total_exposure) OVER (PARTITION BY kde_name ORDER BY month_end) = 0
+         THEN NULL
+         ELSE (total_exposure - LAG(total_exposure) OVER (PARTITION BY kde_name ORDER BY month_end))
+                / NULLIF(LAG(total_exposure) OVER (PARTITION BY kde_name ORDER BY month_end),0)
+    END AS total_exp_mom_pct,
+
+    /* Changes-only % (relative to prior total exposure/accounts) */
+    CASE WHEN LAG(total_exposure) OVER (PARTITION BY kde_name ORDER BY month_end) = 0
+         THEN NULL
+         ELSE chg_exposure / NULLIF(LAG(total_exposure) OVER (PARTITION BY kde_name ORDER BY month_end),0)
+    END AS chg_exp_mom_pct,
+
+    CASE WHEN LAG(total_accts) OVER (PARTITION BY kde_name ORDER BY month_end) = 0
+         THEN NULL
+         ELSE chg_accts::FLOAT8 / NULLIF(LAG(total_accts) OVER (PARTITION BY kde_name ORDER BY month_end),0)
+    END AS chg_cnt_mom_pct,
+
+    /* Rolling 12m stats on changes-only exposure & count (levels) */
+    AVG(chg_exposure)  OVER (PARTITION BY kde_name ORDER BY month_end ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS chg_exp_ma12,
+    STDDEV_SAMP(chg_exposure) OVER (PARTITION BY kde_name ORDER BY month_end ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS chg_exp_sd12,
+    AVG(chg_accts)     OVER (PARTITION BY kde_name ORDER BY month_end ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS chg_cnt_ma12,
+    STDDEV_SAMP(chg_accts)    OVER (PARTITION BY kde_name ORDER BY month_end ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS chg_cnt_sd12
+  FROM agg_m a
+),
+
+/* 5) Z-scores and severity */
+scored AS (
+  SELECT
+    w.*,
+    CASE WHEN w.chg_exp_sd12 IS NULL OR w.chg_exp_sd12 = 0 THEN NULL
+         ELSE (w.chg_exposure - w.chg_exp_ma12) / w.chg_exp_sd12 END AS z_chg_exposure,
+    CASE WHEN w.chg_cnt_sd12 IS NULL OR w.chg_cnt_sd12 = 0 THEN NULL
+         ELSE (w.chg_accts   - w.chg_cnt_ma12) / w.chg_cnt_sd12 END AS z_chg_count,
+
+    ( 0.55 * ABS(COALESCE(
+          CASE WHEN w.chg_exp_sd12 IS NULL OR w.chg_exp_sd12 = 0 THEN NULL
+               ELSE (w.chg_exposure - w.chg_exp_ma12) / w.chg_exp_sd12 END, 0))
+    + 0.30 * ABS(COALESCE(w.chg_exp_mom_pct,0))
+    + 0.15 * ABS(COALESCE(w.chg_cnt_mom_pct,0))
+    ) AS severity_raw
+  FROM with_mom w
+),
+
+/* 6) KDE grouping for visuals */
+labeled AS (
+  SELECT
+    s.*,
+    CASE
+      WHEN kde_name IN ('RC_CODE','RBC_CODE','RISK_UNIT','STATUS_CODE') THEN 'Risk/Reg'
+      WHEN kde_name IN ('LTV','COLLATERAL_CODE','OCCUPANCY_CODE') THEN 'Collateral'
+      WHEN kde_name IN ('PROD_HIER_LEVEL_5','PURPOSE_CODE','GL_ACCOUNT_CODE','REVOLVING_CODE') THEN 'Product'
+      WHEN kde_name IN ('PD_GRADE','NON_ACCRUAL_FLAG','PAST_DUE_FLAG','DAYS_PAST_DUE') THEN 'Credit Quality'
+      WHEN kde_name IN ('NAICS_CODE','INDUSTRY_CODE','BUS_UNIT_CODE','ACCOUNT_OFFICER_NAME') THEN 'Org/Segment'
+      WHEN kde_name IN ('MATURITY_DATE','BOOK_DATE','ISSUE_DATE','NEXT_RATE_CHANGE_DATE') THEN 'Dates'
+      ELSE 'Other'
+    END AS kde_group
+  FROM scored s
+),
+
+/* 7) Final compute: severity squash + per-month ranks */
+final AS (
+  SELECT
+    l.*,
+    /* 0..100 severity via 1 - exp(-x) */
+    ROUND(100 * (1 - EXP(-COALESCE(l.severity_raw,0))), 0)::INT AS severity_0_100,
+
+    /* Per-month ranks (null-safe using COALESCE) */
+    DENSE_RANK() OVER (
+      PARTITION BY l.month_end
+      ORDER BY ABS(COALESCE(l.chg_exposure, -1e308)) DESC
+    ) AS rank_exp_abs,
+
+    DENSE_RANK() OVER (
+      PARTITION BY l.month_end
+      ORDER BY COALESCE(l.chg_cnt_mom_pct, -1e308) DESC
+    ) AS rank_cnt_pct
+  FROM labeled l
+)
+
+SELECT
+  kde_name,
+  kde_group,
+  month_end,
+  /* Totals */
+  total_accts,
+  total_exposure,
+  prev_total_accts,
+  prev_total_exposure,
+  total_exp_mom_pct,
+  /* Changes-only */
+  chg_accts,
+  chg_exposure,
+  chg_cnt_mom_pct,
+  chg_exp_mom_pct,
+  /* Rolling & Z */
+  chg_exp_ma12, chg_exp_sd12, z_chg_exposure,
+  chg_cnt_ma12, chg_cnt_sd12, z_chg_count,
+  /* Severity & ranks */
+  severity_0_100,
+  rank_exp_abs,
+  rank_cnt_pct
+FROM final
+-- Optional history limiter (e.g., last 36 months):
+-- WHERE month_end >= ADD_MONTHS(CURRENT_DATE, -36)
+ORDER BY month_end DESC, rank_exp_abs ASC;
+
+
+
+
+
 import pandas as pd
 
 latest = df["month_end"].max()
