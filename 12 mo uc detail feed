@@ -1,3 +1,172 @@
+/* ================= KDE Distribution Drift (PSI) ==================== */
+/* Filters portfolio, maps long tails to _OTHER, computes PSI Count/Exposure */
+/* =================================================================== */
+
+WITH
+base AS (
+  SELECT
+    Account_Identifier,
+    CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+    SOURCE_SYSTEM_BALANCE::FLOAT8   AS exposure,
+    CRE_FLAG, PD_GRADE, FDIC_CALL_CODE, NON_ACCRUAL_FLAG, INDUSTRY_CODE, LTV,
+    GL_ACCOUNT_CODE, DAYS_PAST_DUE, RBC_CODE, MATURITY_DATE, NAICS_CODE, RC_CODE,
+    REVOLVING_CODE, NEXT_RATE_CHANGE_DATE, ACCOUNT_OFFICER_NAME, BOOK_DATE,
+    BUS_UNIT_CODE, COLLATERAL_CODE, ISSUE_DATE, OCCUPANCY_CODE, PAST_DUE_FLAG,
+    PROD_HIER_LEVEL_5, PURPOSE_CODE, STATUS_CODE, RISK_UNIT
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+
+/* Flatten per KDE as categories (explicit VARCHAR sizes for Netezza) */
+kde_flat AS (
+  SELECT 'CRE_FLAG' AS kde_name, Account_Identifier, month_end, exposure,
+         CAST(CRE_FLAG AS VARCHAR(255)) AS kde_value FROM base
+  UNION ALL SELECT 'PD_GRADE', Account_Identifier, month_end, exposure, CAST(PD_GRADE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'FDIC_CALL_CODE', Account_Identifier, month_end, exposure, CAST(FDIC_CALL_CODE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'NON_ACCRUAL_FLAG', Account_Identifier, month_end, exposure, CAST(NON_ACCRUAL_FLAG AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'INDUSTRY_CODE', Account_Identifier, month_end, exposure, CAST(INDUSTRY_CODE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'LTV', Account_Identifier, month_end, exposure, CAST(LTV AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'GL_ACCOUNT_CODE', Account_Identifier, month_end, exposure, CAST(GL_ACCOUNT_CODE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'DAYS_PAST_DUE', Account_Identifier, month_end, exposure, CAST(DAYS_PAST_DUE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'RBC_CODE', Account_Identifier, month_end, exposure, CAST(RBC_CODE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'MATURITY_DATE', Account_Identifier, month_end, exposure, CAST(MATURITY_DATE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'NAICS_CODE', Account_Identifier, month_end, exposure, CAST(NAICS_CODE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'RC_CODE', Account_Identifier, month_end, exposure, CAST(RC_CODE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'REVOLVING_CODE', Account_Identifier, month_end, exposure, CAST(REVOLVING_CODE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'NEXT_RATE_CHANGE_DATE', Account_Identifier, month_end, exposure, CAST(NEXT_RATE_CHANGE_DATE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'ACCOUNT_OFFICER_NAME', Account_Identifier, month_end, exposure, CAST(ACCOUNT_OFFICER_NAME AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'BOOK_DATE', Account_Identifier, month_end, exposure, CAST(BOOK_DATE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'BUS_UNIT_CODE', Account_Identifier, month_end, exposure, CAST(BUS_UNIT_CODE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'COLLATERAL_CODE', Account_Identifier, month_end, exposure, CAST(COLLATERAL_CODE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'ISSUE_DATE', Account_Identifier, month_end, exposure, CAST(ISSUE_DATE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'OCCUPANCY_CODE', Account_Identifier, month_end, exposure, CAST(OCCUPANCY_CODE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'PAST_DUE_FLAG', Account_Identifier, month_end, exposure, CAST(PAST_DUE_FLAG AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'PROD_HIER_LEVEL_5', Account_Identifier, month_end, exposure, CAST(PROD_HIER_LEVEL_5 AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'PURPOSE_CODE', Account_Identifier, month_end, exposure, CAST(PURPOSE_CODE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'STATUS_CODE', Account_Identifier, month_end, exposure, CAST(STATUS_CODE AS VARCHAR(255)) FROM base
+  UNION ALL SELECT 'RISK_UNIT', Account_Identifier, month_end, exposure, CAST(RISK_UNIT AS VARCHAR(255)) FROM base
+),
+
+/* Define the 12-month window and pick Top 20 values per KDE by exposure */
+max_me AS ( SELECT MAX(month_end) AS max_me FROM kde_flat ),
+last12 AS (
+  SELECT * FROM kde_flat, max_me WHERE month_end >= ADD_MONTHS(max_me, -11)
+),
+topvals AS (
+  SELECT kde_name, kde_value,
+         ROW_NUMBER() OVER (PARTITION BY kde_name ORDER BY SUM(exposure) DESC) AS rn
+  FROM last12
+  GROUP BY kde_name, kde_value
+),
+value_map AS (
+  SELECT f.kde_name, f.Account_Identifier, f.month_end, f.exposure,
+         CASE WHEN t.rn IS NOT NULL AND t.rn <= 20
+              THEN f.kde_value ELSE '_OTHER' END AS kde_bucket
+  FROM kde_flat f
+  LEFT JOIN topvals t
+    ON t.kde_name = f.kde_name AND t.kde_value = f.kde_value
+),
+
+/* Current distributions (per KDE x month x bucket) */
+dist_cur AS (
+  SELECT kde_name, month_end, kde_bucket,
+         COUNT(DISTINCT Account_Identifier)            AS cnt,
+         SUM(exposure)                                 AS exp
+  FROM value_map
+  GROUP BY kde_name, month_end, kde_bucket
+),
+dist_tot AS (
+  SELECT kde_name, month_end,
+         SUM(cnt) AS cnt_tot,
+         SUM(exp) AS exp_tot
+  FROM dist_cur
+  GROUP BY kde_name, month_end
+),
+dist_cur_p AS (
+  SELECT c.kde_name, c.month_end, c.kde_bucket,
+         c.cnt, c.exp, t.cnt_tot, t.exp_tot,
+         CASE WHEN t.cnt_tot=0 THEN 0 ELSE c.cnt::FLOAT8 / t.cnt_tot END AS p_cnt,
+         CASE WHEN t.exp_tot=0 THEN 0 ELSE c.exp::FLOAT8 / t.exp_tot END AS p_exp
+  FROM dist_cur c
+  JOIN dist_tot t USING (kde_name, month_end)
+),
+
+/* Previous month distributions aligned to current month_end */
+dist_prev_p AS (
+  SELECT c.kde_name, c.month_end, c.kde_bucket,
+         COALESCE(p.p_cnt, 0) AS q_cnt,
+         COALESCE(p.p_exp, 0) AS q_exp
+  FROM dist_cur_p c
+  LEFT JOIN dist_cur_p p
+    ON p.kde_name = c.kde_name
+   AND p.kde_bucket = c.kde_bucket
+   AND p.month_end = ADD_MONTHS(c.month_end, -1)
+),
+
+/* PSI components and totals */
+psi_calc AS (
+  SELECT
+    c.kde_name, c.month_end, c.kde_bucket,
+    c.p_cnt, v.q_cnt,
+    c.p_exp, v.q_exp,
+    /* Small epsilon to avoid ln(0) */
+    ( (c.p_cnt - v.q_cnt)
+      * LN( (CASE WHEN c.p_cnt <= 0 THEN 1e-9 ELSE c.p_cnt END)
+          / (CASE WHEN v.q_cnt <= 0 THEN 1e-9 ELSE v.q_cnt END) )
+    ) AS psi_cnt_component,
+    ( (c.p_exp - v.q_exp)
+      * LN( (CASE WHEN c.p_exp <= 0 THEN 1e-9 ELSE c.p_exp END)
+          / (CASE WHEN v.q_exp <= 0 THEN 1e-9 ELSE v.q_exp END) )
+    ) AS psi_exp_component
+  FROM dist_cur_p c
+  JOIN dist_prev_p v
+    ON v.kde_name = c.kde_name
+   AND v.kde_bucket = c.kde_bucket
+   AND v.month_end = c.month_end
+),
+psi_tot AS (
+  SELECT
+    kde_name, month_end,
+    SUM(psi_cnt_component) AS psi_count,
+    SUM(psi_exp_component) AS psi_exposure
+  FROM psi_calc
+  GROUP BY kde_name, month_end
+),
+/* Rank top contributing buckets each month */
+psi_top_components AS (
+  SELECT
+    p.kde_name, p.month_end, p.kde_bucket,
+    psi_cnt_component, psi_exp_component,
+    DENSE_RANK() OVER (PARTITION BY p.kde_name, p.month_end
+                       ORDER BY ABS(psi_exp_component) DESC) AS rk_exp,
+    DENSE_RANK() OVER (PARTITION BY p.kde_name, p.month_end
+                       ORDER BY ABS(psi_cnt_component) DESC) AS rk_cnt
+  FROM psi_calc p
+)
+
+SELECT
+  t.kde_name,
+  t.month_end,
+  t.psi_count,
+  t.psi_exposure,
+  /* Optional: top 3 exposure-contributing buckets for explainability */
+  LISTAGG(CASE WHEN c.rk_exp <= 3
+               THEN c.kde_bucket || ':' || TO_CHAR(c.psi_exp_component, 'FM999999990.0000')
+          END, ', ') WITHIN GROUP (ORDER BY c.rk_exp) AS top_exp_drivers,
+  LISTAGG(CASE WHEN c.rk_cnt <= 3
+               THEN c.kde_bucket || ':' || TO_CHAR(c.psi_cnt_component, 'FM999999990.0000')
+          END, ', ') WITHIN GROUP (ORDER BY c.rk_cnt) AS top_cnt_drivers
+FROM psi_tot t
+LEFT JOIN psi_top_components c
+  ON c.kde_name = t.kde_name AND c.month_end = t.month_end
+GROUP BY t.kde_name, t.month_end, t.psi_count, t.psi_exposure
+ORDER BY t.month_end DESC, ABS(t.psi_exposure) DESC;
+
+
+
+
+
+
 /* 1) Flatten per KDE (UNION ALL) with explicit VARCHAR sizes */
 kde_flat AS (
   SELECT 'CRE_FLAG' AS kde_name, Account_Identifier, month_end, exposure,
