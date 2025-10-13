@@ -1,6 +1,43 @@
 import pandas as pd
 import numpy as np
 
+# If you created RC_Anom_Clean, read that; otherwise reuse df from above cell
+try:
+    df2 = xl("RC_Anom_Clean").copy()
+    df2.columns = [str(c).strip().lower().replace(" ","_") for c in df2.columns]
+    df2["month_end"] = pd.to_datetime(df2["month_end"], errors="coerce")
+    df2["severity_0_100"] = pd.to_numeric(df2["severity_0_100"], errors="coerce")
+    df2["outside_pi"] = df2["outside_pi"].astype(bool)
+except:
+    df2 = df.copy()
+
+thresholds = list(range(55, 91, 5))  # 55,60,...,90
+rows = []
+for thr in thresholds:
+    pred = df2["severity_0_100"] >= thr
+    tp = int((pred & df2["outside_pi"]).sum())
+    fp = int((pred & ~df2["outside_pi"]).sum())
+    fn = int((~pred & df2["outside_pi"]).sum())
+    alerts = int(pred.sum())
+    prec = tp / (tp + fp) if (tp+fp) else np.nan
+    rec  = tp / (tp + fn) if (tp+fn) else np.nan
+    rows.append((thr, alerts, tp, fp, fn, prec, rec))
+
+cal = pd.DataFrame(rows, columns=["threshold","alerts","true_pos","false_pos","false_neg","precision","recall"])
+
+# Add avg alerts per latest month (how noisy will it be?)
+latest = df2["month_end"].max()
+latest_alerts = df2.loc[df2["month_end"]==latest, ["rc_code","severity_0_100"]]
+cal["alerts_latest"] = cal["threshold"].map(lambda t: int((latest_alerts["severity_0_100"]>=t).sum()))
+
+cal
+
+
+
+
+import pandas as pd
+import numpy as np
+
 # Read the whole table (headers + data), then promote first row as headers
 raw = xl("RC_Anomaly_all").copy()
 hdr = raw.iloc[0].astype(str).tolist()
