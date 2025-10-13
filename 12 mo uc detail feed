@@ -1,3 +1,85 @@
+/* --- rank top components WITHOUT LISTAGG --- */
+exp_rank AS (
+  SELECT
+    p.kde_name, p.month_end, p.kde_bucket, p.psi_exp_component,
+    ROW_NUMBER() OVER (
+      PARTITION BY p.kde_name, p.month_end
+      ORDER BY ABS(p.psi_exp_component) DESC
+    ) AS rn_exp
+  FROM psi_calc p
+),
+cnt_rank AS (
+  SELECT
+    p.kde_name, p.month_end, p.kde_bucket, p.psi_cnt_component,
+    ROW_NUMBER() OVER (
+      PARTITION BY p.kde_name, p.month_end
+      ORDER BY ABS(p.psi_cnt_component) DESC
+    ) AS rn_cnt
+  FROM psi_calc p
+),
+
+/* pivot top 3 exposure drivers */
+exp_top3 AS (
+  SELECT
+    kde_name, month_end,
+    MAX(CASE WHEN rn_exp=1 THEN kde_bucket || ':' ||
+         TO_CHAR(psi_exp_component, 'FM999999990.0000') END) AS exp1,
+    MAX(CASE WHEN rn_exp=2 THEN kde_bucket || ':' ||
+         TO_CHAR(psi_exp_component, 'FM999999990.0000') END) AS exp2,
+    MAX(CASE WHEN rn_exp=3 THEN kde_bucket || ':' ||
+         TO_CHAR(psi_exp_component, 'FM999999990.0000') END) AS exp3
+  FROM exp_rank
+  WHERE rn_exp <= 3
+  GROUP BY kde_name, month_end
+),
+
+/* pivot top 3 count drivers */
+cnt_top3 AS (
+  SELECT
+    kde_name, month_end,
+    MAX(CASE WHEN rn_cnt=1 THEN kde_bucket || ':' ||
+         TO_CHAR(psi_cnt_component, 'FM999999990.0000') END) AS cnt1,
+    MAX(CASE WHEN rn_cnt=2 THEN kde_bucket || ':' ||
+         TO_CHAR(psi_cnt_component, 'FM999999990.0000') END) AS cnt2,
+    MAX(CASE WHEN rn_cnt=3 THEN kde_bucket || ':' ||
+         TO_CHAR(psi_cnt_component, 'FM999999990.0000') END) AS cnt3
+  FROM cnt_rank
+  WHERE rn_cnt <= 3
+  GROUP BY kde_name, month_end
+)
+
+/* --- final result (no LISTAGG) --- */
+SELECT
+  t.kde_name,
+  t.month_end,
+  t.psi_count,
+  t.psi_exposure,
+
+  /* build comma-separated strings manually */
+  TRIM(BOTH ', ' FROM
+      COALESCE(e.exp1,'') ||
+      CASE WHEN e.exp1 IS NOT NULL AND e.exp2 IS NOT NULL THEN ', ' ELSE '' END ||
+      COALESCE(e.exp2,'') ||
+      CASE WHEN (e.exp1 IS NOT NULL OR e.exp2 IS NOT NULL) AND e.exp3 IS NOT NULL THEN ', ' ELSE '' END ||
+      COALESCE(e.exp3,'')
+  ) AS top_exp_drivers,
+
+  TRIM(BOTH ', ' FROM
+      COALESCE(c.cnt1,'') ||
+      CASE WHEN c.cnt1 IS NOT NULL AND c.cnt2 IS NOT NULL THEN ', ' ELSE '' END ||
+      COALESCE(c.cnt2,'') ||
+      CASE WHEN (c.cnt1 IS NOT NULL OR c.cnt2 IS NOT NULL) AND c.cnt3 IS NOT NULL THEN ', ' ELSE '' END ||
+      COALESCE(c.cnt3,'')
+  ) AS top_cnt_drivers
+
+FROM psi_tot t
+LEFT JOIN exp_top3 e ON e.kde_name = t.kde_name AND e.month_end = t.month_end
+LEFT JOIN cnt_top3 c ON c.kde_name = t.kde_name AND c.month_end = t.month_end
+ORDER BY t.month_end DESC, ABS(t.psi_exposure) DESC;
+
+
+
+
 /* ================= KDE Distribution Drift (PSI) ==================== */
 /* Filters portfolio, maps long tails to _OTHER, computes PSI Count/Exposure */
 /* =================================================================== */
