@@ -1,3 +1,30 @@
+import pandas as pd
+import numpy as np
+
+# Read the whole table (headers + data), then promote first row as headers
+raw = xl("RC_Anomaly_all").copy()
+hdr = raw.iloc[0].astype(str).tolist()
+df  = raw.iloc[1:].copy()
+df.columns = [h.strip().lower().replace(" ","_") for h in hdr]
+
+# Types
+num_cols = ["actual","forecast_selected","pi_lo","pi_hi","severity_0_100","absresid","mom_abs","z_resid","z_mom_abs"]
+for c in num_cols:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+df["month_end"] = pd.to_datetime(df["month_end"], errors="coerce")
+
+# Helpful boolean: outside prediction interval
+df["outside_pi"] = (df["actual"] < df["pi_lo"]) | (df["actual"] > df["pi_hi"])
+
+# (Optional) persist back to Excel visually
+df
+
+
+
+
+
+
 /* Clean up temp tables */
 IF OBJECT_ID('tempdb..#FLUX')   IS NOT NULL DROP TABLE #FLUX;
 IF OBJECT_ID('tempdb..#CARDS')  IS NOT NULL DROP TABLE #CARDS;
