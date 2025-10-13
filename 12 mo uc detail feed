@@ -1,3 +1,9 @@
+Error:Python
+ValueError: Cannot remove 1 levels from an index with 1 levels: at least one level must be left.
+
+
+
+
 import pandas as pd
 
 d = df.copy()
