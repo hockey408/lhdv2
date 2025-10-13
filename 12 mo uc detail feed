@@ -1,3 +1,56 @@
+import pandas as pd
+import numpy as np
+
+# assume df already loaded/cleaned from Step 1
+d = df.copy()
+
+# --- correlations per RC ---
+def _corr(a,b):
+    a = pd.to_numeric(a, errors="coerce")
+    b = pd.to_numeric(b, errors="coerce")
+    m = pd.DataFrame({"a":a,"b":b}).dropna()
+    if len(m) < 3:
+        return np.nan
+    return m["a"].corr(m["b"])
+
+have_abs   = "absresid" in d.columns
+have_mom$  = "mom_abs" in d.columns
+have_momp  = "mom_pct_abs" in d.columns
+
+parts = []
+for rc, g in d.groupby("rc_code"):
+    parts.append({
+        "rc_code": rc,
+        "corr_resid_momabs": _corr(g["absresid"], g["mom_abs"]) if (have_abs and have_mom$) else np.nan,
+        "corr_resid_mompct": _corr(g["absresid"], g["mom_pct_abs"]) if (have_abs and have_momp) else np.nan,
+    })
+diag = pd.DataFrame(parts)
+
+# --- drift signal: 3-mo MSE / prior 9-mo MSE (no MultiIndex) ---
+dd = d.sort_values(["rc_code","month_end"]).copy()
+dd["se"] = (dd["actual"] - dd["forecast_selected"])**2
+
+# rolling means via transform (keeps a flat index)
+dd["mse_curr3"] = dd.groupby("rc_code")["se"].transform(lambda s: s.rolling(3, min_periods=2).mean())
+dd["mse_prev9"] = dd.groupby("rc_code")["se"].transform(lambda s: s.rolling(12, min_periods=10).mean().shift(3))
+
+dd["break_ratio"] = np.where(
+    (dd["mse_prev9"] > 0) & np.isfinite(dd["mse_prev9"]),
+    dd["mse_curr3"] / dd["mse_prev9"],
+    np.nan
+)
+
+# pick latest row per RC without droplevel
+latest_idx = dd.groupby("rc_code")["month_end"].idxmax()
+drift = dd.loc[latest_idx, ["rc_code","break_ratio"]].reset_index(drop=True)
+
+# final diagnostics table
+diag_final = diag.merge(drift, on="rc_code", how="left")
+diag_final
+
+
+
+
 Error:Python
 ValueError: Cannot remove 1 levels from an index with 1 levels: at least one level must be left.
 
