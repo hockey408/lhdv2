@@ -1,3 +1,40 @@
+Latest Month :=
+CALCULATE(
+    MAX ( 'RC_Code_Model_Base'[month_end] ),
+    ALL ( 'RC_Code_Model_Base' )
+)
+
+Total Balance (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE(
+    SUM ( 'RC_Code_Model_Base'[bal_num] ),
+    FILTER(
+        ALL('RC_Code_Model_Base'[month_end]),
+        'RC_Code_Model_Base'[month_end] = lm
+    )
+)
+
+Total Forecast (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE(
+    SUM ( 'RC_Code_Model_Base'[Forecast_Selected] ),
+    FILTER(
+        ALL('RC_Code_Model_Base'[month_end]),
+        'RC_Code_Model_Base'[month_end] = lm
+    )
+)
+
+Total Residual (Latest) :=
+[Total Balance (Latest)] - [Total Forecast (Latest)]
+
+Avg Residual % (Latest) :=
+DIVIDE( [Total Residual (Latest)], [Total Forecast (Latest)] )
+
+
+
+
 -- Reusable anchor
 Latest Month :=
 CALCULATE(
