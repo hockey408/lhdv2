@@ -1,3 +1,36 @@
+-- Severity (latest)
+Avg Severity (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    AVERAGE ( 'RC_Code_Model_Base'[Severity_0_100] ),
+    TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+)
+
+RC Count (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( 'RC_Code_Model_Base'[RC_CODE] ),
+    TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+)
+
+High Severity Count (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( 'RC_Code_Model_Base'[RC_CODE] ),
+    TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ),
+    'RC_Code_Model_Base'[Severity_0_100] >= 70
+)
+
+Pct High Severity (Latest) :=
+DIVIDE ( [High Severity Count (Latest)], [RC Count (Latest)] )
+
+
+
+
+
 -- Anchor
 Latest Month :=
 CALCULATE ( MAX ( 'RC_Code_Model_Base'[month_end] ), ALL ( 'RC_Code_Model_Base' ) )
