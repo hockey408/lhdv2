@@ -1,3 +1,55 @@
+R2_Scatter =
+VAR SS_Total =
+    SUMX (
+        ALLSELECTED ( RC_Code_Model_Base ),
+        POWER ( [Actual] - CALCULATE ( AVERAGE ( [Actual] ), ALLSELECTED ( RC_Code_Model_Base ) ), 2 )
+    )
+VAR SS_Residual =
+    SUMX (
+        ALLSELECTED ( RC_Code_Model_Base ),
+        POWER ( [Actual] - [Predicted], 2 )
+    )
+RETURN
+1 - DIVIDE ( SS_Residual, SS_Total )
+
+
+
+R2_By_Model =
+VAR SS_Total =
+    SUMX (
+        FILTER ( RC_Code_Model_Base, NOT ISBLANK ( [Actual] ) ),
+        POWER ( [Actual] - CALCULATE ( AVERAGE ( [Actual] ), ALLEXCEPT ( RC_Code_Model_Base, RC_Code_Model_Base[RC_Code], RC_Code_Model_Base[Model_Type] ) ), 2 )
+    )
+VAR SS_Residual =
+    SUMX (
+        FILTER ( RC_Code_Model_Base, NOT ISBLANK ( [Predicted] ) ),
+        POWER ( [Actual] - [Predicted], 2 )
+    )
+RETURN
+1 - DIVIDE ( SS_Residual, SS_Total )
+
+
+RMSE_By_Model =
+VAR Count_Obs =
+    COUNTROWS ( FILTER ( RC_Code_Model_Base, NOT ISBLANK ( [Predicted] ) ) )
+VAR Sum_Squared_Errors =
+    SUMX (
+        FILTER ( RC_Code_Model_Base, NOT ISBLANK ( [Predicted] ) ),
+        POWER ( [Actual] - [Predicted], 2 )
+    )
+RETURN
+SQRT ( DIVIDE ( Sum_Squared_Errors, Count_Obs ) )
+
+
+
+
+
+
+
+
+
+
+
 Avg MoM % Abs (3M) :=
 VAR currentMonth = MAX('RC_Code_Model_Base'[month_end])
 RETURN
