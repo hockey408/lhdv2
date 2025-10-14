@@ -1,3 +1,79 @@
+-- Reusable anchor
+Latest Month :=
+CALCULATE(
+    MAX ( 'RC_Code_Model_Base'[month_end] ),
+    ALL ( 'RC_Code_Model_Base' )
+)
+
+-- Boolean-as-1/0 flag for visuals that need it
+Is Latest Month :=
+IF (
+    MAX ( 'RC_Code_Model_Base'[month_end] ) = [Latest Month],
+    1, 0
+)
+
+
+-- Totals (latest)
+Total Balance (Latest) :=
+CALCULATE(
+    SUM ( 'RC_Code_Model_Base'[bal_num] ),
+    'RC_Code_Model_Base'[month_end] = [Latest Month]
+)
+
+Total Forecast (Latest) :=
+CALCULATE(
+    SUM ( 'RC_Code_Model_Base'[Forecast_Selected] ),
+    'RC_Code_Model_Base'[month_end] = [Latest Month]
+)
+
+Total Residual (Latest) :=
+[Total Balance (Latest)] - [Total Forecast (Latest)]
+
+Avg Residual % (Latest) :=
+DIVIDE( [Total Residual (Latest)], [Total Forecast (Latest)] )
+
+-- Severity (latest)
+Avg Severity (Latest) :=
+CALCULATE(
+    AVERAGE('RC_Code_Model_Base'[Severity_0_100]),
+    'RC_Code_Model_Base'[month_end] = [Latest Month]
+)
+
+RC Count (Latest) :=
+CALCULATE(
+    DISTINCTCOUNT('RC_Code_Model_Base'[RC_CODE]),
+    'RC_Code_Model_Base'[month_end] = [Latest Month]
+)
+
+High Severity Count (Latest) :=
+CALCULATE(
+    DISTINCTCOUNT('RC_Code_Model_Base'[RC_CODE]),
+    'RC_Code_Model_Base'[month_end] = [Latest Month],
+    'RC_Code_Model_Base'[Severity_0_100] >= 70
+)
+
+Pct High Severity (Latest) :=
+DIVIDE( [High Severity Count (Latest)], [RC Count (Latest)] )
+
+-- Improving / Deteriorating (latest)
+Improving RCs (Latest) :=
+CALCULATE(
+    DISTINCTCOUNT('RC_Code_Model_Base'[RC_CODE]),
+    'RC_Code_Model_Base'[month_end] = [Latest Month],
+    'RC_Code_Model_Base'[Resid] < 0
+)
+
+Deteriorating RCs (Latest) :=
+CALCULATE(
+    DISTINCTCOUNT('RC_Code_Model_Base'[RC_CODE]),
+    'RC_Code_Model_Base'[month_end] = [Latest Month],
+    'RC_Code_Model_Base'[Resid] > 0
+)
+
+
+
+
+
 /* --- rank top components WITHOUT LISTAGG --- */
 exp_rank AS (
   SELECT
