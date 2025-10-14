@@ -1,3 +1,86 @@
+-- Anchor
+Latest Month :=
+CALCULATE ( MAX ( 'RC_Code_Model_Base'[month_end] ), ALL ( 'RC_Code_Model_Base' ) )
+
+Is Latest Month :=
+VAR lm = [Latest Month]
+RETURN IF ( MAX ( 'RC_Code_Model_Base'[month_end] ) = lm, 1, 0 )
+
+
+-- Portfolio totals (latest)
+Total Balance (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    SUM ( 'RC_Code_Model_Base'[bal_num] ),
+    TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+)
+
+Total Forecast (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    SUM ( 'RC_Code_Model_Base'[Forecast_Selected] ),
+    TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+)
+
+Total Residual (Latest) :=
+[Total Balance (Latest)] - [Total Forecast (Latest)]
+
+Avg Residual % (Latest) :=
+DIVIDE ( [Total Residual (Latest)], [Total Forecast (Latest)] )
+
+
+
+-- Improving / Deteriorating (latest)
+Improving RCs (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( 'RC_Code_Model_Base'[RC_CODE] ),
+    TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ),
+    'RC_Code_Model_Base'[Resid] < 0
+)
+
+Deteriorating RCs (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( 'RC_Code_Model_Base'[RC_CODE] ),
+    TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ),
+    'RC_Code_Model_Base'[Resid] > 0
+)
+
+
+Top Severity (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    MAX ( 'RC_Code_Model_Base'[Severity_0_100] ),
+    TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+)
+
+Severity Tier (Latest) :=
+VAR sev =
+    CALCULATE (
+        MAX ( 'RC_Code_Model_Base'[Severity_0_100] ),
+        TREATAS ( { [Latest Month] }, 'RC_Code_Model_Base'[month_end] )
+    )
+RETURN
+SWITCH (
+    TRUE (),
+    ISBLANK ( sev ), BLANK (),
+    sev >= 80, "Critical",
+    sev >= 60, "High",
+    sev >= 40, "Moderate",
+    "Stable"
+)
+
+
+
+
+
+
 Latest Month :=
 CALCULATE(
     MAX ( 'RC_Code_Model_Base'[month_end] ),
