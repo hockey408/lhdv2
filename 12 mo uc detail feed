@@ -1,3 +1,20 @@
+Avg MoM % Abs (3M) :=
+VAR currentMonth = MAX('RC_Code_Model_Base'[month_end])
+RETURN
+AVERAGEX(
+    FILTER(
+        ALL('RC_Code_Model_Base'),
+        'RC_Code_Model_Base'[RC_CODE] = SELECTEDVALUE('RC_Code_Model_Base'[RC_CODE])
+        && 'RC_Code_Model_Base'[month_end] <= currentMonth
+        && 'RC_Code_Model_Base'[month_end] > EDATE(currentMonth, -3)
+    ),
+    'RC_Code_Model_Base'[MoM_Pct_Abs]
+)
+
+
+
+
+
 Latest Month :=
 CALCULATE( MAX('RC_Code_Model_Base'[month_end]), ALL('RC_Code_Model_Base') )
 
