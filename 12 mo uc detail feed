@@ -1,3 +1,123 @@
+Latest Month :=
+CALCULATE( MAX('RC_Code_Model_Base'[month_end]), ALL('RC_Code_Model_Base') )
+
+Selected Months := DISTINCTCOUNT('RC_Code_Model_Base'[month_end])
+
+RMSE :=
+VAR sse =
+    SUMX(
+        'RC_Code_Model_Base',
+        VAR r = 'RC_Code_Model_Base'[Resid]
+        RETURN r * r
+    )
+VAR n = COUNTROWS('RC_Code_Model_Base')
+RETURN IF(n>0, SQRT( sse / n ))
+
+MAE :=
+AVERAGEX( 'RC_Code_Model_Base', ABS('RC_Code_Model_Base'[Resid]) )
+
+MAPE :=
+AVERAGEX(
+    'RC_Code_Model_Base',
+    VAR f = 'RC_Code_Model_Base'[Forecast_Selected]
+    VAR a = 'RC_Code_Model_Base'[bal_num]
+    RETURN IF( NOT ISBLANK(f) && f<>0, ABS( (a - f) / f ), BLANK() )
+)
+
+
+Inside PI % :=
+VAR hits =
+    SUMX(
+        'RC_Code_Model_Base',
+        VAR a = 'RC_Code_Model_Base'[bal_num]
+        VAR lo = 'RC_Code_Model_Base'[PI_Lo]
+        VAR hi = 'RC_Code_Model_Base'[PI_Hi]
+        RETURN IF( NOT(ISBLANK(lo)||ISBLANK(hi)) && a>=lo && a<=hi, 1, 0 )
+    )
+VAR n = COUNTROWS('RC_Code_Model_Base')
+RETURN DIVIDE(hits,n)
+
+RMSE (Latest) :=
+VAR lm = [Latest Month]
+RETURN CALCULATE( [RMSE], TREATAS({lm}, 'RC_Code_Model_Base'[month_end]) )
+
+MAE (Latest) :=
+VAR lm = [Latest Month]
+RETURN CALCULATE( [MAE],  TREATAS({lm}, 'RC_Code_Model_Base'[month_end]) )
+
+MAPE (Latest) :=
+VAR lm = [Latest Month]
+RETURN CALCULATE( [MAPE], TREATAS({lm}, 'RC_Code_Model_Base'[month_end]) )
+
+Inside PI % (Latest) :=
+VAR lm = [Latest Month]
+RETURN CALCULATE( [Inside PI %], TREATAS({lm}, 'RC_Code_Model_Base'[month_end]) )
+
+
+RMSE Last 6 :=
+VAR lm = [Latest Month]
+VAR period =
+    DATESINPERIOD('RC_Code_Model_Base'[month_end], lm, -6, MONTH)
+RETURN
+VAR sse =
+    SUMX(
+        FILTER('RC_Code_Model_Base', 'RC_Code_Model_Base'[month_end] IN period),
+        VAR r = 'RC_Code_Model_Base'[Resid] RETURN r*r
+    )
+VAR n =
+    COUNTROWS(
+        FILTER('RC_Code_Model_Base', 'RC_Code_Model_Base'[month_end] IN period)
+    )
+RETURN IF(n>0, SQRT(sse/n))
+
+RMSE Prev 12 (excl last 6) :=
+VAR lm = [Latest Month]
+VAR last6 = DATESINPERIOD('RC_Code_Model_Base'[month_end], lm, -6, MONTH)
+VAR prev12 =
+    DATESINPERIOD('RC_Code_Model_Base'[month_end], MAXX(last6,[Value])-1, -12, MONTH)
+RETURN
+VAR sse =
+    SUMX(
+        FILTER('RC_Code_Model_Base',
+            'RC_Code_Model_Base'[month_end] IN prev12 &&
+            NOT('RC_Code_Model_Base'[month_end] IN last6)
+        ),
+        VAR r = 'RC_Code_Model_Base'[Resid] RETURN r*r
+    )
+VAR n =
+    COUNTROWS(
+        FILTER('RC_Code_Model_Base',
+            'RC_Code_Model_Base'[month_end] IN prev12 &&
+            NOT('RC_Code_Model_Base'[month_end] IN last6)
+        )
+    )
+RETURN IF(n>0, SQRT(sse/n))
+
+Break Ratio (Err Vol) :=
+DIVIDE( [RMSE Last 6], [RMSE Prev 12 (excl last 6)] )
+
+
+RMSE by Best Model :=
+VAR bm = SELECTEDVALUE('RC_Code_Model_Base'[Best_Model])
+RETURN
+CALCULATE( [RMSE], KEEPFILTERS( 'RC_Code_Model_Base'[Best_Model] = bm ) )
+
+MAE by Best Model :=
+VAR bm = SELECTEDVALUE('RC_Code_Model_Base'[Best_Model])
+RETURN
+CALCULATE( [MAE], KEEPFILTERS( 'RC_Code_Model_Base'[Best_Model] = bm ) )
+
+
+Resid Mean := AVERAGE('RC_Code_Model_Base'[Resid])
+Resid SD   := STDEVX.S('RC_Code_Model_Base', 'RC_Code_Model_Base'[Resid])
+
++2 SD := [Resid Mean] + 2*[Resid SD]
+-2 SD := [Resid Mean] - 2*[Resid SD]
+
+
+
+
+
 -- Severity (latest)
 Avg Severity (Latest) :=
 VAR lm = [Latest Month]
