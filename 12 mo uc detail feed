@@ -1,3 +1,30 @@
+/* ============== KDE MoM Changes — Full History (Netezza-safe) ==============
+   - Per KDE x month: totals, CHANGES-ONLY deltas (incl. NULL flips), MoM%, rolling stats,
+     Z-scores, Severity 0–100, and per-month ranks.
+   - No POWER; no views; ANSI/Netezza functions only.
+   ========================================================================== */
+
+WITH
+/* 0) Base monthly rows filtered to Total Loans */
+base AS (
+  SELECT
+    Account_Identifier,
+    CAST(END_OF_MONTH_DATE AS DATE)   AS month_end,
+    SOURCE_SYSTEM_BALANCE::FLOAT8     AS exposure,
+    -- ---- KDE columns ----
+    CRE_FLAG, PD_GRADE, FDIC_CALL_CODE, NON_ACCRUAL_FLAG, INDUSTRY_CODE, LTV,
+    GL_ACCOUNT_CODE, DAYS_PAST_DUE, RBC_CODE, MATURITY_DATE, NAICS_CODE, RC_CODE,
+    REVOLVING_CODE, NEXT_RATE_CHANGE_DATE, ACCOUNT_OFFICER_NAME, BOOK_DATE,
+    BUS_UNIT_CODE, COLLATERAL_CODE, ISSUE_DATE, OCCUPANCY_CODE, PAST_DUE_FLAG,
+    PROD_HIER_LEVEL_5, PURPOSE_CODE, STATUS_CODE, RISK_UNIT
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+
+
+
+
+
 Band_Base :=
 AVERAGE ( 'RC_Code_Model_Base'[PI_Lo] )
 
