@@ -2,6 +2,29 @@ Band_Base :=
 AVERAGE ( 'RC_Code_Model_Base'[PI_Lo] )
 
 Band_Height :=
+AVERAGE ( 'RC_Code_Model_Base'[PI_Hi] )
+- AVERAGE ( 'RC_Code_Model_Base'[PI_Lo] )
+
+
+Band_Height (Per RC) :=
+VAR rc = SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_CODE] )
+RETURN
+CALCULATE(
+    AVERAGE ( 'RC_Code_Model_Base'[PI_Hi] ) - AVERAGE ( 'RC_Code_Model_Base'[PI_Lo] ),
+    KEEPFILTERS ( 'RC_Code_Model_Base'[RC_CODE] = rc )
+)
+
+
+
+
+
+
+
+
+Band_Base :=
+AVERAGE ( 'RC_Code_Model_Base'[PI_Lo] )
+
+Band_Height :=
 AVERAGEX (
     'RC_Code_Model_Base',
     VAR hi = 'RC_Code_Model_Base'[PI_Hi]
