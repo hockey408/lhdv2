@@ -1,3 +1,126 @@
+-- ==================== KDE MoM Changes — Changes-Only & Fast ====================
+-- - Filters to a rolling window (set win_months)
+-- - Detects MoM changes with LAG per Account×KDE (incl. NULL flips)
+-- - Aggregates only changed rows to produce exposure/count deltas and MoM%
+-- - Ranks by exposure change, then by count %
+-- ==============================================================================
+
+-- >>> tune this window to your need (e.g., 13 or 18 months) <<<
+WITH params AS (
+  SELECT ADD_MONTHS(CURRENT_DATE, -18)::DATE AS min_me
+),
+
+base AS (
+  SELECT
+    Account_Identifier,
+    CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+    SOURCE_SYSTEM_BALANCE::FLOAT8   AS exposure,
+    -- KDE columns (add/remove as needed)
+    CRE_FLAG, PD_GRADE, FDIC_CALL_CODE, NON_ACCRUAL_FLAG, INDUSTRY_CODE, LTV,
+    GL_ACCOUNT_CODE, DAYS_PAST_DUE, RBC_CODE, MATURITY_DATE, NAICS_CODE, RC_CODE,
+    REVOLVING_CODE, NEXT_RATE_CHANGE_DATE, ACCOUNT_OFFICER_NAME, BOOK_DATE,
+    BUS_UNIT_CODE, COLLATERAL_CODE, ISSUE_DATE, OCCUPANCY_CODE, PAST_DUE_FLAG,
+    PROD_HIER_LEVEL_5, PURPOSE_CODE, STATUS_CODE, RISK_UNIT
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, params p
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND END_OF_MONTH_DATE >= p.min_me   -- 🔥 critical for zone maps
+),
+
+/* Unpivot only once. Keep VARCHAR size modest for speed. */
+kde_flat AS (
+  SELECT 'CRE_FLAG' AS kde_name, Account_Identifier, month_end, exposure,
+         CAST(CRE_FLAG AS VARCHAR(64)) AS kde_val FROM base
+  UNION ALL SELECT 'PD_GRADE', Account_Identifier, month_end, exposure, CAST(PD_GRADE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'FDIC_CALL_CODE', Account_Identifier, month_end, exposure, CAST(FDIC_CALL_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'NON_ACCRUAL_FLAG', Account_Identifier, month_end, exposure, CAST(NON_ACCRUAL_FLAG AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'INDUSTRY_CODE', Account_Identifier, month_end, exposure, CAST(INDUSTRY_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'LTV', Account_Identifier, month_end, exposure, CAST(LTV AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'GL_ACCOUNT_CODE', Account_Identifier, month_end, exposure, CAST(GL_ACCOUNT_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'DAYS_PAST_DUE', Account_Identifier, month_end, exposure, CAST(DAYS_PAST_DUE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'RBC_CODE', Account_Identifier, month_end, exposure, CAST(RBC_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'MATURITY_DATE', Account_Identifier, month_end, exposure, CAST(MATURITY_DATE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'NAICS_CODE', Account_Identifier, month_end, exposure, CAST(NAICS_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'RC_CODE', Account_Identifier, month_end, exposure, CAST(RC_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'REVOLVING_CODE', Account_Identifier, month_end, exposure, CAST(REVOLVING_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'NEXT_RATE_CHANGE_DATE', Account_Identifier, month_end, exposure, CAST(NEXT_RATE_CHANGE_DATE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'ACCOUNT_OFFICER_NAME', Account_Identifier, month_end, exposure, CAST(ACCOUNT_OFFICER_NAME AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'BOOK_DATE', Account_Identifier, month_end, exposure, CAST(BOOK_DATE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'BUS_UNIT_CODE', Account_Identifier, month_end, exposure, CAST(BUS_UNIT_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'COLLATERAL_CODE', Account_Identifier, month_end, exposure, CAST(COLLATERAL_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'ISSUE_DATE', Account_Identifier, month_end, exposure, CAST(ISSUE_DATE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'OCCUPANCY_CODE', Account_Identifier, month_end, exposure, CAST(OCCUPANCY_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'PAST_DUE_FLAG', Account_Identifier, month_end, exposure, CAST(PAST_DUE_FLAG AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'PROD_HIER_LEVEL_5', Account_Identifier, month_end, exposure, CAST(PROD_HIER_LEVEL_5 AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'PURPOSE_CODE', Account_Identifier, month_end, exposure, CAST(PURPOSE_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'STATUS_CODE', Account_Identifier, month_end, exposure, CAST(STATUS_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'RISK_UNIT', Account_Identifier, month_end, exposure, CAST(RISK_UNIT AS VARCHAR(64)) FROM base
+),
+
+/* Detect MoM changes per Account×KDE using LAG; include NULL flips.
+   Require prev row to be exactly previous month to keep it MoM. */
+lagged AS (
+  SELECT
+    kde_name, Account_Identifier, month_end, exposure,
+    kde_val,
+    LAG(kde_val)     OVER (PARTITION BY kde_name, Account_Identifier ORDER BY month_end) AS prev_val,
+    LAG(exposure)    OVER (PARTITION BY kde_name, Account_Identifier ORDER BY month_end) AS prev_exp,
+    LAG(month_end)   OVER (PARTITION BY kde_name, Account_Identifier ORDER BY month_end) AS prev_me
+  FROM kde_flat
+),
+
+/* Keep only rows where the value changed vs last month (including NULL↔value) and prev month exists */
+changed AS (
+  SELECT
+    kde_name,
+    month_end,
+    Account_Identifier,
+    exposure           AS this_exp,
+    prev_exp           AS prev_exp,
+    CASE WHEN COALESCE(kde_val,   '~NULL~') <> COALESCE(prev_val, '~NULL~') THEN 1 ELSE 0 END AS is_changed
+  FROM lagged
+  WHERE prev_me = ADD_MONTHS(month_end, -1)
+    AND COALESCE(kde_val,   '~NULL~') <> COALESCE(prev_val, '~NULL~')
+),
+
+/* Aggregate changes-only per KDE × month */
+agg_changed AS (
+  SELECT
+    kde_name,
+    month_end,
+    COUNT(*)                                   AS accounts_changed,      -- one row per acct×kde change
+    SUM(COALESCE(prev_exp,0))                  AS exposure_prev_on_changed,
+    SUM(COALESCE(this_exp,0))                  AS exposure_cur_on_changed,
+    SUM(COALESCE(this_exp,0) - COALESCE(prev_exp,0)) AS exposure_delta_on_changed
+  FROM changed
+  GROUP BY kde_name, month_end
+),
+
+/* Compute % changes; guard divide-by-zero */
+final AS (
+  SELECT
+    kde_name,
+    month_end,
+    accounts_changed,
+    exposure_prev_on_changed,
+    exposure_cur_on_changed,
+    exposure_delta_on_changed,
+    CASE
+      WHEN exposure_prev_on_changed = 0 THEN NULL
+      ELSE exposure_delta_on_changed / exposure_prev_on_changed
+    END::FLOAT8 AS exposure_mom_pct_on_changed
+  FROM agg_changed
+)
+
+SELECT
+  f.*,
+  DENSE_RANK() OVER (PARTITION BY month_end ORDER BY ABS(exposure_delta_on_changed) DESC) AS rk_by_abs_exposure,
+  DENSE_RANK() OVER (PARTITION BY month_end ORDER BY accounts_changed DESC)               AS rk_by_accounts
+FROM final f
+ORDER BY month_end DESC, rk_by_abs_exposure, rk_by_accounts;
+
+
+
+
 /* ============== KDE MoM Changes — Full History (Netezza-safe) ==============
    - Per KDE x month: totals, CHANGES-ONLY deltas (incl. NULL flips), MoM%, rolling stats,
      Z-scores, Severity 0–100, and per-month ranks.
