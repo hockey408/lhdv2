@@ -1,3 +1,18 @@
+Band_Base :=
+AVERAGE ( 'RC_Code_Model_Base'[PI_Lo] )
+
+Band_Height :=
+AVERAGEX (
+    'RC_Code_Model_Base',
+    VAR hi = 'RC_Code_Model_Base'[PI_Hi]
+    VAR lo = 'RC_Code_Model_Base'[PI_Lo]
+    RETURN IF ( NOT ( ISBLANK ( hi ) || ISBLANK ( lo ) ), hi - lo )
+)
+
+
+
+
+
 Dynamic Y Min :=
 VAR lo =
     MINX(
