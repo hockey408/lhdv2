@@ -1,3 +1,39 @@
+Dynamic Y Min :=
+VAR lo =
+    MINX(
+        ALLSELECTED('RC_Code_Model_Base'),
+        'RC_Code_Model_Base'[PI_Lo]
+    )
+VAR act =
+    MINX(
+        ALLSELECTED('RC_Code_Model_Base'),
+        'RC_Code_Model_Base'[bal_num]
+    )
+RETURN
+MIN(lo, act)
+
+
+Dynamic Y Max :=
+VAR hi =
+    MAXX(
+        ALLSELECTED('RC_Code_Model_Base'),
+        'RC_Code_Model_Base'[PI_Hi]
+    )
+VAR act =
+    MAXX(
+        ALLSELECTED('RC_Code_Model_Base'),
+        'RC_Code_Model_Base'[bal_num]
+    )
+RETURN
+MAX(hi, act)
+
+
+
+
+
+
+
+
 R2_Scatter =
 VAR SS_Total =
     SUMX (
