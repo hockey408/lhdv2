@@ -1,3 +1,48 @@
+Severity % Change (MoM) :=
+VAR currMonth =
+    MAX ( 'RC_Code_Model_Base'[month_end] )
+VAR prevMonth =
+    CALCULATE (
+        MAX ( 'RC_Code_Model_Base'[month_end] ),
+        FILTER (
+            ALL ( 'RC_Code_Model_Base'[month_end] ),
+            'RC_Code_Model_Base'[month_end] < currMonth
+        )
+    )
+VAR currSev =
+    CALCULATE (
+        [Severity (Weighted, Latest)],
+        'RC_Code_Model_Base'[month_end] = currMonth
+    )
+VAR prevSev =
+    CALCULATE (
+        [Severity (Weighted, Latest)],
+        'RC_Code_Model_Base'[month_end] = prevMonth
+    )
+RETURN
+DIVIDE ( currSev - prevSev, prevSev, 0 )
+
+
+Severity % Change (3M Rolling) :=
+VAR currMonth = MAX ( 'RC_Code_Model_Base'[month_end] )
+VAR prev3Month =
+    CALCULATE (
+        MAX ( 'RC_Code_Model_Base'[month_end] ),
+        FILTER (
+            ALL ( 'RC_Code_Model_Base'[month_end] ),
+            'RC_Code_Model_Base'[month_end] < EDATE ( currMonth, -3 )
+        )
+    )
+VAR currSev =
+    CALCULATE ( [Severity (Weighted, Latest)], 'RC_Code_Model_Base'[month_end] = currMonth )
+VAR prevSev =
+    CALCULATE ( [Severity (Weighted, Latest)], 'RC_Code_Model_Base'[month_end] = prev3Month )
+RETURN DIVIDE ( currSev - prevSev, prevSev, 0 )
+
+
+
+
+
 CASE WHEN ps.max_abs_resid > 0 AND LN(1.0 + ps.max_abs_resid) > 0
      THEN LN(1.0 + x.AbsResid) / LN(1.0 + ps.max_abs_resid)
      ELSE 0 END
