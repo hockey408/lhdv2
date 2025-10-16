@@ -1,3 +1,16 @@
+Trend Debug – Included RC Count :=
+VAR t =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "IsInternal", MAX ( 'RC_Code_Model_Base'[Is_Internal_RC] ),
+        "Act",        [Actual]
+    )
+RETURN
+COUNTROWS ( FILTER ( t, [IsInternal] = 0 && ABS([Act]) >= [Exposure Floor Amount] ) )
+
+
+
+
 -- Exposure-weighted avg severity by month (works on the chart axis month)
 Avg Weighted Severity (Exposure-Weighted, Trend) :=
 VAR t =
