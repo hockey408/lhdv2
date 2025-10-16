@@ -1,3 +1,19 @@
+R2_By_Model = 
+VAR SS_Total =
+    SUMX (
+        FILTER ( RC_Code_Model_Base, NOT ISBLANK ( [Actual] ) ),
+        POWER ( [Actual] - CALCULATE ( AVERAGE ( [Actual] ), ALLEXCEPT ( RC_Code_Model_Base, RC_Code_Model_Base[RC_Code], RC_Code_Model_Base[BEST_MODEL] ) ), 2 )
+    )
+VAR SS_Residual =
+    SUMX (
+        FILTER ( RC_Code_Model_Base, NOT ISBLANK ( [FORECAST_SELECTED] ) ),
+        POWER ( [Actual] - [FORECAST_SELECTED], 2 )
+    )
+RETURN
+1 - DIVIDE ( SS_Residual, SS_Total )
+
+
+
 R2 (12M, Trend by RC) :=
 VAR rc  = SELECTEDVALUE('RC_Code_Model_Base'[RC_DESCRIPTION])
 VAR me  = MAX('RC_Code_Model_Base'[month_end])         -- month on the axis
