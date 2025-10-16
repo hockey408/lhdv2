@@ -1,3 +1,33 @@
+-- Exposure-weighted average severity by month (trend line)
+Avg Weighted Severity (Exposure-Weighted, Trend) :=
+VAR t =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        // per-RC values in the current month context (from the axis)
+        "Act",
+            SUM ( 'RC_Code_Model_Base'[Actual] ),
+        "IsInternal",
+            MAX ( 'RC_Code_Model_Base'[Is_Internal_RC] ),
+        "SevW",
+            VAR sev = AVERAGE ( 'RC_Code_Model_Base'[Severity_0_100] )
+            VAR act = SUM ( 'RC_Code_Model_Base'[Actual] )
+            VAR w   = IF ( ABS ( act ) <= 1, 0.10, MIN ( 1, MAX ( 0.10, LOG10 ( ABS ( act ) ) / 6 ) ) )
+            RETURN IF ( NOT ISBLANK ( sev ), sev * w )
+    )
+VAR fil =
+    FILTER ( t,
+        [IsInternal] = 0
+        && ABS ( [Act] ) >= [Exposure Floor Amount]        -- uses your floor (e.g., 1,000,000)
+        && NOT ISBLANK ( [SevW] )
+    )
+VAR num = SUMX ( fil, [SevW] * [Act] )   -- exposure-weighted numerator
+VAR den = SUMX ( fil, [Act] )            -- exposure sum
+RETURN COALESCE ( DIVIDE ( num, den ), 0 )
+
+
+
+
+
 -- ==================== KDE MoM Changes — Changes-Only & Fast ====================
 -- - Filters to a rolling window (set win_months)
 -- - Detects MoM changes with LAG per Account×KDE (incl. NULL flips)
