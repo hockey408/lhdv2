@@ -1,3 +1,33 @@
+-- Per-RC 12M R² ending at latest month (you already have a version like this)
+R2 (12M, Latest by RC – Aligned) :=
+VAR rc  = SELECTEDVALUE('RC_Code_Model_Base'[RC_DESCRIPTION])
+VAR lm  = CALCULATE( MAX('RC_Code_Model_Base'[month_end]), ALL('RC_Code_Model_Base') )
+VAR st  = EDATE(lm, -11)
+VAR pairs =
+    ADDCOLUMNS(
+        SUMMARIZE(
+            FILTER(
+                ALL('RC_Code_Model_Base'),
+                'RC_Code_Model_Base'[RC_DESCRIPTION] = rc
+                && 'RC_Code_Model_Base'[month_end] >= st
+                && 'RC_Code_Model_Base'[month_end] <= lm
+            ),
+            'RC_Code_Model_Base'[month_end]
+        ),
+        "y",    CALCULATE( SUM('RC_Code_Model_Base'[bal_num]) ),
+        "yhat", CALCULATE( SUM('RC_Code_Model_Base'[Forecast_Selected]) )
+    )
+VAR t     = FILTER(pairs, NOT ISBLANK([y]) && NOT ISBLANK([yhat]))
+VAR n     = COUNTROWS(t)
+VAR ybar  = AVERAGEX(t, [y])
+VAR sse   = SUMX(t, VAR e = [y]-[yhat] RETURN e*e)
+VAR sst   = SUMX(t, VAR d = [y]-ybar   RETURN d*d)
+VAR r2raw = IF(n >= 2 && sst > 0, 1 - DIVIDE(sse, sst))
+RETURN IF( ISBLANK(r2raw), BLANK(), MAX(0, MIN(1, r2raw)) )
+
+
+
+
 R2 (12M, Trend by RC & Model – Aligned) :=
 VAR rc  = SELECTEDVALUE('RC_Code_Model_Base'[RC_DESCRIPTION])
 VAR mdl = SELECTEDVALUE('RC_Code_Model_Base'[Best_Model])  -- leave blank if you don't filter by model
