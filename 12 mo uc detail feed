@@ -1,3 +1,31 @@
+-- Exposure-weighted avg severity by month (works on the chart axis month)
+Avg Weighted Severity (Exposure-Weighted, Trend) :=
+VAR t =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        // per-RC values in the CURRENT month context (from the axis)
+        "IsInternal", MAX ( 'RC_Code_Model_Base'[Is_Internal_RC] ),
+        "Act",        [Actual],   -- your measure
+        "SevW",
+            VAR sev := AVERAGE ( 'RC_Code_Model_Base'[Severity_0_100] )    -- raw 0–100
+            VAR act := [Actual]
+            VAR w   := IF ( ABS ( act ) <= 1, 0.10, MIN ( 1, MAX ( 0.10, LOG10 ( ABS ( act ) ) / 6 ) ) )
+            RETURN IF ( NOT ISBLANK ( sev ), sev * w )
+    )
+VAR fil =
+    FILTER ( t,
+        [IsInternal] = 0
+        && ABS ( [Act] ) >= [Exposure Floor Amount]          -- e.g., 1,000,000
+        && NOT ISBLANK ( [SevW] )
+    )
+VAR num := SUMX ( fil, [SevW] * ABS ( [Act] ) )  -- weight by ABS(exposure)
+VAR den := SUMX ( fil, ABS ( [Act] ) )
+RETURN DIVIDE ( num, den, 0 )
+
+
+
+
+
 -- Exposure-weighted average severity by month (trend line)
 Avg Weighted Severity (Exposure-Weighted, Trend) :=
 VAR t =
