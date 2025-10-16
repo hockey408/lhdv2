@@ -1,3 +1,48 @@
+-- Uses only columns; applies your monitorable logic inline
+Severity (Weighted, At Month) :=
+VAR sev  = AVERAGE( 'RC_Code_Model_Base'[Severity_0_100] )
+VAR act  = SUM( 'RC_Code_Model_Base'[bal_num] )
+VAR isInternal =
+    MAX( 'RC_Code_Model_Base'[Is_Internal_RC] )   -- 0/1 calculated column
+VAR passesFloor = IF( ABS(act) >= [Exposure Floor Amount], TRUE(), FALSE() )
+VAR w =
+    IF( ABS(act) <= 1,
+        0.10,
+        MIN( 1, MAX( 0.10, LOG10( ABS(act) ) / 6 ) )
+    )
+RETURN
+IF( isInternal = 0 && passesFloor && NOT ISBLANK(sev), sev * w )
+
+Severity % Change (MoM) :=
+VAR currMonth =
+    MAX( 'RC_Code_Model_Base'[month_end] )
+VAR currSev :=
+    CALCULATE(
+        [Severity (Weighted, At Month)],
+        'RC_Code_Model_Base'[month_end] = currMonth
+    )
+VAR prevMonth :=
+    CALCULATE(
+        MAX( 'RC_Code_Model_Base'[month_end] ),
+        FILTER(
+            ALL( 'RC_Code_Model_Base'[month_end] ),
+            'RC_Code_Model_Base'[month_end] < currMonth
+        )
+    )
+VAR prevSev :=
+    CALCULATE(
+        [Severity (Weighted, At Month)],
+        TREATAS( { prevMonth }, 'RC_Code_Model_Base'[month_end] )
+    )
+RETURN
+DIVIDE( currSev - prevSev, prevSev, 0 )
+
+
+
+
+
+
+
 Severity % Change (MoM) :=
 VAR currMonth =
     MAX ( 'RC_Code_Model_Base'[month_end] )
