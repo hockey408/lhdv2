@@ -2,6 +2,240 @@ R2 (Rolling 12M, Latest) :=
 VAR rc  = SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
 VAR lm  = CALCULATE ( MAX ( 'RC_Code_Model_Base'[month_end] ), ALL ( 'RC_Code_Model_Base' ) )
 VAR st  = EDATE ( lm, -11 )
+/* Build month pairs for this RC: y (Actual) & yhat (Forecast) */
+VAR pairs =
+    ADDCOLUMNS (
+        SUMMARIZE (
+            FILTER (
+                ALL ( 'RC_Code_Model_Base' ),
+                'RC_Code_Model_Base'[RC_DESCRIPTION] = rc
+                    && 'RC_Code_Model_Base'[month_end] >= st
+                    && 'RC_Code_Model_Base'[month_end] <= lm
+            ),
+            'RC_Code_Model_Base'[month_end]
+        ),
+        "y",    CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ) ),
+        "yhat", CALCULATE ( SUM ( 'RC_Code_Model_Base'[Forecast_Selected] ) )
+    )
+/* Keep only months where both y and yhat exist */
+VAR t     = FILTER ( pairs, NOT ISBLANK ( [y] ) && NOT ISBLANK ( [yhat] ) )
+VAR n     = COUNTROWS ( t )
+VAR ybar  = AVERAGEX ( t, [y] )
+VAR sse   = SUMX ( t, VAR e = [y] - [yhat] RETURN e * e )
+VAR sst   = SUMX ( t, VAR d = [y] - ybar  RETURN d * d )
+VAR r2raw = IF ( n >= 2 && sst > 0, 1 - DIVIDE ( sse, sst ), BLANK () )
+RETURN
+/* Clamp to [0,1] for reporting */
+IF ( ISBLANK ( r2raw ), BLANK (), MAX ( 0, MIN ( 1, r2raw ) ) )
+
+
+Avg R2 (Latest) :=
+VAR lm =
+    CALCULATE ( MAX ( 'RC_Code_Model_Base'[month_end] ), ALL ( 'RC_Code_Model_Base' ) )
+/* Evaluate each RC at latest month; keep monitorable ones only */
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "R2RC",     [R2 (Rolling 12M, Latest)],
+        "ActLM",    CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ),
+                                'RC_Code_Model_Base'[month_end] = lm ),
+        "IsIntLM",  CALCULATE ( MAX ( 'RC_Code_Model_Base'[Is_Internal_RC] ),
+                                'RC_Code_Model_Base'[month_end] = lm )
+    )
+VAR fil =
+    FILTER ( perRC,
+        [IsIntLM] = 0
+        && ABS ( [ActLM] ) >= [Exposure Floor Amount]
+        && NOT ISBLANK ( [R2RC] )
+    )
+RETURN
+COALESCE ( AVERAGEX ( fil, [R2RC] ), BLANK () )
+
+
+
+R2 (Rolling 12M, Trend) :=
+VAR me = MAX ( 'RC_Code_Model_Base'[month_end] )       -- current axis month
+VAR st = EDATE ( me, -11 )
+/* Build per-RC 12M R² ending at [me] */
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "ActME",   CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ),
+                               'RC_Code_Model_Base'[month_end] = me ),
+        "IsIntME", CALCULATE ( MAX ( 'RC_Code_Model_Base'[Is_Internal_RC] ),
+                               'RC_Code_Model_Base'[month_end] = me ),
+        "R2RC",
+            VAR pairs =
+                ADDCOLUMNS (
+                    SUMMARIZE (
+                        FILTER (
+                            ALL ( 'RC_Code_Model_Base' ),
+                            'RC_Code_Model_Base'[RC_DESCRIPTION]
+                                = EARLIER ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
+                            && 'RC_Code_Model_Base'[month_end] >= st
+                            && 'RC_Code_Model_Base'[month_end] <= me
+                        ),
+                        'RC_Code_Model_Base'[month_end]
+                    ),
+                    "y",    CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ) ),
+                    "yhat", CALCULATE ( SUM ( 'RC_Code_Model_Base'[Forecast_Selected] ) )
+                )
+            VAR t     = FILTER ( pairs, NOT ISBLANK ( [y] ) && NOT ISBLANK ( [yhat] ) )
+            VAR n     = COUNTROWS ( t )
+            VAR ybar  = AVERAGEX ( t, [y] )
+            VAR sse   = SUMX ( t, VAR e = [y] - [yhat] RETURN e * e )
+            VAR sst   = SUMX ( t, VAR d = [y] - ybar  RETURN d * d )
+            VAR r2raw = IF ( n >= 2 && sst > 0, 1 - DIVIDE ( sse, sst ) )
+            RETURN IF ( ISBLANK ( r2raw ), BLANK (), MAX ( 0, MIN ( 1, r2raw ) ) )
+    )
+VAR fil =
+    FILTER ( perRC,
+        [IsIntME] = 0
+        && ABS ( [ActME] ) >= [Exposure Floor Amount]
+        && NOT ISBLANK ( [R2RC] )
+    )
+RETURN COALESCE ( AVERAGEX ( fil, [R2RC] ), BLANK () )
+
+
+
+R2 (Rolling 12M, Latest) :=
+VAR rc  = SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
+VAR lm  = CALCULATE ( MAX ( 'RC_Code_Model_Base'[month_end] ), ALL ( 'RC_Code_Model_Base' ) )
+VAR st  = EDATE ( lm, -11 )
+VAR t =
+    SUMMARIZE (
+        FILTER (
+            ALL ( 'RC_Code_Model_Base' ),
+            'RC_Code_Model_Base'[RC_DESCRIPTION] = rc
+                && 'RC_Code_Model_Base'[month_end] >= st
+                && 'RC_Code_Model_Base'[month_end] <= lm
+        ),
+        'RC_Code_Model_Base'[month_end],
+        "y",     CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ) ),
+        "yhat",  CALCULATE ( SUM ( 'RC_Code_Model_Base'[Forecast_Selected] ) )
+    )
+VAR n   = COUNTROWS ( t )
+VAR ybar= AVERAGEX ( t, [y] )
+VAR sse = SUMX ( t, VAR e = [y] - [yhat] RETURN e * e )
+VAR sst = SUMX ( t, VAR d = [y] - ybar  RETURN d * d )
+RETURN IF ( n >= 2 && sst > 0, 1 - DIVIDE ( sse, sst ), BLANK () )
+
+
+Avg R2 (Latest) :=
+VAR lm =
+    CALCULATE ( MAX ( 'RC_Code_Model_Base'[month_end] ), ALL ( 'RC_Code_Model_Base' ) )
+VAR t =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "R2RC",     [R2 (Rolling 12M, Latest)],
+        "ActLM",    CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ),
+                                'RC_Code_Model_Base'[month_end] = lm ),
+        "IsIntLM",  CALCULATE ( MAX ( 'RC_Code_Model_Base'[Is_Internal_RC] ),
+                                'RC_Code_Model_Base'[month_end] = lm )
+    )
+VAR fil =
+    FILTER ( t,
+        [IsIntLM] = 0
+        && ABS ( [ActLM] ) >= [Exposure Floor Amount]
+        && NOT ISBLANK ( [R2RC] )
+    )
+RETURN COALESCE ( AVERAGEX ( fil, [R2RC] ), BLANK () )
+
+
+
+R2 (Rolling 12M, Trend) :=
+VAR me = MAX ( 'RC_Code_Model_Base'[month_end] )       -- current point on axis
+VAR st = EDATE ( me, -11 )
+-- Build per-RC 12M R2 ending at [me]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "ActME",   CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ),
+                               'RC_Code_Model_Base'[month_end] = me ),
+        "IsIntME", CALCULATE ( MAX ( 'RC_Code_Model_Base'[Is_Internal_RC] ),
+                               'RC_Code_Model_Base'[month_end] = me ),
+        "R2RC",
+            VAR series =
+                SUMMARIZE (
+                    FILTER (
+                        ALL ( 'RC_Code_Model_Base' ),
+                        'RC_Code_Model_Base'[RC_DESCRIPTION] = EARLIER ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
+                          && 'RC_Code_Model_Base'[month_end] >= st
+                          && 'RC_Code_Model_Base'[month_end] <= me
+                    ),
+                    'RC_Code_Model_Base'[month_end],
+                    "y",    CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ) ),
+                    "yhat", CALCULATE ( SUM ( 'RC_Code_Model_Base'[Forecast_Selected] ) )
+                )
+            VAR n    = COUNTROWS ( series )
+            VAR ybar = AVERAGEX ( series, [y] )
+            VAR sse  = SUMX ( series, VAR e = [y] - [yhat] RETURN e * e )
+            VAR sst  = SUMX ( series, VAR d = [y] - ybar  RETURN d * d )
+            RETURN IF ( n >= 2 && sst > 0, 1 - DIVIDE ( sse, sst ) )
+    )
+VAR fil =
+    FILTER ( perRC,
+        [IsIntME] = 0
+        && ABS ( [ActME] ) >= [Exposure Floor Amount]
+        && NOT ISBLANK ( [R2RC] )
+    )
+RETURN COALESCE ( AVERAGEX ( fil, [R2RC] ), BLANK () )
+
+
+
+Avg R2 (Exposure-Weighted, Latest) :=
+VAR lm =
+    CALCULATE ( MAX ( 'RC_Code_Model_Base'[month_end] ), ALL ( 'RC_Code_Model_Base' ) )
+VAR t =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "R2RC",    [R2 (Rolling 12M, Latest)],
+        "ActLM",   CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ),
+                               'RC_Code_Model_Base'[month_end] = lm ),
+        "IsIntLM", CALCULATE ( MAX ( 'RC_Code_Model_Base'[Is_Internal_RC] ),
+                               'RC_Code_Model_Base'[month_end] = lm )
+    )
+VAR fil = FILTER ( t, [IsIntLM] = 0 && ABS ( [ActLM] ) >= [Exposure Floor Amount] && NOT ISBLANK ( [R2RC] ) )
+VAR num = SUMX ( fil, [R2RC] * ABS ( [ActLM] ) )
+VAR den = SUMX ( fil, ABS ( [ActLM] ) )
+RETURN DIVIDE ( num, den, BLANK () )
+
+
+
+
+
+
+R2 (Rolling 12M, Latest) :=
+VAR rc  = SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
+VAR lm  = CALCULATE ( MAX ( 'RC_Code_Model_Base'[month_end] ), ALL ( 'RC_Code_Model_Base' ) )
+VAR st  = EDATE ( lm, -11 )
+VAR t =
+    SUMMARIZE (
+        FILTER (
+            ALL ( 'RC_Code_Model_Base' ),
+            'RC_Code_Model_Base'[RC_DESCRIPTION] = rc
+                && 'RC_Code_Model_Base'[month_end] >= st
+                && 'RC_Code_Model_Base'[month_end] <= lm
+        ),
+        'RC_Code_Model_Base'[month_end],
+        "y",     CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ) ),
+        "yhat",  CALCULATE ( SUM ( 'RC_Code_Model_Base'[Forecast_Selected] ) )
+    )
+VAR n   = COUNTROWS ( t )
+VAR ybar= AVERAGEX ( t, [y] )
+VAR sse = SUMX ( t, VAR e = [y] - [yhat] RETURN e * e )
+VAR sst = SUMX ( t, VAR d = [y] - ybar  RETURN d * d )
+RETURN IF ( n >= 2 && sst > 0, 1 - DIVIDE ( sse, sst ), BLANK () )
+
+
+
+
+
+
+R2 (Rolling 12M, Latest) :=
+VAR rc  = SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
+VAR lm  = CALCULATE ( MAX ( 'RC_Code_Model_Base'[month_end] ), ALL ( 'RC_Code_Model_Base' ) )
+VAR st  = EDATE ( lm, -11 )
 VAR t =
     SUMMARIZE (
         FILTER (
