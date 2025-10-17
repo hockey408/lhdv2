@@ -1,3 +1,65 @@
+Severity_Latest_RC_Selected :=
+VAR lm = [LM Date (Selected)]
+RETURN
+CALCULATE ( [Severity (Weighted, Latest)],
+            TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+ActLM_Latest_RC_Selected :=
+VAR lm = [LM Date (Selected)]
+RETURN
+CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ),
+            TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+Monitorable_Latest_RC_Selected :=
+VAR lm = [LM Date (Selected)]
+VAR m  = CALCULATE ( [Monitorable Flag (Measure)],
+                     TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+RETURN IF ( m = 1, 1, 0 )
+
+
+Show_SmallMultiples_Top4_Selected :=
+VAR lm    = [LM Date (Selected)]
+VAR floor = [Exposure Floor Amount (Safe)]
+
+VAR pool_with_stats =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "SevLM",
+            CALCULATE ( [Severity (Weighted, Latest)],
+                        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "ExpLM",
+            CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ),
+                        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "MonLM",
+            CALCULATE ( [Monitorable Flag (Measure)],
+                        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+    )
+
+VAR candidates =
+    FILTER ( pool_with_stats,
+             [MonLM] = 1 &&
+             NOT ISBLANK ( [SevLM] ) &&
+             ABS ( [ExpLM] ) >= floor )
+
+VAR top4 =
+    TOPN ( 4, candidates, [SevLM], DESC )
+
+VAR isThisRCInTop4 =
+    CONTAINS ( top4,
+               'RC_Code_Model_Base'[RC_DESCRIPTION],
+               SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ) )
+
+RETURN IF ( isThisRCInTop4, 1 )
+
+
+
+
+
+
+
+
+
+
 Severity (Latest, per RC – Selected) :=
 VAR lm = [LM Date (Selected)]
 RETURN CALCULATE( [Severity (Weighted, Latest)],
