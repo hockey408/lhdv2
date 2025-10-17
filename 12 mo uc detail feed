@@ -1,3 +1,36 @@
+Total Exposure % Delta MoM (Monitorable, Latest) :=
+VAR lm    = [LM Date (Selected)]
+VAR prev  = EOMONTH( lm, -1 )
+VAR floor = [Exposure Floor Amount (Safe)]
+
+VAR T =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "MonLM",   CALCULATE ( [Monitorable Flag (Measure)],
+                               TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "ActLM",   CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ),
+                               TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "ActPrev", CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ),
+                               TREATAS ( { prev }, 'RC_Code_Model_Base'[month_end] ) )
+    )
+
+VAR F =
+    FILTER (
+        T,
+        [MonLM] = 1 &&
+        NOT ISBLANK ( [ActLM] ) &&
+        NOT ISBLANK ( [ActPrev] ) &&
+        ABS ( [ActLM] ) >= floor
+    )
+
+VAR SumLM   = SUMX ( F, [ActLM] )
+VAR SumPrev = SUMX ( F, [ActPrev] )
+RETURN DIVIDE ( SumLM - SumPrev, SumPrev )
+
+
+
+
+
 Total Exposure Delta MoM (Monitorable, Latest) :=
 VAR lm    = [LM Date (Selected)]
 VAR prev  = EOMONTH(lm, -1)
