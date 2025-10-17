@@ -1,3 +1,73 @@
+LM Date :=
+MAXX ( ALL ( 'RC_Code_Model_Base' ), 'RC_Code_Model_Base'[month_end] )
+
+ActLM (Latest) :=
+VAR lm = [LM Date]
+RETURN
+CALCULATE (
+    SUM ( 'RC_Code_Model_Base'[bal_num] ),
+    TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+)
+
+
+MonFlagLM (Latest) :=
+VAR lm = [LM Date]
+RETURN
+CALCULATE ( [Monitorable Flag (Measure)], TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+
+R2RC (12M, Latest – Aligned) :=
+[R2 (12M, Latest by RC – Aligned)]         -- use your aligned per-RC measure here
+
+R2 Window N (12M, Latest) :=
+[R2 Window N (12M, by RC)]                 -- optional (for tooltips/filters)
+
+
+R2 Weight Denominator (Monitorable, Latest) :=
+VAR lm = [LM Date]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "Mon",   CALCULATE ( [Monitorable Flag (Measure)], TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "ActLM", CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ), TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+    )
+RETURN
+SUMX (
+    FILTER ( perRC, [Mon] = 1 && ABS ( [ActLM] ) >= [Exposure Floor Amount] ),
+    ABS ( [ActLM] )
+)
+
+
+R2 Weight Share (Latest) :=
+VAR den = [R2 Weight Denominator (Monitorable, Latest)]
+VAR act = [ActLM (Latest)]
+VAR mon = [MonFlagLM (Latest)]
+RETURN
+IF (
+    mon = 1 && NOT ISBLANK ( den ) && ABS ( act ) >= [Exposure Floor Amount],
+    DIVIDE ( ABS ( act ), den ),
+    BLANK ()
+)
+
+
+R2 Contribution (Latest) :=
+VAR r2  = [R2RC (12M, Latest – Aligned)]
+VAR w   = [R2 Weight Share (Latest)]
+RETURN IF ( NOT ISBLANK ( r2 ) && NOT ISBLANK ( w ), r2 * w )
+
+R2 Target := 0.80
+
+R2 Drag vs Target (Contribution) :=
+VAR gap = [R2 Target] - [R2RC (12M, Latest – Aligned)]
+RETURN [R2 Weight Share (Latest)] * gap
+
+
+
+
+
+
+
+
 Avg R2 (Simple Mean, Latest – Monitorable Only) :=
 AVERAGEX(
     FILTER(
