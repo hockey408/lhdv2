@@ -1,3 +1,23 @@
+-- core facts
+Actual := SUM('RC_Code_Model_Base'[bal_num])
+
+-- X-axis: lift for the selected quarter vs all quarters, per RC (scatter-safe)
+Seasonal Lift (Scatter – Selected Q) :=
+VAR qSel = SELECTEDVALUE('RC_Code_Model_Base'[Quarter Num])  -- slicer
+VAR num :=
+    CALCULATE(
+        AVERAGEX(VALUES('RC_Code_Model_Base'[month_end]), [Actual]),
+        KEEPFILTERS('RC_Code_Model_Base'[Quarter Num] = qSel)
+    )
+VAR den :=
+    CALCULATE(
+        AVERAGEX(VALUES('RC_Code_Model_Base'[month_end]), [Actual]),
+        REMOVEFILTERS('RC_Code_Model_Base'[Quarter Num])          -- drop ONLY quarter
+    )
+RETURN DIVIDE(num, den)
+
+
+
 -- Uses your existing lift measure that works in matrix context:
 --   [Seasonal Lift (Q vs All – Matrix)]
 
