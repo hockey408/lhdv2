@@ -1,3 +1,84 @@
+ActLM (Latest, per RC – Selected) :=
+VAR lm = [LM Date (Selected)]
+RETURN
+CALCULATE ( [Actual], TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+R2 (Latest, per RC – Selected) :=
+VAR lm = [LM Date (Selected)]
+RETURN
+CALCULATE ( [R2_By_Model], TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+Abs Error (Latest, per RC – Selected) :=
+VAR lm = [LM Date (Selected)]
+VAR act = CALCULATE ( [Actual],   TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+VAR fc  = CALCULATE ( [Forecast], TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+RETURN IF ( NOT ISBLANK ( act ) && NOT ISBLANK ( fc ), ABS ( act - fc ) )
+
+Monitorable (Latest, per RC – Selected) :=
+VAR lm = [LM Date (Selected)]
+VAR m  = CALCULATE ( [Monitorable Flag (Measure)], TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+RETURN IF ( m = 1, 1 )
+
+
+Avg R2 (Exposure-Weighted, Latest) :=
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "R2LM",  [R2 (Latest, per RC – Selected)],
+        "ActLM", [ActLM (Latest, per RC – Selected)],
+        "MonLM", [Monitorable (Latest, per RC – Selected)]
+    )
+VAR fil = FILTER ( perRC, [MonLM] = 1 && NOT ISBLANK ( [R2LM] ) && ABS ( [ActLM] ) >= floor )
+VAR num = SUMX ( fil, [R2LM] * ABS ( [ActLM] ) )
+VAR den = SUMX ( fil, ABS ( [ActLM] ) )
+RETURN DIVIDE ( num, den )
+
+
+Avg RMSE (Exposure-Weighted, Latest) :=
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "ErrLM", [Abs Error (Latest, per RC – Selected)],
+        "ActLM", [ActLM (Latest, per RC – Selected)],
+        "MonLM", [Monitorable (Latest, per RC – Selected)]
+    )
+VAR fil = FILTER ( perRC, [MonLM] = 1 && NOT ISBLANK ( [ErrLM] ) && ABS ( [ActLM] ) >= floor )
+VAR num = SUMX ( fil, [ErrLM] * ABS ( [ActLM] ) )
+VAR den = SUMX ( fil, ABS ( [ActLM] ) )
+RETURN DIVIDE ( num, den )
+
+
+Avg R2 (Exp-Weighted, Latest-1) :=
+VAR lm  = [LM Date (Selected)]
+VAR prev = EOMONTH ( lm, -1 )
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR perRCPrev =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "R2Prev",
+            CALCULATE ( [R2_By_Model], TREATAS ( { prev }, 'RC_Code_Model_Base'[month_end] ) ),
+        "ActPrev",
+            CALCULATE ( [Actual], TREATAS ( { prev }, 'RC_Code_Model_Base'[month_end] ) ),
+        "MonPrev",
+            CALCULATE ( [Monitorable Flag (Measure)], TREATAS ( { prev }, 'RC_Code_Model_Base'[month_end] ) )
+    )
+VAR filPrev = FILTER ( perRCPrev, [MonPrev] = 1 && NOT ISBLANK ( [R2Prev] ) && ABS ( [ActPrev] ) >= floor )
+VAR numPrev = SUMX ( filPrev, [R2Prev] * ABS ( [ActPrev] ) )
+VAR denPrev = SUMX ( filPrev, ABS ( [ActPrev] ) )
+RETURN DIVIDE ( numPrev, denPrev )
+
+Avg R2 Δ MoM (Exp-Weighted) :=
+VAR curr = [Avg R2 (Exposure-Weighted, Latest)]
+VAR prev = [Avg R2 (Exp-Weighted, Latest-1)]
+RETURN DIVIDE ( curr - prev, prev )
+
+
+
+
+
+
 Show_SmallMultiples_Top4_Selected :=
 VAR lm    = [LM Date (Selected)]
 VAR floor = [Exposure Floor Amount (Safe)]
