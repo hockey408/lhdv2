@@ -1,3 +1,29 @@
+Seasonal Lift (Quarter vs All) :=
+VAR CurrQ = SELECTEDVALUE( 'RC_Code_Model_Base'[Quarter Num] )
+VAR CurrRC = SELECTEDVALUE( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
+VAR CurrY  = SELECTEDVALUE( 'RC_Code_Model_Base'[Year] )
+
+-- numerator: this RC in this quarter
+VAR Num =
+    CALCULATE(
+        AVERAGE('RC_Code_Model_Base'[Actual]),
+        'RC_Code_Model_Base'[Quarter Num] = CurrQ,
+        'RC_Code_Model_Base'[RC_DESCRIPTION] = CurrRC
+    )
+
+-- denominator: same RC, all quarters (removes quarter filter)
+VAR Den =
+    CALCULATE(
+        AVERAGE('RC_Code_Model_Base'[Actual]),
+        ALL('RC_Code_Model_Base'[Quarter Num]),
+        'RC_Code_Model_Base'[RC_DESCRIPTION] = CurrRC
+    )
+
+RETURN DIVIDE(Num, Den)
+
+
+
+
 Quarter Num := QUARTER( 'RC_Code_Model_Base'[month_end] )        -- 1..4
 Year := YEAR( 'RC_Code_Model_Base'[month_end] )
 Year–Quarter := FORMAT( 'RC_Code_Model_Base'[month_end], "YYYY" ) & " Q" & QUARTER( 'RC_Code_Model_Base'[month_end] )
