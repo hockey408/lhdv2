@@ -1,3 +1,11 @@
+Exposure Δ MoM (per RC) := [Actual (LM, per RC)] - [Actual (PrevM, per RC)]
+Exposure Δ MoM | Abs (per RC) := ABS( [Exposure Δ MoM (per RC)] )
+
+
+
+
+
+
 Total Exposure % Delta MoM (Monitorable, Latest) :=
 VAR lm    = [LM Date (Selected)]
 VAR prev  = EOMONTH( lm, -1 )
