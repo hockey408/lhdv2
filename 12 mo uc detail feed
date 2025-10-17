@@ -1,3 +1,67 @@
+Quarter Num := QUARTER( 'RC_Code_Model_Base'[month_end] )        -- 1..4
+Year := YEAR( 'RC_Code_Model_Base'[month_end] )
+Year–Quarter := FORMAT( 'RC_Code_Model_Base'[month_end], "YYYY" ) & " Q" & QUARTER( 'RC_Code_Model_Base'[month_end] )
+
+
+Actual := SUM( 'RC_Code_Model_Base'[bal_num] )
+Forecast := SUM( 'RC_Code_Model_Base'[Forecast_Selected] )
+LM Date := MAXX( ALL( 'RC_Code_Model_Base' ), 'RC_Code_Model_Base'[month_end] )
+
+
+Axis Quarter :=
+QUARTER( MAX( 'RC_Code_Model_Base'[month_end] ) )
+
+
+Seasonal Lift (Quarter vs All) :=
+VAR q =
+    IF( HASONEVALUE( 'RC_Code_Model_Base'[Quarter Num] ),
+        SELECTEDVALUE( 'RC_Code_Model_Base'[Quarter Num] ),
+        QUARTER( MAX( 'RC_Code_Model_Base'[month_end] ) )
+    )
+VAR num :=
+    CALCULATE( [Actual], 'RC_Code_Model_Base'[Quarter Num] = q )
+VAR den :=
+    CALCULATE( [Actual], ALL( 'RC_Code_Model_Base'[Quarter Num] ) )
+/* use averages so scale doesn’t bias: avg per month in numerator/denominator */
+VAR mon_num :=
+    CALCULATE( DISTINCTCOUNT( 'RC_Code_Model_Base'[month_end] ), 'RC_Code_Model_Base'[Quarter Num] = q )
+VAR mon_den :=
+    CALCULATE( DISTINCTCOUNT( 'RC_Code_Model_Base'[month_end] ), ALL( 'RC_Code_Model_Base'[Quarter Num] ) )
+RETURN
+DIVIDE( DIVIDE(num, mon_num), DIVIDE(den, mon_den) )
+
+
+Seasonal Lift (SameQ, 3Y) :=
+VAR me  = MAX( 'RC_Code_Model_Base'[month_end] )
+VAR st  = EDATE( me, -36 )
+VAR q   = QUARTER( me )
+VAR num = CALCULATE( [Actual],
+            'RC_Code_Model_Base'[Quarter Num] = q,
+            'RC_Code_Model_Base'[month_end] >= st, 'RC_Code_Model_Base'[month_end] <= me )
+VAR den = CALCULATE( [Actual],
+            'RC_Code_Model_Base'[month_end] >= st, 'RC_Code_Model_Base'[month_end] <= me )
+VAR mon_num = CALCULATE( DISTINCTCOUNT( 'RC_Code_Model_Base'[month_end] ),
+            'RC_Code_Model_Base'[Quarter Num] = q,
+            'RC_Code_Model_Base'[month_end] >= st, 'RC_Code_Model_Base'[month_end] <= me )
+VAR mon_den = CALCULATE( DISTINCTCOUNT( 'RC_Code_Model_Base'[month_end] ),
+            'RC_Code_Model_Base'[month_end] >= st, 'RC_Code_Model_Base'[month_end] <= me )
+RETURN DIVIDE( DIVIDE(num,mon_num), DIVIDE(den,mon_den) )
+
+
+Seasonal Gap % :=
+DIVIDE( [Actual] - [Forecast], [Forecast] )
+
+
+
+
+
+
+
+
+
+
+
+
 -- A. Severity at Latest (per RC) – explicit, for ranking
 Severity (Latest, per RC) :=
 VAR lm = [LM Date]
