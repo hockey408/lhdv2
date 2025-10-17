@@ -1,3 +1,52 @@
+-- A. Severity at Latest (per RC) – explicit, for ranking
+Severity (Latest, per RC) :=
+VAR lm = [LM Date]
+RETURN
+CALCULATE ( [Severity (Weighted, Latest)],
+            TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+-- B. Monitorable at Latest (per RC) – explicit
+Monitorable (Latest, per RC) :=
+VAR lm = [LM Date]
+RETURN
+CALCULATE ( [Monitorable Flag (Measure)],
+            TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+-- C. Rank among monitorable RCs (by Severity at Latest)
+Rank – Monitorable by Severity (Latest) :=
+VAR lm = [LM Date]
+VAR currSev =
+    CALCULATE ( [Severity (Weighted, Latest)],
+                TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+VAR currMon =
+    CALCULATE ( [Monitorable Flag (Measure)],
+                TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+-- Build the candidate list (only monitorable RCs with a severity value)
+VAR rcList =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "SevLM",
+            CALCULATE ( [Severity (Weighted, Latest)],
+                        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "MonLM",
+            CALCULATE ( [Monitorable Flag (Measure)],
+                        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+    )
+VAR candidates = FILTER ( rcList, [MonLM] = 1 && NOT ISBLANK ( [SevLM] ) )
+
+-- Rank current RC among the candidates
+VAR r = RANKX ( candidates, [SevLM], currSev, DESC, DENSE )
+RETURN IF ( currMon = 1 && NOT ISBLANK ( currSev ), r )
+
+-- D. Gate for Top 4 monitorable RCs at Latest (use this in the visual filter)
+Show in Small Multiples – Top4 Monitorable (Latest) :=
+VAR r = [Rank – Monitorable by Severity (Latest)]
+RETURN IF ( NOT ISBLANK ( r ) && r <= 4, 1 )
+
+
+
+
 Monitorable (LM per RC – Selected) :=
 VAR rc   = SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
 VAR lmRC =
