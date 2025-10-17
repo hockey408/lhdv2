@@ -1,3 +1,126 @@
+LM Date (Selected) :=
+EOMONTH(
+    MAXX(ALLSELECTED('RC_Code_Model_Base'[month_end]),
+         'RC_Code_Model_Base'[month_end]), 0)
+
+PrevM Date (Selected) := EOMONTH([LM Date (Selected)], -1)
+
+Exposure Floor Amount (Safe) :=
+VAR v = [Exposure Floor Amount] RETURN IF(ISBLANK(v), 0, v)
+
+Actual := SUM('RC_Code_Model_Base'[bal_num])
+Forecast := SUM('RC_Code_Model_Base'[Forecast_Selected])
+
+
+Actual (LM, per RC) :=
+VAR lm=[LM Date (Selected)]
+RETURN CALCULATE([Actual], TREATAS({lm}, 'RC_Code_Model_Base'[month_end]))
+
+Actual (PrevM, per RC) :=
+VAR pm=[PrevM Date (Selected)]
+RETURN CALCULATE([Actual], TREATAS({pm}, 'RC_Code_Model_Base'[month_end]))
+
+Forecast (LM, per RC) :=
+VAR lm=[LM Date (Selected)]
+RETURN CALCULATE([Forecast], TREATAS({lm}, 'RC_Code_Model_Base'[month_end]))
+
+R2 (LM, per RC) :=
+VAR lm=[LM Date (Selected)]
+RETURN CALCULATE([R2_By_Model], TREATAS({lm}, 'RC_Code_Model_Base'[month_end]))
+
+Monitorable (LM, per RC) :=
+VAR lm=[LM Date (Selected)]
+VAR m=CALCULATE([Monitorable Flag (Measure)], TREATAS({lm}, 'RC_Code_Model_Base'[month_end]))
+RETURN IF(m=1,1,0)
+
+
+Exposure Δ MoM (per RC) :=
+[Actual (LM, per RC)] - [Actual (PrevM, per RC)]
+
+Exposure %Δ MoM (per RC) :=
+DIVIDE([Exposure Δ MoM (per RC)], [Actual (PrevM, per RC)])
+
+Abs Error (LM, per RC) :=
+VAR a=[Actual (LM, per RC)]
+VAR f=[Forecast (LM, per RC)]
+RETURN IF(AND(NOT ISBLANK(a), NOT ISBLANK(f)), ABS(a-f))
+
+Residual % (LM, per RC) :=  -- (Actual−Forecast)/Forecast
+DIVIDE([Actual (LM, per RC)] - [Forecast (LM, per RC)], [Forecast (LM, per RC)])
+
+
+Severity (Weighted, Latest – RC) :=
+VAR lm=[LM Date (Selected)]
+RETURN CALCULATE([Severity (Weighted, Latest)],
+                 TREATAS({lm}, 'RC_Code_Model_Base'[month_end]))
+
+Severity Δ MoM (per RC) :=
+VAR lm=[LM Date (Selected)]
+VAR pm=[PrevM Date (Selected)]
+VAR curr = CALCULATE([Severity (Weighted, Latest)],
+                     TREATAS({lm}, 'RC_Code_Model_Base'[month_end]))
+VAR prev = CALCULATE([Severity (Weighted, Latest)],
+                     TREATAS({pm}, 'RC_Code_Model_Base'[month_end]))
+RETURN curr - prev
+
+
+Contribution Score (LM, per RC) :=
+-- material MoM move * current severity
+ABS([Exposure Δ MoM (per RC)]) * DIVIDE([Severity (Weighted, Latest – RC)], 100)
+
+Show – Top4 by Contribution (Selected) :=
+VAR lm=[LM Date (Selected)]
+VAR floor=[Exposure Floor Amount (Safe)]
+VAR rc = SELECTEDVALUE('RC_Code_Model_Base'[RC_DESCRIPTION])
+VAR pool =
+    ADDCOLUMNS(
+      ALLSELECTED('RC_Code_Model_Base'[RC_DESCRIPTION]),
+      "Mon",  CALCULATE([Monitorable Flag (Measure)], TREATAS({lm}, 'RC_Code_Model_Base'[month_end])),
+      "Act",  CALCULATE([Actual], TREATAS({lm}, 'RC_Code_Model_Base'[month_end])),
+      "Score", CALCULATE([Contribution Score (LM, per RC)])
+    )
+VAR cand = FILTER(pool, [Mon]=1 && NOT ISBLANK([Score]) && ABS([Act])>=floor)
+VAR top4 = TOPN(4, cand, [Score], DESC)
+RETURN IF(HASONEVALUE('RC_Code_Model_Base'[RC_DESCRIPTION]) &&
+          CONTAINS(top4, 'RC_Code_Model_Base'[RC_DESCRIPTION], rc), 1)
+
+
+Total Exposure Δ MoM (Monitorable, Latest) :=
+VAR lm=[LM Date (Selected)]
+VAR floor=[Exposure Floor Amount (Safe)]
+VAR set =
+  ADDCOLUMNS(
+    VALUES('RC_Code_Model_Base'[RC_DESCRIPTION]),
+    "Mon",[Monitorable (LM, per RC)],
+    "ActLM",[Actual (LM, per RC)],
+    "Δ",[Exposure Δ MoM (per RC)]
+  )
+RETURN SUMX(FILTER(set, [Mon]=1 && ABS([ActLM])>=floor), [Δ])
+
+Avg Residual % (Exp-Weighted, LM) :=
+VAR lm=[LM Date (Selected)]
+VAR floor=[Exposure Floor Amount (Safe)]
+VAR set =
+  ADDCOLUMNS(
+    VALUES('RC_Code_Model_Base'[RC_DESCRIPTION]),
+    "Mon",[Monitorable (LM, per RC)],
+    "ActLM",[Actual (LM, per RC)],
+    "ResPct",[Residual % (LM, per RC)]
+  )
+VAR fil = FILTER(set, [Mon]=1 && ABS([ActLM])>=floor && NOT ISBLANK([ResPct]))
+VAR num = SUMX(fil, [ResPct] * ABS([ActLM]))
+VAR den = SUMX(fil, ABS([ActLM]))
+RETURN DIVIDE(num, den)
+
+
+
+
+
+
+
+
+
+
 -- Changes-only exposure Δ by KDE at latest month
 KDE Exposure Δ (Changes-only, LM) :=
 VAR lm = [LM Date (Selected)]
