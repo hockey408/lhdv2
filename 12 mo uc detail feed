@@ -1,3 +1,50 @@
+Show_SmallMultiples_Top4_Selected :=
+VAR lm    = [LM Date (Selected)]
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR rc    = SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
+
+-- Build candidate pool across all RCs under current slicers
+VAR pool_with_stats =
+    ADDCOLUMNS (
+        ALLSELECTED ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "SevLM",
+            CALCULATE ( [Severity (Weighted, Latest)],
+                        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "ExpLM",
+            CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ),
+                        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "MonLM",
+            CALCULATE ( [Monitorable Flag (Measure)],
+                        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+    )
+
+-- Keep ONLY monitorable, non-trivial exposure, with a severity value
+VAR candidates =
+    FILTER (
+        pool_with_stats,
+        [MonLM] = 1 &&
+        NOT ISBLANK ( [SevLM] ) &&
+        ABS ( [ExpLM] ) >= floor
+    )
+
+-- Top 4 by severity (within current slicers)
+VAR top4 = TOPN ( 4, candidates, [SevLM], DESC )
+
+-- Is the current RC one of those top 4?
+VAR inTop4 =
+    CONTAINS ( top4,
+               'RC_Code_Model_Base'[RC_DESCRIPTION], rc )
+
+RETURN
+IF (
+    HASONEVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )  -- only emit inside an RC tile/row
+        && NOT ISBLANK ( rc )
+        && inTop4,
+    1
+)
+
+
+
 -- Latest month inside the current selection
 LM Date (Selected) :=
 MAXX (
