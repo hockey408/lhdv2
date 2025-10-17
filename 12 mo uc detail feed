@@ -1,3 +1,17 @@
+SM – LM Date (Selected) :=
+MAXX ( ALLSELECTED ( 'RC_Code_Model_Base'[month_end] ), 'RC_Code_Model_Base'[month_end] )
+
+SM – LM per RC (Selected) :=
+VAR rc = SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
+RETURN
+CALCULATE (
+    MAX ( 'RC_Code_Model_Base'[month_end] ),
+    ALLSELECTED ( 'RC_Code_Model_Base'[month_end] ),
+    'RC_Code_Model_Base'[RC_DESCRIPTION] = rc
+)
+
+
+
 Monitorable (Latest, RC – Selected) :=
 VAR lm =
     MAXX ( ALLSELECTED ( 'RC_Code_Model_Base'[month_end] ),
