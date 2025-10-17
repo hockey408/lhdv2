@@ -1,3 +1,26 @@
+-- Uses your existing lift measure that works in matrix context:
+--   [Seasonal Lift (Q vs All – Matrix)]
+
+Seasonal Volatility (Q vs All) :=
+VAR qs =
+    VALUES ( 'RC_Code_Model_Base'[Quarter Num] )      -- quarters present under current filters
+VAR series =
+    ADDCOLUMNS (
+        qs,
+        "lift",
+            CALCULATE (
+                [Seasonal Lift (Q vs All – Matrix)],
+                -- force eval per quarter value in this iterator row
+                TREATAS ( { SELECTEDVALUE ( 'RC_Code_Model_Base'[Quarter Num] ) },
+                          'RC_Code_Model_Base'[Quarter Num] )
+            )
+    )
+VAR n = COUNTROWS ( series )
+RETURN IF ( n >= 2, STDEVX.P ( series, [lift] ) )
+
+
+
+
 -- tweak the bounds if you want
 CF Min := 0.90
 CF Max := 1.10
