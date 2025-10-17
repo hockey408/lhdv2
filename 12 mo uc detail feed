@@ -1,3 +1,58 @@
+R2 Window N (12M, Latest by RC) :=
+VAR rc =
+    SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
+VAR lm =
+    CALCULATE ( MAX ( 'RC_Code_Model_Base'[month_end] ), ALL ( 'RC_Code_Model_Base' ) )
+VAR st = EDATE ( lm, -11 )
+
+/* build one row per month with y (Actual) and yhat (Forecast) */
+VAR pairs =
+    ADDCOLUMNS (
+        SUMMARIZE (
+            FILTER (
+                ALL ( 'RC_Code_Model_Base' ),
+                'RC_Code_Model_Base'[RC_DESCRIPTION] = rc
+                    && 'RC_Code_Model_Base'[month_end] >= st
+                    && 'RC_Code_Model_Base'[month_end] <= lm
+            ),
+            'RC_Code_Model_Base'[month_end]
+        ),
+        "y",    CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ) ),
+        "yhat", CALCULATE ( SUM ( 'RC_Code_Model_Base'[Forecast_Selected] ) )
+    )
+RETURN
+COUNTROWS ( FILTER ( pairs, NOT ISBLANK ( [y] ) && NOT ISBLANK ( [yhat] ) ) )
+
+
+R2 Window N (12M, Trend by RC) :=
+VAR rc =
+    SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
+VAR me = MAX ( 'RC_Code_Model_Base'[month_end] )     -- current axis month
+VAR st = EDATE ( me, -11 )
+
+VAR pairs =
+    ADDCOLUMNS (
+        SUMMARIZE (
+            FILTER (
+                ALL ( 'RC_Code_Model_Base' ),
+                'RC_Code_Model_Base'[RC_DESCRIPTION] = rc
+                    && 'RC_Code_Model_Base'[month_end] >= st
+                    && 'RC_Code_Model_Base'[month_end] <= me
+            ),
+            'RC_Code_Model_Base'[month_end]
+        ),
+        "y",    CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ) ),
+        "yhat", CALCULATE ( SUM ( 'RC_Code_Model_Base'[Forecast_Selected] ) )
+    )
+RETURN
+COUNTROWS ( FILTER ( pairs, NOT ISBLANK ( [y] ) && NOT ISBLANK ( [yhat] ) ) )
+
+
+
+
+
+
+
 LM Date :=
 MAXX ( ALL ( 'RC_Code_Model_Base' ), 'RC_Code_Model_Base'[month_end] )
 
