@@ -1,3 +1,23 @@
+-- Core measures you already have:
+Actual := SUM ( 'RC_Code_Model_Base'[bal_num] )
+-- (Forecast not needed here)
+
+-- Seasonal Lift (Quarter vs All) – Matrix Safe
+Seasonal Lift (Q vs All – Matrix) :=
+VAR NumAvg :=
+    CALCULATE (
+        AVERAGEX ( VALUES ( 'RC_Code_Model_Base'[month_end] ), [Actual] )
+        -- uses the current matrix cell's filters, including Quarter Num and RC_DESCRIPTION
+    )
+VAR DenAvg :=
+    CALCULATE (
+        AVERAGEX ( VALUES ( 'RC_Code_Model_Base'[month_end] ), [Actual] ),
+        REMOVEFILTERS ( 'RC_Code_Model_Base'[Quarter Num] )   -- drop quarter only; keep RC filter
+    )
+RETURN DIVIDE ( NumAvg, DenAvg )
+
+
+
 Seasonal Lift (Quarter vs All) :=
 VAR CurrQ = SELECTEDVALUE( 'RC_Code_Model_Base'[Quarter Num] )
 VAR CurrRC = SELECTEDVALUE( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
