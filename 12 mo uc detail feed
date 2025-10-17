@@ -1,3 +1,22 @@
+Severity (Latest, per RC – Selected) :=
+VAR lm = [LM Date (Selected)]
+RETURN CALCULATE( [Severity (Weighted, Latest)],
+                  TREATAS( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+ActLM (Latest, per RC – Selected) :=
+VAR lm = [LM Date (Selected)]
+RETURN CALCULATE( SUM( 'RC_Code_Model_Base'[bal_num] ),
+                  TREATAS( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+Monitorable (Latest, per RC – Selected) :=
+VAR lm = [LM Date (Selected)]
+VAR m  = CALCULATE( [Monitorable Flag (Measure)],
+                    TREATAS( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+RETURN IF( m = 1, 1, 0 )
+
+
+
+
 Rank – Severity (Latest – Selected, Monitorable only) :=
 VAR lm     = [LM Date (Selected)]
 VAR floor  = [Exposure Floor Amount (Safe)]
