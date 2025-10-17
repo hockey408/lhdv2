@@ -1,3 +1,152 @@
+LM Date (Selected) :=
+MAXX ( ALLSELECTED ( 'RC_Code_Model_Base'[month_end] ),
+       'RC_Code_Model_Base'[month_end] )
+
+Exposure Floor Amount (Safe) :=
+VAR v = [Exposure Floor Amount]
+RETURN IF ( ISBLANK ( v ), 0, v )
+
+ActLM (Latest, Selected) :=
+VAR lm = [LM Date (Selected)]
+RETURN
+CALCULATE ( [Actual],
+            TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+Seasonal Lift (Selected Q – Card Safe) :=
+VAR qSel = SELECTEDVALUE ( 'RC_Code_Model_Base'[Quarter Num] )
+VAR qEff = COALESCE ( qSel, QUARTER ( [LM Date (Selected)] ) )
+VAR Num :=
+    CALCULATE (
+        AVERAGEX ( VALUES ( 'RC_Code_Model_Base'[month_end] ), [Actual] ),
+        KEEPFILTERS ( 'RC_Code_Model_Base'[Quarter Num] = qEff )
+    )
+VAR Den :=
+    CALCULATE (
+        AVERAGEX ( VALUES ( 'RC_Code_Model_Base'[month_end] ), [Actual] ),
+        REMOVEFILTERS ( 'RC_Code_Model_Base'[Quarter Num] )
+    )
+RETURN DIVIDE ( Num, Den )
+
+
+
+Avg Seasonal Lift (Selected Q – Monitorable) :=
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR lm    = [LM Date (Selected)]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "Lift",  [Seasonal Lift (Selected Q – Card Safe)],
+        "Mon",   CALCULATE ( [Monitorable Flag (Measure)],
+                             TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "ActLM", CALCULATE ( [Actual],
+                             TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+    )
+VAR fil = FILTER ( perRC, [Mon] = 1 && ABS ( [ActLM] ) >= floor && NOT ISBLANK ( [Lift] ) )
+RETURN AVERAGEX ( fil, [Lift] )
+
+
+Avg Seasonal Lift (Selected Q – Exp Weighted, Monitorable) :=
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR lm    = [LM Date (Selected)]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "Lift",  [Seasonal Lift (Selected Q – Card Safe)],
+        "Mon",   CALCULATE ( [Monitorable Flag (Measure)],
+                             TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "ActLM", CALCULATE ( [Actual],
+                             TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+    )
+VAR fil = FILTER ( perRC, [Mon] = 1 && ABS ( [ActLM] ) >= floor && NOT ISBLANK ( [Lift] ) )
+VAR num = SUMX ( fil, [Lift] * ABS ( [ActLM] ) )
+VAR den = SUMX ( fil, ABS ( [ActLM] ) )
+RETURN DIVIDE ( num, den )
+
+
+Seasonal Volatility (Per RC) :=
+VAR qs =
+    CALCULATETABLE (
+        VALUES ( 'RC_Code_Model_Base'[Quarter Num] ),
+        REMOVEFILTERS ( 'RC_Code_Model_Base'[Quarter Num] )
+    )
+VAR lifts =
+    ADDCOLUMNS (
+        qs,
+        "lift",
+            VAR q = [Quarter Num]
+            RETURN
+                DIVIDE (
+                    CALCULATE (
+                        AVERAGEX ( VALUES ( 'RC_Code_Model_Base'[month_end] ), [Actual] ),
+                        KEEPFILTERS ( 'RC_Code_Model_Base'[Quarter Num] = q )
+                    ),
+                    CALCULATE (
+                        AVERAGEX ( VALUES ( 'RC_Code_Model_Base'[month_end] ), [Actual] ),
+                        REMOVEFILTERS ( 'RC_Code_Model_Base'[Quarter Num] )
+                    )
+                )
+    )
+VAR n = COUNTROWS ( lifts )
+RETURN IF ( n >= 2, STDEVX.P ( lifts, [lift] ) )
+
+
+Avg Seasonal Volatility (Monitorable) :=
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR lm    = [LM Date (Selected)]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "Vol",  [Seasonal Volatility (Per RC)],
+        "Mon",  CALCULATE ( [Monitorable Flag (Measure)],
+                            TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "ActLM", CALCULATE ( [Actual],
+                             TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+    )
+VAR fil = FILTER ( perRC, [Mon] = 1 && ABS ( [ActLM] ) >= floor && NOT ISBLANK ( [Vol] ) )
+RETURN AVERAGEX ( fil, [Vol] )
+
+
+RCs Lift > +10% (Selected Q, Monitorable) :=
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR lm    = [LM Date (Selected)]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "Lift",  [Seasonal Lift (Selected Q – Card Safe)],
+        "Mon",   CALCULATE ( [Monitorable Flag (Measure)],
+                             TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "ActLM", CALCULATE ( [Actual],
+                             TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+    )
+RETURN
+COUNTROWS ( FILTER ( perRC, [Mon] = 1 && ABS ( [ActLM] ) >= floor && [Lift] > 1.10 ) )
+
+RCs Lift < –10% (Selected Q, Monitorable) :=
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR lm    = [LM Date (Selected)]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "Lift",  [Seasonal Lift (Selected Q – Card Safe)],
+        "Mon",   CALCULATE ( [Monitorable Flag (Measure)],
+                             TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "ActLM", CALCULATE ( [Actual],
+                             TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+    )
+RETURN
+COUNTROWS ( FILTER ( perRC, [Mon] = 1 && ABS ( [ActLM] ) >= floor && [Lift] < 0.90 ) )
+
+
+
+
+
+
+
+
+
+
+
+
 -- core facts
 Actual := SUM('RC_Code_Model_Base'[bal_num])
 
