@@ -1,3 +1,8 @@
+Seasonal Volatility = STDEVX.P(VALUES(Quarter Num), [Seasonal Lift (Q vs All – Matrix])), sort DESC
+
+
+
+
 DBG NumAvg :=
 CALCULATE ( AVERAGEX ( VALUES ( 'RC_Code_Model_Base'[month_end] ), [Actual] ) )
 
