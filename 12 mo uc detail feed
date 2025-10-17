@@ -1,3 +1,57 @@
+Monitorable (Latest, RC – Selected) :=
+VAR lm =
+    MAXX ( ALLSELECTED ( 'RC_Code_Model_Base'[month_end] ),
+           'RC_Code_Model_Base'[month_end] )
+
+VAR actLM =
+    CALCULATE (
+        SUM ( 'RC_Code_Model_Base'[bal_num] ),
+        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+    )
+
+VAR isIntCol =
+    CALCULATE (
+        MAX ( 'RC_Code_Model_Base'[Is_Internal_RC] ),
+        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+    )
+
+-- text fallback if column is missing/blank
+VAR descTxt =
+    CALCULATE (
+        MAX ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+    )
+VAR codeTxt =
+    CALCULATE (
+        MAX ( 'RC_Code_Model_Base'[RC_CODE] ),
+        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+    )
+
+VAR descUpper = UPPER ( COALESCE ( descTxt, "" ) )
+VAR codeUpper = UPPER ( COALESCE ( codeTxt, "" ) )
+
+VAR isIntText =
+    IF (
+        CONTAINSSTRING ( descUpper, "CORPORATE" ) ||
+        CONTAINSSTRING ( descUpper, "HOLDING" ) ||
+        CONTAINSSTRING ( descUpper, "INTERCOMPANY" ) ||
+        CONTAINSSTRING ( descUpper, "INTERNAL" ) ||
+        CONTAINSSTRING ( descUpper, "ADMIN" ) ||
+        CONTAINSSTRING ( codeUpper, "CORP" ) ||
+        CONTAINSSTRING ( codeUpper, "HOLD" ) ||
+        CONTAINSSTRING ( codeUpper, "INTCO" ),
+        1, 0
+    )
+
+VAR isInternal = COALESCE ( isIntCol, isIntText )
+VAR floor = [Exposure Floor Amount (Safe)]
+
+RETURN
+    IF ( isInternal = 0 && NOT ISBLANK ( actLM ) && ABS ( actLM ) >= floor, 1 )
+
+
+
+
 -- Slicer-aware latest month (for small multiples)
 SM – LM Date (Selected) :=
 MAXX ( ALLSELECTED ( 'RC_Code_Model_Base'[month_end] ),
