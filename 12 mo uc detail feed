@@ -1,3 +1,15 @@
+-- tweak the bounds if you want
+CF Min := 0.90
+CF Max := 1.10
+
+Seasonal Lift (for CF – Clamped) :=
+VAR v = [Seasonal Lift (Q vs All – Matrix)]
+VAR mn = [CF Min]
+VAR mx = [CF Max]
+RETURN IF( ISBLANK(v), BLANK(), MIN( mx, MAX( mn, v ) ) )
+
+
+
 Seasonal Volatility = STDEVX.P(VALUES(Quarter Num), [Seasonal Lift (Q vs All – Matrix])), sort DESC
 
 
