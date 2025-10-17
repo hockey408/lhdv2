@@ -1,3 +1,14 @@
+Avg R2 (Simple Mean, Latest – Monitorable Only) :=
+AVERAGEX(
+    FILTER(
+        VALUES('RC_Code_Model_Base'[RC_DESCRIPTION]),
+        [Monitorable Flag (Measure)] = 1
+    ),
+    [R2 (12M, Latest by RC – Aligned)]
+)
+
+
+
 Avg R2 (Exposure-Weighted, Latest – Monitorable Only) :=
 VAR lm =
     CALCULATE ( MAX ( 'RC_Code_Model_Base'[month_end] ), ALL ( 'RC_Code_Model_Base' ) )
