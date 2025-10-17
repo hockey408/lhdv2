@@ -1,3 +1,71 @@
+Realized Ratio (At Month – Monitorable) :=
+VAR me = MAX ( 'RC_Code_Model_Base'[month_end] )          -- axis month
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "Act",   CALCULATE ( [Actual],   'RC_Code_Model_Base'[month_end] = me ),
+        "Fcst",  CALCULATE ( [Forecast], 'RC_Code_Model_Base'[month_end] = me ),
+        "Mon",   CALCULATE ( [Monitorable Flag (Measure)],
+                             'RC_Code_Model_Base'[month_end] = me )
+    )
+VAR fil = FILTER ( perRC,
+                   [Mon] = 1 &&
+                   NOT ISBLANK ( [Act] ) && NOT ISBLANK ( [Fcst] ) &&
+                   ABS ( [Act] ) >= floor )
+VAR num = SUMX ( fil, [Act] )
+VAR den = SUMX ( fil, [Fcst] )
+RETURN DIVIDE ( num, den )
+
+
+LM Date (Selected) :=
+MAXX ( ALLSELECTED ( 'RC_Code_Model_Base'[month_end] ),
+       'RC_Code_Model_Base'[month_end] )
+
+Realized Ratio (Latest – Monitorable) :=
+VAR lm = [LM Date (Selected)]
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "ActLM",  CALCULATE ( [Actual],   'RC_Code_Model_Base'[month_end] = lm ),
+        "FcstLM", CALCULATE ( [Forecast], 'RC_Code_Model_Base'[month_end] = lm ),
+        "MonLM",  CALCULATE ( [Monitorable Flag (Measure)],
+                              'RC_Code_Model_Base'[month_end] = lm )
+    )
+VAR fil = FILTER ( perRC,
+                   [MonLM] = 1 &&
+                   NOT ISBLANK ( [ActLM] ) && NOT ISBLANK ( [FcstLM] ) &&
+                   ABS ( [ActLM] ) >= floor )
+VAR num = SUMX ( fil, [ActLM] )
+VAR den = SUMX ( fil, [FcstLM] )
+RETURN DIVIDE ( num, den )
+
+
+Residual % (At Month – Monitorable) :=
+VAR me = MAX ( 'RC_Code_Model_Base'[month_end] )
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "Act",   CALCULATE ( [Actual],   'RC_Code_Model_Base'[month_end] = me ),
+        "Fcst",  CALCULATE ( [Forecast], 'RC_Code_Model_Base'[month_end] = me ),
+        "Mon",   CALCULATE ( [Monitorable Flag (Measure)],
+                             'RC_Code_Model_Base'[month_end] = me )
+    )
+VAR fil = FILTER ( perRC,
+                   [Mon] = 1 &&
+                   NOT ISBLANK ( [Act] ) && NOT ISBLANK ( [Fcst] ) &&
+                   ABS ( [Act] ) >= floor )
+VAR num = SUMX ( fil, [Act] - [Fcst] )
+VAR den = SUMX ( fil, [Fcst] )
+RETURN DIVIDE ( num, den )
+
+
+
+
+
+
 LM Date (Selected) :=
 MAXX ( ALLSELECTED ( 'RC_Code_Model_Base'[month_end] ),
        'RC_Code_Model_Base'[month_end] )
