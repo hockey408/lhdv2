@@ -1,3 +1,43 @@
+Rank – Severity (Latest – Selected, Monitorable only) :=
+VAR lm     = [LM Date (Selected)]
+VAR floor  = [Exposure Floor Amount (Safe)]
+VAR currSev = [Severity (Latest, per RC – Selected)]
+VAR currExp = ABS( [ActLM (Latest, per RC – Selected)] )
+VAR currMon = [Monitorable (Latest, per RC – Selected)]
+
+VAR pool =
+    ADDCOLUMNS(
+        VALUES( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "Sev",  CALCULATE( [Severity (Weighted, Latest)],
+                           TREATAS( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "Exp",  CALCULATE( SUM( 'RC_Code_Model_Base'[bal_num] ),
+                           TREATAS( { lm }, 'RC_Code_Model_Base'[month_end] ) ),
+        "Mon",  CALCULATE( [Monitorable Flag (Measure)],
+                           TREATAS( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+    )
+
+VAR candidates =
+    FILTER( pool,
+        [Mon] = 1 &&
+        NOT ISBLANK([Sev]) &&
+        ABS([Exp]) >= floor
+    )
+
+/* Tie-breaker: exposure scaled tiny so severity dominates */
+VAR rankVal =
+    RANKX( candidates,
+           [Sev] + (ABS([Exp]) / 1e15),
+           currSev + (currExp / 1e15),
+           DESC, SKIP )
+
+RETURN IF( currMon = 1 && NOT ISBLANK(currSev) && currExp >= floor, rankVal )
+
+Show – Small Multiples Top4 (Selected) :=
+VAR r = [Rank – Severity (Latest – Selected, Monitorable only)]
+RETURN IF( NOT ISBLANK(r) && r <= 4, 1 )
+
+
+
 -- Assumes:
 --   Actual := SUM('RC_Code_Model_Base'[bal_num])
 --   Quarter Num = QUARTER('RC_Code_Model_Base'[month_end])  (calculated column)
