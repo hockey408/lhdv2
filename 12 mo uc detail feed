@@ -1,3 +1,21 @@
+-- Returns 1 if the RC is monitorable at the latest month; else BLANK
+Monitorable (Latest, RC) :=
+VAR lm   = MAXX ( ALL ( 'RC_Code_Model_Base' ), 'RC_Code_Model_Base'[month_end] )
+VAR isIn =
+    CALCULATE (
+        MAX ( 'RC_Code_Model_Base'[Is_Internal_RC] ),
+        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+    )
+VAR actLM =
+    CALCULATE (
+        SUM ( 'RC_Code_Model_Base'[bal_num] ),
+        TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+    )
+RETURN IF ( COALESCE(isIn,0) = 0 && ABS(actLM) >= [Exposure Floor Amount], 1 )
+
+
+
+
 R2 (12M, Trend by RC – No Gate) :=
 VAR rc = SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
 VAR me = MAX ( 'RC_Code_Model_Base'[month_end] )        -- month on the axis
