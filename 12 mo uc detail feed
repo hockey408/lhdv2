@@ -1,3 +1,58 @@
+-- Average of the quarterly lifts (Q1..Q4) for the RC in context
+Seasonal Lift (Avg Q per RC) :=
+AVERAGEX ( VALUES ( 'RC_Code_Model_Base'[Quarter Num] ),
+           [Seasonal Lift (Q vs All – Matrix)] )
+
+-- Population stdev of the quarterly lifts (how “seasonal” the RC is)
+Seasonal Volatility (Per RC) :=
+VAR qs = VALUES ( 'RC_Code_Model_Base'[Quarter Num] )
+RETURN STDEVX.P ( qs, [Seasonal Lift (Q vs All – Matrix)] )
+
+-- Mean absolute deviation from 1.0 (sometimes more intuitive than stdev)
+Seasonal Intensity (|Lift-1|) :=
+AVERAGEX ( VALUES ( 'RC_Code_Model_Base'[Quarter Num] ),
+           ABS ( [Seasonal Lift (Q vs All – Matrix)] - 1.0 ) )
+
+-- How many quarters have data (helps judge reliability)
+Quarters Covered (Count) :=
+COUNTROWS ( VALUES ( 'RC_Code_Model_Base'[Quarter Num] ) )
+
+
+ActLM (Latest, Selected) :=
+VAR lm = [LM Date (Selected)]
+RETURN CALCULATE ( [Actual], TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+Monitorable (Latest, RC – Selected) :=
+VAR lm  = [LM Date (Selected)]
+VAR mon = CALCULATE ( [Monitorable Flag (Measure)],
+                      TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+VAR act = [ActLM (Latest, Selected)]
+RETURN IF ( mon = 1 && NOT ISBLANK ( act ) && ABS ( act ) >= [Exposure Floor Amount (Safe)], 1 )
+
+
+-- Rank RCs by strongest seasonality (higher volatility first)
+Rank by Seasonal Volatility :=
+RANKX ( ALL ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        [Seasonal Volatility (Per RC)], , DESC, DENSE )
+
+-- Show only Top N (parameterized). If you don’t have a parameter, hardcode 10.
+TopN Value (Disconnected) := SELECTEDVALUE ( 'TopN Parm'[N], 10 )
+
+Show – TopN Seasonal RCs :=
+VAR r = [Rank by Seasonal Volatility]
+VAR n = [TopN Value (Disconnected)]
+RETURN IF ( NOT ISBLANK ( r ) && r <= n, 1 )
+
+
+
+
+
+
+
+
+
+
+
 Realized Ratio (At Month – Monitorable) :=
 VAR me = MAX ( 'RC_Code_Model_Base'[month_end] )          -- axis month
 VAR floor = [Exposure Floor Amount (Safe)]
