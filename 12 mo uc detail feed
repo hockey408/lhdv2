@@ -1,3 +1,65 @@
+Monitorable (LM per RC – Selected) :=
+VAR rc   = SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
+VAR lmRC =
+    CALCULATE (
+        MAX ( 'RC_Code_Model_Base'[month_end] ),
+        ALLSELECTED ( 'RC_Code_Model_Base'[month_end] ),
+        'RC_Code_Model_Base'[RC_DESCRIPTION] = rc
+    )
+VAR actLM =
+    CALCULATE (
+        SUM ( 'RC_Code_Model_Base'[bal_num] ),
+        'RC_Code_Model_Base'[RC_DESCRIPTION] = rc,
+        'RC_Code_Model_Base'[month_end] = lmRC
+    )
+VAR isIntCol =
+    CALCULATE (
+        MAX ( 'RC_Code_Model_Base'[Is_Internal_RC] ),
+        'RC_Code_Model_Base'[RC_DESCRIPTION] = rc,
+        'RC_Code_Model_Base'[month_end] = lmRC
+    )
+
+-- text fallback if column is missing/blank
+VAR descUpper =
+    UPPER (
+        COALESCE (
+            CALCULATE (
+                MAX ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+                'RC_Code_Model_Base'[RC_DESCRIPTION] = rc,
+                'RC_Code_Model_Base'[month_end] = lmRC
+            ),
+            ""
+        )
+    )
+VAR codeUpper =
+    UPPER (
+        COALESCE (
+            CALCULATE (
+                MAX ( 'RC_Code_Model_Base'[RC_CODE] ),
+                'RC_Code_Model_Base'[RC_DESCRIPTION] = rc,
+                'RC_Code_Model_Base'[month_end] = lmRC
+            ),
+            ""
+        )
+    )
+VAR isIntText =
+    IF (
+        CONTAINSSTRING ( descUpper, "CORPORATE" ) ||
+        CONTAINSSTRING ( descUpper, "HOLDING" ) ||
+        CONTAINSSTRING ( descUpper, "INTERCOMPANY" ) ||
+        CONTAINSSTRING ( descUpper, "INTERNAL" ) ||
+        CONTAINSSTRING ( descUpper, "ADMIN" ) ||
+        CONTAINSSTRING ( codeUpper, "CORP" ) ||
+        CONTAINSSTRING ( codeUpper, "HOLD" ) ||
+        CONTAINSSTRING ( codeUpper, "INTCO" ),
+        1, 0
+    )
+VAR isInt = COALESCE ( isIntCol, isIntText )
+VAR floor = [Exposure Floor Amount (Safe)]
+RETURN IF ( NOT ISBLANK ( lmRC ) && isInt = 0 && NOT ISBLANK ( actLM ) && ABS ( actLM ) >= floor, 1 )
+
+
+
 Trend Debug – Included RC Count :=
 VAR t =
     ADDCOLUMNS (
