@@ -1,3 +1,32 @@
+Total Monitorable Exposure (Latest) :=
+VAR lm =
+    MAXX ( ALL ( 'RC_Code_Model_Base' ), 'RC_Code_Model_Base'[month_end] )
+VAR floor =
+    [Exposure Floor Amount (Safe)]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "ActLM",
+            CALCULATE (
+                SUM ( 'RC_Code_Model_Base'[bal_num] ),
+                TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+            ),
+        "IsIntLM",
+            CALCULATE (
+                MAX ( 'RC_Code_Model_Base'[Is_Internal_RC] ),
+                TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] )
+            )
+    )
+VAR total_ =
+    SUMX (
+        FILTER ( perRC, COALESCE ( [IsIntLM], 0 ) = 0 && ABS ( [ActLM] ) >= floor ),
+        [ActLM]
+    )
+RETURN COALESCE ( total_, 0 )
+
+
+
+
 R2 Window N (12M, Latest by RC) :=
 VAR rc =
     SELECTEDVALUE ( 'RC_Code_Model_Base'[RC_DESCRIPTION] )
