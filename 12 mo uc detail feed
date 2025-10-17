@@ -1,3 +1,37 @@
+-- Assumes:
+--   Actual := SUM('RC_Code_Model_Base'[bal_num])
+--   Quarter Num = QUARTER('RC_Code_Model_Base'[month_end])  (calculated column)
+
+Seasonal Volatility (Per RC – Matrix Safe) :=
+VAR quarters =
+    CALCULATETABLE (
+        VALUES ( 'RC_Code_Model_Base'[Quarter Num] ),
+        REMOVEFILTERS ( 'RC_Code_Model_Base'[Quarter Num] )   -- keep RC filters, drop quarter filter
+    )
+VAR liftsPerQ =
+    ADDCOLUMNS (
+        quarters,
+        "lift",
+            VAR q = 'RC_Code_Model_Base'[Quarter Num]
+            VAR NumAvg =
+                CALCULATE (
+                    AVERAGEX ( VALUES ( 'RC_Code_Model_Base'[month_end] ), [Actual] ),
+                    KEEPFILTERS ( 'RC_Code_Model_Base'[Quarter Num] = q )
+                )
+            VAR DenAvg =
+                CALCULATE (
+                    AVERAGEX ( VALUES ( 'RC_Code_Model_Base'[month_end] ), [Actual] ),
+                    REMOVEFILTERS ( 'RC_Code_Model_Base'[Quarter Num] )
+                )
+            RETURN DIVIDE ( NumAvg, DenAvg )
+    )
+VAR valid = FILTER ( liftsPerQ, NOT ISBLANK ( [lift] ) )
+VAR n = COUNTROWS ( valid )
+RETURN IF ( n >= 2, STDEVX.P ( valid, [lift] ) )
+
+
+
+
 TopN Parm =
 DATATABLE (
     "N", INTEGER,
