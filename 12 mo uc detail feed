@@ -1,3 +1,42 @@
+-- Slicer-aware latest month (for small multiples)
+SM – LM Date (Selected) :=
+MAXX ( ALLSELECTED ( 'RC_Code_Model_Base'[month_end] ),
+       'RC_Code_Model_Base'[month_end] )
+
+-- Monitorable = 1 at the selected latest month; else BLANK
+Monitorable (Latest, RC – Selected) :=
+VAR lm    = [SM – LM Date (Selected)]
+VAR actLM =
+    CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ),
+                TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+VAR isIntCol =
+    CALCULATE ( MAX ( 'RC_Code_Model_Base'[Is_Internal_RC] ),
+                TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+-- Text fallback if the column is missing/blank for this RC at lm
+VAR d =
+    CALCULATE ( MAX ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+                TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+VAR c =
+    CALCULATE ( MAX ( 'RC_Code_Model_Base'[RC_CODE] ),
+                TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+VAR D = UPPER ( COALESCE ( d, "" ) )
+VAR C = UPPER ( COALESCE ( c, "" ) )
+VAR isIntTxt =
+    IF (
+        CONTAINSSTRING ( D, "CORPORATE" ) || CONTAINSSTRING ( D, "HOLDING" ) ||
+        CONTAINSSTRING ( D, "INTERCOMPANY" ) || CONTAINSSTRING ( D, "INTERNAL" ) ||
+        CONTAINSSTRING ( D, "ADMIN" ) || CONTAINSSTRING ( C, "CORP" ) ||
+        CONTAINSSTRING ( C, "HOLD" ) || CONTAINSSTRING ( C, "INTCO" ),
+        1, 0
+    )
+VAR isInt = COALESCE ( isIntCol, isIntTxt )
+VAR floor = [Exposure Floor Amount (Safe)]   -- use your safe floor wrapper
+RETURN IF ( isInt = 0 && NOT ISBLANK ( actLM ) && ABS ( actLM ) >= floor, 1 )
+
+
+
+
 -- Returns 1 if the RC is monitorable at the latest month; else BLANK
 Monitorable (Latest, RC) :=
 VAR lm   = MAXX ( ALL ( 'RC_Code_Model_Base' ), 'RC_Code_Model_Base'[month_end] )
