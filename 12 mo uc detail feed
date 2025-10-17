@@ -1,3 +1,17 @@
+TopN Parm =
+DATATABLE (
+    "N", INTEGER,
+    {
+        {5},
+        {10},
+        {15},
+        {20}
+    }
+)
+
+
+
+
 -- Average of the quarterly lifts (Q1..Q4) for the RC in context
 Seasonal Lift (Avg Q per RC) :=
 AVERAGEX ( VALUES ( 'RC_Code_Model_Base'[Quarter Num] ),
