@@ -1,3 +1,64 @@
+-- Changes-only exposure Δ by KDE at latest month
+KDE Exposure Δ (Changes-only, LM) :=
+VAR lm = [LM Date (Selected)]
+RETURN
+CALCULATE (
+    SUM ( 'KDE_MoM'[exp_changed] ),
+    TREATAS ( { lm }, 'KDE_MoM'[month_end] )
+)
+
+-- Changes-only count Δ by KDE at latest month
+KDE Count Δ (Changes-only, LM) :=
+VAR lm = [LM Date (Selected)]
+RETURN
+CALCULATE (
+    SUM ( 'KDE_MoM'[cnt_changed] ),
+    TREATAS ( { lm }, 'KDE_MoM'[month_end] )
+)
+
+-- Flip diagnostics (null/value churn) at latest month
+KDE Flips: NULL→Value (LM) :=
+VAR lm = [LM Date (Selected)]
+RETURN CALCULATE ( SUM ( 'KDE_MoM'[null_to_val] ), TREATAS ( { lm }, 'KDE_MoM'[month_end] ) )
+
+KDE Flips: Value→NULL (LM) :=
+VAR lm = [LM Date (Selected)]
+RETURN CALCULATE ( SUM ( 'KDE_MoM'[val_to_null] ), TREATAS ( { lm }, 'KDE_MoM'[month_end] ) )
+
+KDE Flips: Value→Value (LM) :=
+VAR lm = [LM Date (Selected)]
+RETURN CALCULATE ( SUM ( 'KDE_MoM'[val_to_val] ), TREATAS ( { lm }, 'KDE_MoM'[month_end] ) )
+
+KDE Exposure Δ (LM – for Waterfall) := [KDE Exposure Δ (Changes-only, LM)]
+
+
+-- Severity at latest month per RC
+Severity (Weighted, Latest – RC) :=
+VAR lm = [LM Date (Selected)]
+RETURN CALCULATE ( [Severity (Weighted, Latest)],
+                   TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+-- Latest exposure per RC (for weighting/filters)
+ActLM (Latest, RC) :=
+VAR lm = [LM Date (Selected)]
+RETURN CALCULATE ( SUM ( 'RC_Code_Model_Base'[bal_num] ),
+                   TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+-- Monitorable gate at latest month per RC
+Monitorable (LM, RC) :=
+VAR lm = [LM Date (Selected)]
+VAR m  = CALCULATE ( [Monitorable Flag (Measure)],
+                     TREATAS ( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+RETURN IF ( m = 1, 1 )
+
+
+
+
+
+
+
+
+
 ActLM (Latest, per RC – Selected) :=
 VAR lm = [LM Date (Selected)]
 RETURN
