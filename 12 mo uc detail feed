@@ -1,3 +1,32 @@
+Forecast Ratio (At Month – Monitorable) :=
+VAR me    = MAX ( 'RC_Code_Model_Base'[month_end] )     -- the axis month
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR perRC =
+    ADDCOLUMNS (
+        VALUES ( 'RC_Code_Model_Base'[RC_DESCRIPTION] ),
+        "Act",
+            CALCULATE ( [Actual],   'RC_Code_Model_Base'[month_end] = me ),
+        "Fcst",
+            CALCULATE ( [Forecast], 'RC_Code_Model_Base'[month_end] = me ),
+        "Mon",
+            CALCULATE ( [Monitorable Flag (Measure)],
+                        'RC_Code_Model_Base'[month_end] = me )
+    )
+VAR fil =
+    FILTER (
+        perRC,
+        [Mon] = 1 &&
+        NOT ISBLANK ( [Act] ) && NOT ISBLANK ( [Fcst] ) &&
+        ABS ( [Act] ) >= floor
+    )
+VAR num = SUMX ( fil, [Fcst] )
+VAR den = SUMX ( fil, [Act] )
+RETURN DIVIDE ( num, den )
+
+
+
+
+
 Exposure (Latest) :=
 VAR lm = [LM Date (Selected)]
 RETURN
