@@ -1,3 +1,37 @@
+-- R² at latest month in RC context
+R2 (LM, per RC) :=
+VAR lm = [LM Date (Selected)]
+RETURN CALCULATE( [R2_By_Model],
+                  TREATAS( { lm }, 'RC_Code_Model_Base'[month_end] ) )
+
+-- Cap to a sensible display range for portfolio KPIs
+R2 (LM, per RC – Capped) :=
+VAR r = [R2 (LM, per RC)]
+RETURN
+IF ( ISBLANK(r), BLANK(),
+     MAX ( -1.0, MIN ( 1.0, r ) )
+)
+
+Avg R2 (Exp-Weighted, Latest – Robust) :=
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR t =
+    ADDCOLUMNS(
+        VALUES('RC_Code_Model_Base'[RC_DESCRIPTION]),
+        "R2C",  [R2 (LM, per RC – Capped)],
+        "Act",  [Actual (LM, per RC)],
+        "Mon",  [Monitorable (LM, per RC)]
+    )
+VAR fil = FILTER( t, [Mon] = 1 && NOT ISBLANK([R2C]) && ABS([Act]) >= floor )
+VAR num = SUMX( fil, [R2C] * ABS([Act]) )
+VAR den = SUMX( fil, ABS([Act]) )
+RETURN DIVIDE( num, den )
+
+
+
+
+
+
+
 Exposure Δ MoM (per RC) := [Actual (LM, per RC)] - [Actual (PrevM, per RC)]
 Exposure Δ MoM | Abs (per RC) := ABS( [Exposure Δ MoM (per RC)] )
 
