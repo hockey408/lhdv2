@@ -1,3 +1,134 @@
+VarianceParms =
+DATATABLE(
+  "Param", STRING, "Value", DOUBLE,
+  { {"MOM_Pct", 0.08},   -- 8% MoM threshold
+    {"YOY_Pct", 0.10},   -- 10% YoY threshold
+    {"SigmaK", 3.0} }    -- 3-sigma
+)
+
+
+Param MoM % := CALCULATE( MAX(VarianceParms[Value]), VarianceParms[Param] = "MOM_Pct")
+Param YoY % := CALCULATE( MAX(VarianceParms[Value]), VarianceParms[Param] = "YOY_Pct")
+Param SigmaK := CALCULATE( MAX(VarianceParms[Value]), VarianceParms[Param] = "SigmaK")
+
+-- Monthly residual % (portfolio sign convention: + = over-forecast)
+Residual % (At Month – RC) :=
+DIVIDE( [Forecast] - [Actual], [Actual] )  -- use your existing Forecast/Actual measures
+
+-- MoM and YoY actual changes (per RC, at the axis month)
+MoM % (Actual) :=
+VAR me = MAX('RC_Code_Model_Base'[month_end])
+VAR pm = EOMONTH(me, -1)
+VAR a_me = CALCULATE( [Actual], 'RC_Code_Model_Base'[month_end] = me )
+VAR a_pm = CALCULATE( [Actual], 'RC_Code_Model_Base'[month_end] = pm )
+RETURN DIVIDE( a_me - a_pm, a_pm )
+
+YoY % (Actual) :=
+VAR me = MAX('RC_Code_Model_Base'[month_end])
+VAR ym = EOMONTH(me, -12)
+VAR a_me = CALCULATE( [Actual], 'RC_Code_Model_Base'[month_end] = me )
+VAR a_ym = CALCULATE( [Actual], 'RC_Code_Model_Base'[month_end] = ym )
+RETURN DIVIDE( a_me - a_ym, a_ym )
+
+-- Rolling baseline for residual%
+Residual % (Mean6) :=
+VAR rng = DATESINPERIOD('RC_Code_Model_Base'[month_end], MAX('RC_Code_Model_Base'[month_end]), -6, MONTH)
+RETURN AVERAGEX( rng, CALCULATE( [Residual % (At Month – RC)] ) )
+
+Residual % (SD6) :=
+VAR rng = DATESINPERIOD('RC_Code_Model_Base'[month_end], MAX('RC_Code_Model_Base'[month_end]), -6, MONTH)
+RETURN STDEVX.P( rng, CALCULATE( [Residual % (At Month – RC)] ) )
+
+
+Variance Class :=
+VAR r   = [Residual % (At Month – RC)]
+VAR m6  = [Residual % (Mean6)]
+VAR s6  = [Residual % (SD6)]
+VAR mom = [MoM % (Actual)]
+VAR yoy = [YoY % (Actual)]
+VAR k   = [Param SigmaK]
+VAR t_m = [Param MoM %]
+VAR t_y = [Param YoY %]
+RETURN
+SWITCH(TRUE(),
+  ISBLANK(r), BLANK(),
+  s6 > 0 && ABS(r - m6) >= k * s6,         "Outlier Spike",
+  NOT ISBLANK(yoy) && ABS(yoy) >= t_y
+     && SIGN(yoy) = SIGN(r),               "Possible Level/Trend Shift",
+  NOT ISBLANK(mom) && ABS(mom) >= t_m
+     && SIGN(mom) = SIGN(r),               "Short-term Shock",
+  ABS(r) >= 0.05 && (ISBLANK(yoy) || ABS(yoy) < t_y), "Model Miss (Non-seasonal)",
+  "Within Expected Range"
+)
+
+
+Residual Sign (±1) :=
+VAR r = [Residual % (At Month – RC)]
+RETURN IF( ISBLANK(r), BLANK(), IF(r >= 0, 1, -1) )
+
+Bias Persistence (3M Same Sign) :=
+VAR rng = DATESINPERIOD('RC_Code_Model_Base'[month_end], MAX('RC_Code_Model_Base'[month_end]), -3, MONTH)
+VAR sum3 = SUMX( rng, CALCULATE( [Residual Sign (±1)] ) )
+RETURN IF( ABS(sum3) = 3, 1, 0 )
+
+
+Severity (Monthly) := AVERAGE('RC_Code_Model_Base'[Severity_0_100])  -- or your existing monthly severity measure
+
+Severity (3M Avg) :=
+VAR rng = DATESINPERIOD('RC_Code_Model_Base'[month_end], [LM Date (Selected)], -3, MONTH)
+RETURN AVERAGEX( rng, CALCULATE([Severity (Monthly)]) )
+
+Show – Small Multiples TopN (3M Severity) :=
+VAR lm = [LM Date (Selected)]
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR N = SELECTEDVALUE('TopN Parm'[N], 4)          -- reuse your TopN parm if you have it
+VAR pool =
+  ADDCOLUMNS(
+    ALLSELECTED('RC_Code_Model_Base'[RC_DESCRIPTION]),
+    "Mon",  CALCULATE([Monitorable Flag (Measure)], TREATAS({lm}, 'RC_Code_Model_Base'[month_end])),
+    "ActLM",CALCULATE([Actual], TREATAS({lm}, 'RC_Code_Model_Base'[month_end])),
+    "Sev3", CALCULATE([Severity (3M Avg)])
+  )
+VAR cand = FILTER(pool, [Mon]=1 && ABS([ActLM]) >= floor && NOT ISBLANK([Sev3]))
+VAR topN = TOPN(N, cand, [Sev3], DESC)
+RETURN IF( HASONEVALUE('RC_Code_Model_Base'[RC_DESCRIPTION]) &&
+           CONTAINS(topN, 'RC_Code_Model_Base'[RC_DESCRIPTION], SELECTEDVALUE('RC_Code_Model_Base'[RC_DESCRIPTION])), 1)
+
+
+Abs Error := ABS( [Actual] - [Forecast] )
+Bias %    := DIVIDE( [Forecast] - [Actual], [Actual] )
+APE %     := DIVIDE( ABS([Actual] - [Forecast]), [Actual] )
+
+MAE (6M, per RC) :=
+VAR rng = DATESINPERIOD('RC_Code_Model_Base'[month_end], MAX('RC_Code_Model_Base'[month_end]), -6, MONTH)
+RETURN AVERAGEX( rng, CALCULATE([Abs Error]) )
+
+MAPE (6M, per RC) :=
+VAR rng = DATESINPERIOD('RC_Code_Model_Base'[month_end], MAX('RC_Code_Model_Base'[month_end]), -6, MONTH)
+RETURN AVERAGEX( rng, CALCULATE([APE %]) )
+
+Bias % (6M, per RC) :=
+VAR rng = DATESINPERIOD('RC_Code_Model_Base'[month_end], MAX('RC_Code_Model_Base'[month_end]), -6, MONTH)
+RETURN AVERAGEX( rng, CALCULATE([Bias %]) )
+
+Alert – High Severity & Miss (LM) :=
+VAR sev = [Severity (Weighted, Latest – RC)]
+VAR res = [Residual % (At Month – RC)]
+RETURN IF( sev >= 80 && ABS(res) >= 0.05, 1, 0 )
+
+Alert – Persistent Bias (3M) :=
+[Bias Persistence (3M Same Sign)]
+
+
+
+
+
+
+
+
+
+
+
 Forecast Ratio (At Month – Monitorable) :=
 VAR me    = MAX ( 'RC_Code_Model_Base'[month_end] )     -- the axis month
 VAR floor = [Exposure Floor Amount (Safe)]
