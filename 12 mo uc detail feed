@@ -1,3 +1,12 @@
+Exposure (Latest) :=
+VAR lm = [LM Date (Selected)]
+RETURN
+CALCULATE(
+    SUM( 'RC_Code_Model_Base'[bal_num] ),
+    TREATAS( { lm }, 'RC_Code_Model_Base'[month_end] )
+)
+
+
 -- R² at latest month in RC context
 R2 (LM, per RC) :=
 VAR lm = [LM Date (Selected)]
