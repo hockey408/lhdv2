@@ -1,3 +1,42 @@
+Show – Small Multiples TopN (3M Severity) :=
+VAR lm = [LM Date (Selected)]
+VAR floor = [Exposure Floor Amount (Safe)]
+VAR N = SELECTEDVALUE('TopN Parm'[N], 4)
+VAR pool =
+    ADDCOLUMNS(
+        ALLSELECTED('RC_Code_Model_Base'[RC_DESCRIPTION]),
+        "Mon",
+            CALCULATE(
+                [Monitorable Flag (Measure)],
+                TREATAS({ lm }, 'RC_Code_Model_Base'[month_end])
+            ),
+        "ActLM",
+            CALCULATE(
+                [Actual],
+                TREATAS({ lm }, 'RC_Code_Model_Base'[month_end])
+            ),
+        "Sev3",
+            CALCULATE([Severity (3M Avg)])
+    )
+VAR cand =
+    FILTER(
+        pool,
+        [Mon] = 1 &&
+        ABS([ActLM]) >= floor &&
+        NOT ISBLANK([Sev3])
+    )
+VAR TopSet = TOPN(N, cand, [Sev3], DESC)
+RETURN
+IF(
+    HASONEVALUE('RC_Code_Model_Base'[RC_DESCRIPTION]) &&
+    CONTAINS(TopSet, 'RC_Code_Model_Base'[RC_DESCRIPTION], SELECTEDVALUE('RC_Code_Model_Base'[RC_DESCRIPTION])),
+    1
+)
+
+
+
+
+
 VarianceParms =
 DATATABLE(
   "Param", STRING, "Value", DOUBLE,
