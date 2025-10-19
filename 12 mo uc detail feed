@@ -1,3 +1,37 @@
+Residual % (Mean6 at LM, per RC) :=
+VAR lm  = [LM Date (Selected)]
+VAR rng = CALCULATETABLE(
+            DATESINPERIOD('RC_Code_Model_Base'[month_end], lm, -6, MONTH)
+          )
+RETURN
+AVERAGEX(
+  rng,
+  CALCULATE(        -- evaluate residual% at each date d in rng
+    DIVIDE(
+      SUM('RC_Code_Model_Base'[Forecast_Selected]) - SUM('RC_Code_Model_Base'[bal_num]),
+      SUM('RC_Code_Model_Base'[bal_num])
+    )
+  )
+)
+
+Residual % (SD6 at LM, per RC) :=
+VAR lm  = [LM Date (Selected)]
+VAR rng = CALCULATETABLE(
+            DATESINPERIOD('RC_Code_Model_Base'[month_end], lm, -6, MONTH)
+          )
+RETURN
+STDEVX.P(
+  rng,
+  CALCULATE(
+    DIVIDE(
+      SUM('RC_Code_Model_Base'[Forecast_Selected]) - SUM('RC_Code_Model_Base'[bal_num]),
+      SUM('RC_Code_Model_Base'[bal_num])
+    )
+  )
+)
+
+
+
 -- Parameter helpers (or hardcode 0.08 / 0.10 / 3.0)
 Param MoM %  := CALCULATE( MAX(VarianceParms[Value]), VarianceParms[Param]="MOM_Pct")
 Param YoY %  := CALCULATE( MAX(VarianceParms[Value]), VarianceParms[Param]="YOY_Pct")
