@@ -1,3 +1,112 @@
+-- ===================== Synthetic Identification (Cat1 / Cat2) =====================
+-- No tables, no temp tables. Edit lists below as needed.
+-- Filters to GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans' and returns readable fields.
+-- ================================================================================
+
+WITH
+/* -------- Optional window (edit or remove) ------------------------------------ */
+params AS (
+  SELECT
+    ADD_MONTHS(CURRENT_DATE, -13)::DATE AS min_month_end,
+    CURRENT_DATE::DATE                  AS max_month_end
+),
+
+/* -------- Base pulled from your monthly view ---------------------------------- */
+base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE)               AS month_end,
+    ACCOUNT_IDENTIFIER,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    GL_ACCOUNT_DESCRIPTION,                       -- for readability
+    GL_ACCOUNT_HIER_LEVEL_4,
+    COALESCE(SOURCE_SYSTEM_BALANCE,0.0)::FLOAT8   AS exposure,
+    ACCOUNT_DESCRIPTION
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME   -- swap to your canonical monthly view if different
+  WHERE CAST(END_OF_MONTH_DATE AS DATE) BETWEEN (SELECT min_month_end FROM params)
+                                            AND   (SELECT max_month_end FROM params)
+    AND GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+
+/* -------- Category flags ------------------------------------------------------- */
+/* Cat 1: CONTRACT_SOURCE_SYSTEM in list OR like '%EXCPTN%' */
+cat1 AS (
+  SELECT
+    b.*,
+    CASE
+      WHEN UPPER(CONTRACT_SOURCE_SYSTEM) IN (
+        'FRDS_EXCPTN','SYN','ALL','GL','LJ','ADJ','LNIQ01-EXCPTN','INFL05-EXCPTN'
+      )
+        OR UPPER(CONTRACT_SOURCE_SYSTEM) LIKE '%EXCPTN%'
+      THEN 1 ELSE 0
+    END AS cat1_flag,
+    /* Reason text for readability */
+    CASE
+      WHEN UPPER(CONTRACT_SOURCE_SYSTEM) LIKE '%EXCPTN%' THEN 'CSS like %EXCPTN%'
+      WHEN UPPER(CONTRACT_SOURCE_SYSTEM) IN (
+        'FRDS_EXCPTN','SYN','ALL','GL','LJ','ADJ','LNIQ01-EXCPTN','INFL05-EXCPTN'
+      ) THEN 'CSS explicit list'
+      ELSE NULL
+    END AS cat1_reason
+  FROM base b
+),
+
+/* Cat 2: GL_ACCOUNT_CODE in list AND CONTRACT_SOURCE_SYSTEM = 'ALL' */
+cat2 AS (
+  SELECT
+    c1.*,
+    CASE
+      WHEN CONTRACT_SOURCE_SYSTEM = 'ALL'
+       AND GL_ACCOUNT_CODE IN (
+            1041210,1142067,1042213,1042368,1042409,1042424,1042886,
+            1043008,1142048,1051872,1061833,1041211,1041344,1041364
+          )
+      THEN 1 ELSE 0
+    END AS cat2_flag,
+    CASE
+      WHEN CONTRACT_SOURCE_SYSTEM = 'ALL'
+       AND GL_ACCOUNT_CODE IN (
+            1041210,1142067,1042213,1042368,1042409,1042424,1042886,
+            1043008,1142048,1051872,1061833,1041211,1041344,1041364
+          )
+      THEN 'GL in Cat2 list with CSS=ALL'
+      ELSE NULL
+    END AS cat2_reason
+  FROM cat1 c1
+)
+
+/* -------- Final output --------------------------------------------------------- */
+SELECT
+  month_end,
+  ACCOUNT_IDENTIFIER,
+  CONTRACT_SOURCE_SYSTEM,
+  GL_ACCOUNT_CODE,
+  GL_ACCOUNT_DESCRIPTION,
+  GL_ACCOUNT_HIER_LEVEL_4,
+  exposure,
+  /* Synthetic category label */
+  CASE
+    WHEN cat1_flag=1 AND cat2_flag=1 THEN 'Cat1+Cat2'
+    WHEN cat1_flag=1 THEN 'Cat1'
+    WHEN cat2_flag=1 THEN 'Cat2'
+    ELSE NULL
+  END AS synthetic_category,
+  /* Human-readable reasons (only where applicable) */
+  cat1_reason,
+  cat2_reason
+FROM cat2
+WHERE (cat1_flag=1 OR cat2_flag=1)
+ORDER BY month_end DESC, synthetic_category, ABS(exposure) DESC, ACCOUNT_IDENTIFIER;
+
+
+
+
+
+
+
+
+
+
 FRDS_EXCPTN
 SYN
 ALL
