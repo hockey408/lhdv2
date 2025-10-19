@@ -1,3 +1,76 @@
+-- Parameter helpers (or hardcode 0.08 / 0.10 / 3.0)
+Param MoM %  := CALCULATE( MAX(VarianceParms[Value]), VarianceParms[Param]="MOM_Pct")
+Param YoY %  := CALCULATE( MAX(VarianceParms[Value]), VarianceParms[Param]="YOY_Pct")
+Param SigmaK := CALCULATE( MAX(VarianceParms[Value]), VarianceParms[Param]="SigmaK")
+
+Variance Class (LM) :=
+VAR r   = [Residual % (LM, per RC)]
+VAR m6  = [Residual % (Mean6 at LM, per RC)]
+VAR s6  = [Residual % (SD6 at LM, per RC)]
+VAR mom = [MoM % (Actual, LM, per RC)]
+VAR yoy = [YoY % (Actual, LM, per RC)]
+VAR k   = [Param SigmaK]
+VAR t_m = [Param MoM %]
+VAR t_y = [Param YoY %]
+RETURN
+SWITCH(TRUE(),
+  ISBLANK(r), BLANK(),
+  s6 > 0 && ABS(r - m6) >= k * s6,                           "Outlier Spike",
+  NOT ISBLANK(yoy) && ABS(yoy) >= t_y && SIGN(yoy)=SIGN(r),   "Possible Level/Trend Shift",
+  NOT ISBLANK(mom) && ABS(mom) >= t_m && SIGN(mom)=SIGN(r),   "Short-term Shock",
+  ABS(r) >= 0.05 && (ISBLANK(yoy) || ABS(yoy) < t_y),         "Model Miss (Non-seasonal)",
+  "Within Expected Range"
+)
+
+
+Is Monitorable (LM, per RC) :=
+VAR lm=[LM Date (Selected)]
+VAR m = CALCULATE([Monitorable Flag (Measure)],
+                  TREATAS({lm}, 'RC_Code_Model_Base'[month_end]))
+VAR act = [Actual (LM, per RC)]
+VAR floor = [Exposure Floor Amount (Safe)]
+RETURN IF( m=1 && NOT ISBLANK(act) && ABS(act) >= floor, 1 )
+
+Count – Outlier Spike (LM) :=
+COUNTROWS(
+  FILTER(
+    VALUES('RC_Code_Model_Base'[RC_DESCRIPTION]),
+    [Is Monitorable (LM, per RC)] = 1 &&
+    [Variance Class (LM)] = "Outlier Spike"
+  )
+)
+
+Count – Trend/Level Shift (LM) :=
+COUNTROWS(
+  FILTER(
+    VALUES('RC_Code_Model_Base'[RC_DESCRIPTION]),
+    [Is Monitorable (LM, per RC)] = 1 &&
+    [Variance Class (LM)] = "Possible Level/Trend Shift"
+  )
+)
+
+Count – Short-term Shock (LM) :=
+COUNTROWS(
+  FILTER(
+    VALUES('RC_Code_Model_Base'[RC_DESCRIPTION]),
+    [Is Monitorable (LM, per RC)] = 1 &&
+    [Variance Class (LM)] = "Short-term Shock"
+  )
+)
+
+Count – Model Miss (LM) :=
+COUNTROWS(
+  FILTER(
+    VALUES('RC_Code_Model_Base'[RC_DESCRIPTION]),
+    [Is Monitorable (LM, per RC)] = 1 &&
+    [Variance Class (LM)] = "Model Miss (Non-seasonal)"
+  )
+)
+
+
+
+
+
 Show – Small Multiples TopN (3M Severity) :=
 VAR lm = [LM Date (Selected)]
 VAR floor = [Exposure Floor Amount (Safe)]
