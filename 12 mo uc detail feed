@@ -1,3 +1,49 @@
+-- Latest month anchor (already in your model, shown for completeness)
+LM Date (Selected) :=
+EOMONTH(
+    MAXX(ALLSELECTED('RC_Code_Model_Base'[month_end]),
+         'RC_Code_Model_Base'[month_end]),
+    0
+)
+
+Actual (LM, per RC) :=
+VAR lm = [LM Date (Selected)]
+RETURN CALCULATE(
+    SUM('RC_Code_Model_Base'[bal_num]),
+    TREATAS({ lm }, 'RC_Code_Model_Base'[month_end])
+)
+
+Forecast (LM, per RC) :=
+VAR lm = [LM Date (Selected)]
+RETURN CALCULATE(
+    SUM('RC_Code_Model_Base'[Forecast_Selected]),
+    TREATAS({ lm }, 'RC_Code_Model_Base'[month_end])
+)
+
+Residual % (LM, per RC) :=      -- + = over-forecast; adjust if you prefer opposite sign
+DIVIDE( [Forecast (LM, per RC)] - [Actual (LM, per RC)],
+        [Actual (LM, per RC)] )
+
+MoM % (Actual, LM, per RC) :=
+VAR lm  = [LM Date (Selected)]
+VAR pm  = EOMONTH(lm, -1)
+VAR aLM = [Actual (LM, per RC)]
+VAR aPM = CALCULATE( SUM('RC_Code_Model_Base'[bal_num]),
+                     TREATAS({ pm }, 'RC_Code_Model_Base'[month_end]) )
+RETURN DIVIDE(aLM - aPM, aPM)
+
+YoY % (Actual, LM, per RC) :=
+VAR lm  = [LM Date (Selected)]
+VAR ly  = EOMONTH(lm, -12)
+VAR aLM = [Actual (LM, per RC)]
+VAR aLY = CALCULATE( SUM('RC_Code_Model_Base'[bal_num]),
+                     TREATAS({ ly }, 'RC_Code_Model_Base'[month_end]) )
+RETURN DIVIDE(aLM - aLY, aLY)
+
+
+
+
+
 Residual % (Mean6 at LM, per RC) :=
 VAR lm  = [LM Date (Selected)]
 VAR rng = CALCULATETABLE(
