@@ -1,3 +1,259 @@
+-- ========================= Synthetic Tracking (CTE-only) =========================
+-- Purpose: Flag synthetic/internal/plug-like records without creating tables/views.
+-- How to use:
+--   1) Edit the RULES_* blocks below to match your environment (CSS values, GL LIKEs, text markers).
+--   2) Optional: set date filter in [params].
+--   3) Run. Output returns one row per account_identifier x month with a risk_score and reasons.
+-- ================================================================================
+
+WITH
+/* --------------------------- PARAMETERS --------------------------------------- */
+params AS (
+  SELECT
+    ADD_MONTHS(CURRENT_DATE, -13)::DATE AS min_month_end,  -- rolling window start
+    CURRENT_DATE::DATE                AS max_month_end
+),
+
+/* --------------------------- RULES (edit here) --------------------------------
+   Keep all rules in CTEs so no tables/views are required.
+   You can also externalize these to Power BI (Enter Data) and merge them instead.
+---------------------------------------------------------------------------------*/
+rules_css AS (
+  -- CONTRACT_SOURCE_SYSTEM patterns: exact or LIKE
+  -- match_type: 'EQ' or 'LIKE'
+  SELECT * FROM (
+    VALUES
+      ('FRDS_EXCPTN','EQ','Exception feed (synthetic)', 40, TRUE),
+      ('FRDS-EXCPTN','EQ','Exception feed (synthetic)', 40, TRUE),
+      ('TOPSIDE',    'EQ','Topside adjustment',         50, TRUE),
+      ('MANUAL',     'EQ','Manual journal/plug',        40, TRUE),
+      ('ALL',        'EQ','Consolidated host (use GL)', 10, TRUE),
+      ('ICC%',     'LIKE','Intercompany/clearing',      40, TRUE)
+  ) AS t(css_pattern, match_type, reason, weight, is_active)
+),
+rules_gl AS (
+  -- GL LIKE patterns (replace with your true suspense/clearing/due-to ranges)
+  SELECT * FROM (
+    VALUES
+      ('2999%', 'Suspense/Clearing',                 45, TRUE),
+      ('2199%', 'Due To/Due From',                   40, TRUE),
+      ('1399%', 'Plug/Unassigned asset',             35, TRUE),
+      ('1041%', 'Loan GL aggregate (check synthetic)', 25, TRUE)
+  ) AS t(gl_like, reason, weight, is_active)
+),
+rules_text AS (
+  -- DESCRIPTION markers; case-insensitive match via UPPER()
+  -- field_name currently supports ACCOUNT_DESCRIPTION (extend below if needed)
+  SELECT * FROM (
+    VALUES
+      ('%PLUG%',       'ACCOUNT_DESCRIPTION', 'Plug marker',        30, TRUE),
+      ('%INTERCO%',    'ACCOUNT_DESCRIPTION', 'Intercompany',       30, TRUE),
+      ('%DUE TO%',     'ACCOUNT_DESCRIPTION', 'Due To/Due From',    25, TRUE),
+      ('%CLEARING%',   'ACCOUNT_DESCRIPTION', 'Clearing',           25, TRUE)
+  ) AS t(text_like, field_name, reason, weight, is_active)
+),
+whitelist_accounts AS (
+  -- Optional: add known-good aggregator accounts you never want flagged
+  -- Keep empty if not used.
+  SELECT * FROM (
+    VALUES
+      -- ('ACCOUNT_ID_123','Legit aggregator – exclude')
+  ) AS t(account_identifier, reason)
+),
+
+/* --------------------------- BASE --------------------------------------------- */
+syn_base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE)                      AS month_end,
+    ACCOUNT_IDENTIFIER,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    COALESCE(SOURCE_SYSTEM_BALANCE,0.0)::FLOAT8          AS exposure,
+    ACCOUNT_DESCRIPTION,
+    BUS_UNIT_CODE,
+    RC_CODE,
+    ACCOUNT_OFFICER_NAME
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE CAST(END_OF_MONTH_DATE AS DATE) BETWEEN (SELECT min_month_end FROM params)
+                                            AND (SELECT max_month_end FROM params)
+),
+
+/* --------------------------- RULE HITS ---------------------------------------- */
+rule_hits_css AS (
+  SELECT b.month_end, b.account_identifier, b.contract_source_system, b.gl_account_code,
+         r.reason, r.weight, 'CSS' AS rule_type,
+         r.css_pattern AS pattern
+  FROM syn_base b
+  JOIN rules_css r
+    ON r.is_active
+   AND (
+       (r.match_type = 'EQ'   AND b.contract_source_system = r.css_pattern)
+    OR (r.match_type = 'LIKE' AND b.contract_source_system LIKE r.css_pattern)
+   )
+),
+rule_hits_gl AS (
+  SELECT b.month_end, b.account_identifier, b.contract_source_system, b.gl_account_code,
+         r.reason, r.weight, 'GL' AS rule_type,
+         r.gl_like AS pattern
+  FROM syn_base b
+  JOIN rules_gl r
+    ON r.is_active AND b.gl_account_code LIKE r.gl_like
+),
+rule_hits_text AS (
+  SELECT b.month_end, b.account_identifier, b.contract_source_system, b.gl_account_code,
+         r.reason, r.weight, 'TEXT' AS rule_type,
+         r.text_like AS pattern
+  FROM syn_base b
+  JOIN rules_text r
+    ON r.is_active
+   AND (
+        (r.field_name='ACCOUNT_DESCRIPTION'
+         AND UPPER(COALESCE(b.account_description,'')) LIKE UPPER(r.text_like))
+       -- Extend here for more fields if needed
+   )
+),
+rule_hits AS (
+  SELECT * FROM rule_hits_css
+  UNION ALL
+  SELECT * FROM rule_hits_gl
+  UNION ALL
+  SELECT * FROM rule_hits_text
+),
+
+/* --------------------------- BEHAVIORAL SIGNALS ------------------------------- */
+behavior_signals AS (
+  SELECT
+    month_end, account_identifier, contract_source_system, gl_account_code, exposure,
+    LAG(exposure)  OVER (PARTITION BY account_identifier ORDER BY month_end) AS prev_exp,
+    LEAD(exposure) OVER (PARTITION BY account_identifier ORDER BY month_end) AS next_exp
+  FROM syn_base
+),
+behavior_flags AS (
+  SELECT
+    month_end, account_identifier,
+    MAX(
+      CASE WHEN prev_exp IS NOT NULL AND next_exp IS NOT NULL
+            AND ABS(exposure - COALESCE(prev_exp,0)) >= 50000
+            AND ABS(next_exp - COALESCE(prev_exp,0)) <= 0.05 * GREATEST(1, ABS(prev_exp))
+           THEN 1 ELSE 0 END
+    ) AS spike_reverse_flag,
+    MAX(
+      CASE WHEN ABS(exposure) IN (10000,25000,50000,100000,250000,500000,1000000)
+            OR MOD(ABS(exposure),10000)=0
+           THEN 1 ELSE 0 END
+    ) AS round_flag,
+    MAX(
+      CASE WHEN (ACCOUNT_OFFICER_NAME IS NULL OR TRIM(ACCOUNT_OFFICER_NAME)='')
+                OR RC_CODE IN ('RC999','UNCLASS','UNKNOWN')
+           THEN 1 ELSE 0 END
+    ) AS no_ctx_flag
+  FROM behavior_signals
+  GROUP BY month_end, account_identifier
+),
+
+/* --------------------------- INTERNAL TRANSFER PAIRS -------------------------- */
+xfer_pairs AS (
+  SELECT
+    a.month_end,
+    a.BUS_UNIT_CODE,
+    a.RC_CODE,
+    ABS(a.exposure) AS abs_amt
+  FROM syn_base a
+),
+xfer_pairs_flag AS (
+  SELECT month_end, 1 AS transfer_pair_flag
+  FROM (
+    SELECT
+      p.month_end, p.BUS_UNIT_CODE, p.RC_CODE, p.abs_amt,
+      SUM(CASE WHEN s.exposure >= 0 THEN 1 ELSE 0 END) AS plus_cnt,
+      SUM(CASE WHEN s.exposure  < 0 THEN 1 ELSE 0 END) AS minus_cnt,
+      COUNT(*) AS pair_size
+    FROM xfer_pairs p
+    JOIN syn_base s
+      ON s.month_end = p.month_end
+     AND s.BUS_UNIT_CODE = p.BUS_UNIT_CODE
+     AND s.RC_CODE = p.RC_CODE
+     AND ABS(s.exposure) = p.abs_amt
+    GROUP BY p.month_end, p.BUS_UNIT_CODE, p.RC_CODE, p.abs_amt
+  ) z
+  WHERE plus_cnt >= 1 AND minus_cnt >= 1 AND pair_size >= 2
+  GROUP BY month_end
+),
+
+/* --------------------------- AGGREGATE RULES ---------------------------------- */
+rules_agg AS (
+  SELECT
+    month_end, account_identifier,
+    MIN(contract_source_system) AS contract_source_system,
+    MIN(gl_account_code)        AS gl_account_code,
+    SUM(weight)                 AS rule_weight_sum,
+    COUNT(*)                    AS rule_hits,
+    LISTAGG(rule_type||':'||pattern||' ('||reason||')', '; ') 
+      WITHIN GROUP (ORDER BY rule_type, pattern) AS reasons
+  FROM rule_hits
+  GROUP BY month_end, account_identifier
+),
+
+/* --------------------------- EXPOSURE SNAPSHOT -------------------------------- */
+exp_agg AS (
+  SELECT month_end, account_identifier, MAX(exposure) AS exposure_amount
+  FROM syn_base
+  GROUP BY month_end, account_identifier
+)
+
+/* --------------------------- FINAL OUTPUT ------------------------------------- */
+SELECT
+  b.month_end,
+  b.account_identifier,
+  COALESCE(r.contract_source_system, sb.contract_source_system) AS contract_source_system,
+  COALESCE(r.gl_account_code,        sb.gl_account_code)        AS gl_account_code,
+  e.exposure_amount,
+  COALESCE(r.rule_hits,0)        AS rule_hits,
+  COALESCE(r.rule_weight_sum,0)  AS rule_weight_sum,
+  COALESCE(f.spike_reverse_flag,0)  AS spike_reverse_flag,
+  COALESCE(f.round_flag,0)          AS round_flag,
+  COALESCE(f.no_ctx_flag,0)         AS no_ctx_flag,
+  COALESCE(x.transfer_pair_flag,0)  AS transfer_pair_flag,
+  /* Composite risk score (cap at 100). Tune weights below. */
+  LEAST(
+    100,
+    COALESCE(r.rule_weight_sum,0)
+    + 15*COALESCE(f.spike_reverse_flag,0)
+    + 10*COALESCE(f.round_flag,0)
+    + 10*COALESCE(f.no_ctx_flag,0)
+    + 20*COALESCE(x.transfer_pair_flag,0)
+  ) AS risk_score,
+  /* Reasons text */
+  COALESCE(r.reasons,'') ||
+    CASE WHEN COALESCE(f.spike_reverse_flag,0)=1 THEN '; BEHAV:Spike&Reverse' END ||
+    CASE WHEN COALESCE(f.round_flag,0)=1        THEN '; BEHAV:Round'          END ||
+    CASE WHEN COALESCE(f.no_ctx_flag,0)=1       THEN '; BEHAV:NoContext'      END ||
+    CASE WHEN COALESCE(x.transfer_pair_flag,0)=1 THEN '; BEHAV:InternalTransfer' END
+    AS reasons
+FROM (
+  -- driving set: all account×month present in window
+  SELECT DISTINCT month_end, account_identifier, contract_source_system, gl_account_code
+  FROM syn_base
+) sb
+LEFT JOIN rules_agg r
+  ON r.month_end = sb.month_end AND r.account_identifier = sb.account_identifier
+LEFT JOIN exp_agg e
+  ON e.month_end = sb.month_end AND e.account_identifier = sb.account_identifier
+LEFT JOIN behavior_flags f
+  ON f.month_end = sb.month_end AND f.account_identifier = sb.account_identifier
+LEFT JOIN xfer_pairs_flag x
+  ON x.month_end = sb.month_end
+LEFT JOIN whitelist_accounts w
+  ON w.account_identifier = sb.account_identifier
+LEFT JOIN syn_base b
+  ON b.month_end = sb.month_end AND b.account_identifier = sb.account_identifier
+WHERE w.account_identifier IS NULL
+ORDER BY month_end DESC, risk_score DESC, account_identifier;
+
+
+
+
+
 -- ==================== KDE MoM Changes — Changes-Only (Upgraded) ====================
 -- - 13-month rolling window (tune in params)
 -- - Unpivot to (kde_name, kde_val) via UNION ALL
