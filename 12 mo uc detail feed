@@ -1,3 +1,34 @@
+FRDS_EXCPTN
+SYN
+ALL
+GL
+LJ
+ADJ
+LNIQ01-EXCPTN
+INFL05-EXCPTN
+
+1041210
+1142067
+1042213
+1042368
+1042409
+1042424
+1042886
+1043008
+1142048
+1051872
+1061833
+1041211
+1041344
+1041364
+
+
+
+
+
+
+
+
 -- ========================= Synthetic Tracking (CTE-only) =========================
 -- Purpose: Flag synthetic/internal/plug-like records without creating tables/views.
 -- How to use:
