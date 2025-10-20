@@ -1,3 +1,107 @@
+/* ============================================
+   Unfunded Snapshot (As of 2025-09-30)
+   - Filters TOPSIDED to your ACCTNBR list AND LoadDt = '2025-09-30'
+   - Joins to CRDLMTUFCALC tables by CreditLineNumber=CUST_LINE_NBR
+   - Aligns dates: LoadDt / LoadDate = '2025-09-30'
+   ============================================ */
+
+DECLARE @AsOfDate date = '2025-09-30';
+
+WITH t AS (
+    SELECT
+        t.ACCTNBR,
+        t.CUST_LINE_NBR,
+        t.LoadDt
+    FROM CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED AS t
+    WHERE t.LoadDt = @AsOfDate
+      AND t.ACCTNBR IN (
+          '001100537841',
+          '001100538945',
+          '001100540103',
+          '001100540415',
+          '001100544570',
+          '001100546406',
+          '001100551794',
+          '001100557218',
+          '001100561196',
+          '001100564232',
+          '001100564442',
+          '001100564481',
+          '001100566659',
+          '001100566734',
+          '001100580705',
+          '001100580708',
+          '001100583141',
+          '001100583633',
+          '001100583696',
+          '001100585703'
+      )
+),
+m AS (
+    SELECT
+        m.LoadDate,
+        m.Cif,
+        m.CreditLineNumber,
+        m.ClientName,
+        m.FormulaLine,
+        m.RevolvingFlag,
+        m.Rev_Status,
+        m.CommitmentParticipationSold,
+        m.GrossLineAmount,
+        m.NetLineAmount,
+        m.NetUtilized,
+        m.GrossDisbursed,
+        m.NetDisbursed
+    FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY AS m
+    WHERE m.LoadDate = @AsOfDate
+),
+u AS (
+    SELECT
+        u.LoadDate,
+        u.CreditLineNumber,
+        u.SecUnfunded
+    FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED AS u
+    WHERE u.LoadDate = @AsOfDate
+)
+
+SELECT
+    -- Keys / identifiers
+    t.ACCTNBR,
+    t.CUST_LINE_NBR,
+    @AsOfDate AS AsOfDate,
+
+    -- CREDIT_LINE_MONTHLY attributes
+    m.LoadDate                         AS CLM_LoadDate,
+    m.Cif,
+    m.CreditLineNumber,
+    m.ClientName,
+    m.FormulaLine,
+    m.RevolvingFlag,
+    m.Rev_Status,
+    m.CommitmentParticipationSold,
+    m.GrossLineAmount,
+    m.NetLineAmount,
+    m.NetUtilized,
+    m.GrossDisbursed,
+    m.NetDisbursed,
+
+    -- CALCULATED_UNFUNDED attribute
+    u.SecUnfunded
+
+FROM t
+LEFT JOIN m
+    ON m.CreditLineNumber = t.CUST_LINE_NBR
+   AND m.LoadDate = @AsOfDate
+LEFT JOIN u
+    ON u.CreditLineNumber = t.CUST_LINE_NBR
+   AND u.LoadDate = @AsOfDate
+ORDER BY t.ACCTNBR, t.CUST_LINE_NBR;
+
+
+
+
+
+
 001100537841
 001100538945
 001100540103
