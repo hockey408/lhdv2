@@ -1,3 +1,188 @@
+/*=========================================================================*
+  A) SNAPSHOT + TREND
+ *=========================================================================*/
+WITH
+params AS (
+  SELECT
+    24::INT AS lookback_months
+),
+base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE)              AS month_end,
+    ACCOUNT_IDENTIFIER,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    GL_ACCOUNT_DESCRIPTION,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    COALESCE(SOURCE_SYSTEM_BALANCE, 0.0)::FLOAT8 AS exposure
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+months AS (
+  SELECT month_end,
+         ROW_NUMBER() OVER (ORDER BY month_end DESC) AS rn
+  FROM (SELECT DISTINCT month_end FROM base) d
+),
+latest AS (SELECT MAX(month_end) AS latest_month_end FROM months),
+windowed AS (
+  SELECT b.*
+  FROM base b
+  JOIN latest l ON 1=1
+  WHERE b.month_end >= ADD_MONTHS(l.latest_month_end, -((SELECT lookback_months FROM params) - 1))
+),
+cat1 AS (
+  SELECT w.*,
+         CASE
+           WHEN UPPER(CONTRACT_SOURCE_SYSTEM) IN
+                ('FRDS_EXCPTN','SYN','ALL','GL','LJ','ADJ','LNIQ01-EXCPTN','INFL05-EXCPTN')
+             OR UPPER(CONTRACT_SOURCE_SYSTEM) LIKE '%EXCPTN%'
+           THEN 1 ELSE 0 END AS cat1_flag
+  FROM windowed w
+),
+cat2 AS (
+  SELECT c1.*,
+         CASE
+           WHEN CONTRACT_SOURCE_SYSTEM = 'ALL'
+            AND GL_ACCOUNT_CODE IN (
+                 1041210,1142067,1042213,1042368,1042409,1042424,1042886,
+                 1043008,1142048,1051872,1061833,1041211,1041344,1041364
+               )
+           THEN 1 ELSE 0 END AS cat2_flag
+  FROM cat1 c1
+),
+labeled AS (
+  SELECT c2.*,
+         CASE
+           WHEN cat1_flag=1 AND cat2_flag=1 THEN 'Cat1+Cat2'
+           WHEN cat1_flag=1 THEN 'Cat1'
+           WHEN cat2_flag=1 THEN 'Cat2'
+           ELSE NULL END AS synthetic_category
+  FROM cat2 c2
+),
+flags_only AS (SELECT * FROM labeled WHERE synthetic_category IS NOT NULL),
+monthly_group AS (
+  SELECT
+    month_end,
+    synthetic_category,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    MAX(GL_ACCOUNT_DESCRIPTION)                  AS GL_ACCOUNT_DESCRIPTION,
+    COUNT(*)                                     AS rows_flagged,
+    COUNT(DISTINCT ACCOUNT_IDENTIFIER)           AS accounts_flagged,
+    SUM(exposure)                                AS exposure_sum,
+    SUM(ABS(exposure))                           AS exposure_abs_sum,
+    AVG(ABS(exposure))                           AS exposure_abs_avg
+  FROM flags_only
+  GROUP BY month_end, synthetic_category, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE
+),
+m_latest AS (SELECT MAX(month_end) AS month_end FROM monthly_group),
+m_prior  AS (
+  SELECT MAX(month_end) AS month_end
+  FROM monthly_group
+  WHERE month_end < (SELECT month_end FROM m_latest)
+),
+latest_per_group AS (
+  SELECT g.* FROM monthly_group g JOIN m_latest ml ON g.month_end = ml.month_end
+),
+prior_per_group AS (
+  SELECT g.* FROM monthly_group g JOIN m_prior mp ON g.month_end = mp.month_end
+),
+history_stats AS (
+  SELECT
+    synthetic_category,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    MAX(GL_ACCOUNT_DESCRIPTION)          AS GL_ACCOUNT_DESCRIPTION,
+    COUNT(*)                             AS hist_months,
+    AVG(ABS(exposure_sum))               AS hist_avg_abs_exposure,
+    STDDEV_SAMP(ABS(exposure_sum))       AS hist_std_abs_exposure,
+    MIN(ABS(exposure_sum))               AS hist_min_abs_exposure,
+    MAX(ABS(exposure_sum))               AS hist_max_abs_exposure
+  FROM monthly_group g
+  WHERE g.month_end < (SELECT month_end FROM m_latest)
+  GROUP BY synthetic_category, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE
+),
+snapshot AS (
+  SELECT
+    'SNAPSHOT' AS view_type,
+    lp.month_end,
+    lp.synthetic_category,
+    lp.CONTRACT_SOURCE_SYSTEM,
+    lp.GL_ACCOUNT_CODE,
+    lp.GL_ACCOUNT_DESCRIPTION,
+    lp.rows_flagged,
+    lp.accounts_flagged,
+    lp.exposure_sum,
+    lp.exposure_abs_sum,
+    lp.exposure_abs_avg,
+    (SELECT month_end FROM m_prior)                        AS prev_month_end,
+    COALESCE(pp.exposure_sum, 0.0)                         AS prev_exposure_sum,
+    (lp.exposure_sum - COALESCE(pp.exposure_sum, 0.0))     AS delta_exposure,
+    CASE WHEN COALESCE(pp.exposure_sum, 0.0)=0 THEN NULL
+         ELSE (lp.exposure_sum - pp.exposure_sum) / NULLIF(pp.exposure_sum,0.0) END
+      AS pct_delta_exposure,
+    hs.hist_months,
+    hs.hist_avg_abs_exposure,
+    hs.hist_std_abs_exposure,
+    hs.hist_min_abs_exposure,
+    hs.hist_max_abs_exposure,
+    CASE WHEN COALESCE(hs.hist_std_abs_exposure,0)=0 THEN NULL
+         ELSE (ABS(lp.exposure_sum) - hs.hist_avg_abs_exposure) / hs.hist_std_abs_exposure END
+      AS zscore_abs,
+    ABS(lp.exposure_sum) AS sort_key_exposure_abs
+  FROM latest_per_group lp
+  LEFT JOIN prior_per_group pp
+    ON pp.synthetic_category=lp.synthetic_category
+   AND pp.CONTRACT_SOURCE_SYSTEM=lp.CONTRACT_SOURCE_SYSTEM
+   AND pp.GL_ACCOUNT_CODE=lp.GL_ACCOUNT_CODE
+  LEFT JOIN history_stats hs
+    ON hs.synthetic_category=lp.synthetic_category
+   AND hs.CONTRACT_SOURCE_SYSTEM=lp.CONTRACT_SOURCE_SYSTEM
+   AND hs.GL_ACCOUNT_CODE=lp.GL_ACCOUNT_CODE
+),
+trend AS (
+  SELECT
+    'TREND' AS view_type,
+    g.month_end,
+    g.synthetic_category,
+    g.CONTRACT_SOURCE_SYSTEM,
+    g.GL_ACCOUNT_CODE,
+    g.GL_ACCOUNT_DESCRIPTION,
+    g.rows_flagged,
+    g.accounts_flagged,
+    g.exposure_sum,
+    g.exposure_abs_sum,
+    g.exposure_abs_avg,
+    CAST(NULL AS DATE)   AS prev_month_end,
+    CAST(NULL AS FLOAT8) AS prev_exposure_sum,
+    CAST(NULL AS FLOAT8) AS delta_exposure,
+    CAST(NULL AS FLOAT8) AS pct_delta_exposure,
+    CAST(NULL AS INTEGER)AS hist_months,
+    CAST(NULL AS FLOAT8) AS hist_avg_abs_exposure,
+    CAST(NULL AS FLOAT8) AS hist_std_abs_exposure,
+    CAST(NULL AS FLOAT8) AS hist_min_abs_exposure,
+    CAST(NULL AS FLOAT8) AS hist_max_abs_exposure,
+    CAST(NULL AS FLOAT8) AS zscore_abs,
+    CAST(NULL AS FLOAT8) AS sort_key_exposure_abs
+  FROM monthly_group g
+)
+SELECT *
+FROM snapshot
+UNION ALL
+SELECT *
+FROM trend
+ORDER BY
+  view_type,
+  month_end DESC,
+  synthetic_category,
+  CONTRACT_SOURCE_SYSTEM,
+  GL_ACCOUNT_CODE,
+  sort_key_exposure_abs DESC;
+
+
+
+
+
 AnomParms =
 DATATABLE(
   "Param", STRING, "Value", DOUBLE,
