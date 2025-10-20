@@ -1,4 +1,111 @@
 /*=========================================================================*
+  C) FLIP ANALYSIS (Synthetic category flips across months)
+ *=========================================================================*/
+WITH
+params AS (SELECT 24::INT AS lookback_months),
+
+base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE)              AS month_end,
+    ACCOUNT_IDENTIFIER,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    GL_ACCOUNT_DESCRIPTION,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    COALESCE(SOURCE_SYSTEM_BALANCE, 0.0)::FLOAT8 AS exposure
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+latest AS (SELECT MAX(month_end) AS latest_month_end FROM (SELECT DISTINCT month_end FROM base) d),
+windowed AS (
+  SELECT b.*
+  FROM base b
+  JOIN latest l ON 1=1
+  WHERE b.month_end >= ADD_MONTHS(l.latest_month_end, -((SELECT lookback_months FROM params) - 1))
+),
+
+cat1 AS (
+  SELECT w.*,
+         CASE
+           WHEN UPPER(CONTRACT_SOURCE_SYSTEM) IN
+                ('FRDS_EXCPTN','SYN','ALL','GL','LJ','ADJ','LNIQ01-EXCPTN','INFL05-EXCPTN')
+             OR UPPER(CONTRACT_SOURCE_SYSTEM) LIKE '%EXCPTN%'
+           THEN 1 ELSE 0 END AS cat1_flag
+  FROM windowed w
+),
+cat2 AS (
+  SELECT c1.*,
+         CASE
+           WHEN CONTRACT_SOURCE_SYSTEM = 'ALL'
+            AND GL_ACCOUNT_CODE IN (
+                 1041210,1142067,1042213,1042368,1042409,1042424,1042886,
+                 1043008,1142048,1051872,1061833,1041211,1041344,1041364
+               )
+           THEN 1 ELSE 0 END AS cat2_flag
+  FROM cat1 c1
+),
+flags_only AS (
+  SELECT
+    c2.*,
+    CASE
+      WHEN cat1_flag=1 AND cat2_flag=1 THEN 'Cat1+Cat2'
+      WHEN cat1_flag=1 THEN 'Cat1'
+      WHEN cat2_flag=1 THEN 'Cat2'
+      ELSE NULL END AS synthetic_category
+  FROM c2
+  WHERE (cat1_flag=1 OR cat2_flag=1)
+),
+flip_base AS (
+  SELECT
+    month_end,
+    synthetic_category,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    ACCOUNT_IDENTIFIER
+  FROM flags_only
+),
+flip_lag AS (
+  SELECT
+    fb.*,
+    LAG(synthetic_category) OVER (
+      PARTITION BY ACCOUNT_IDENTIFIER
+      ORDER BY month_end
+    ) AS prev_category
+  FROM flip_base fb
+),
+flip_flags AS (
+  SELECT
+    month_end,
+    synthetic_category,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    ACCOUNT_IDENTIFIER,
+    prev_category,
+    CASE WHEN prev_category IS NOT NULL AND prev_category <> synthetic_category THEN 1 ELSE 0 END AS flipped
+  FROM flip_lag
+)
+SELECT
+  'FLIPS' AS view_type,
+  (SELECT latest_month_end FROM latest) AS latest_month_end,
+  (SELECT MIN(month_end) FROM windowed) AS earliest_in_window,
+  synthetic_category,
+  CONTRACT_SOURCE_SYSTEM,
+  GL_ACCOUNT_CODE,
+  COUNT(DISTINCT ACCOUNT_IDENTIFIER) AS acct_cnt,
+  SUM(flipped)                       AS flips,
+  COUNT(*)                           AS obs_cnt,
+  CASE WHEN COUNT(*)=0 THEN NULL ELSE ROUND(100.0 * SUM(flipped) / COUNT(*), 2) END AS flip_rate_pct
+FROM flip_flags
+GROUP BY synthetic_category, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE
+ORDER BY flip_rate_pct DESC NULLS LAST, flips DESC, synthetic_category, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE;
+
+
+
+
+
+
+
+/*=========================================================================*
   B) DIRECTORY (Latest ME, minimal fields from table)
  *=========================================================================*/
 WITH
