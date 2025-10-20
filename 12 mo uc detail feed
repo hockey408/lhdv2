@@ -1,3 +1,161 @@
+/* ===========================================================
+   Unfunded Snapshot & Reconciliation (As of 2025-09-30)
+   Compares:
+     - CDM.SEC_UNFUNDED                (t.SEC_UNFUNDED)
+     - CDM.FRB_UNFUNDED_AMT            (t.FRB_UNFUNDED_AMT)
+     - CALCULATED_UNFUNDED.SecUnfunded (u.SecUnfunded)
+   =========================================================== */
+
+DECLARE @AsOfDate date = '2025-09-30';
+DECLARE @Tolerance decimal(10,4) = 0.01;  -- equality tolerance for money comparisons
+
+WITH t AS (
+    SELECT
+        t.ACCTNBR,
+        t.CUST_LINE_NBR,
+        t.LoadDt,
+        t.SEC_UNFUNDED,
+        t.FRB_UNFUNDED_AMT
+    FROM CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED AS t
+    WHERE t.LoadDt = @AsOfDate
+      AND t.ACCTNBR IN (
+          '001100537841',
+          '001100538945',
+          '001100540103',
+          '001100540415',
+          '001100544570',
+          '001100546406',
+          '001100551794',
+          '001100557218',
+          '001100561196',
+          '001100564232',
+          '001100564442',
+          '001100564481',
+          '001100566659',
+          '001100566734',
+          '001100580705',
+          '001100580708',
+          '001100583141',
+          '001100583633',
+          '001100583696',
+          '001100585703'
+      )
+),
+m AS (
+    SELECT
+        m.LoadDate,
+        m.Cif,
+        m.CreditLineNumber,
+        m.ClientName,
+        m.FormulaLine,
+        m.RevolvingFlag,
+        m.Rev_Status,
+        m.CommitmentParticipationSold,
+        m.GrossLineAmount,
+        m.NetLineAmount,
+        m.NetUtilized,
+        m.GrossDisbursed,
+        m.NetDisbursed
+    FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY AS m
+    WHERE m.LoadDate = @AsOfDate
+),
+u AS (
+    SELECT
+        u.LoadDate,
+        u.CreditLineNumber,
+        u.SecUnfunded
+    FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED AS u
+    WHERE u.LoadDate = @AsOfDate
+)
+
+SELECT
+    -- Keys / identifiers
+    t.ACCTNBR,
+    t.CUST_LINE_NBR,
+    @AsOfDate AS AsOfDate,
+
+    -- CREDIT_LINE_MONTHLY attributes
+    m.LoadDate                         AS CLM_LoadDate,
+    m.Cif,
+    m.CreditLineNumber,
+    m.ClientName,
+    m.FormulaLine,
+    m.RevolvingFlag,
+    m.Rev_Status,
+    m.CommitmentParticipationSold,
+    m.GrossLineAmount,
+    m.NetLineAmount,
+    m.NetUtilized,
+    m.GrossDisbursed,
+    m.NetDisbursed,
+
+    -- Unfunded amounts (raw)
+    t.SEC_UNFUNDED                     AS CDM_SEC_UNFUNDED_raw,
+    t.FRB_UNFUNDED_AMT                 AS CDM_FRB_UNFUNDED_raw,
+    u.SecUnfunded                      AS UFC_SEC_UNFUNDED_raw,
+
+    -- Unfunded amounts (normalized to DECIMAL for math)
+    v.CDM_SEC_UNFUNDED,
+    v.CDM_FRB_UNFUNDED,
+    v.UFC_SEC_UNFUNDED,
+
+    -- Pairwise differences (UFC vs CDM-SEC, FRB vs CDM-SEC, UFC vs FRB)
+    v.Diff_UFC_minus_CDM_SEC,
+    v.Diff_FRB_minus_CDM_SEC,
+    v.Diff_UFC_minus_FRB,
+
+    -- Match flags using tolerance
+    CASE
+        WHEN v.CDM_SEC_UNFUNDED IS NULL OR v.CDM_FRB_UNFUNDED IS NULL OR v.UFC_SEC_UNFUNDED IS NULL THEN 'Missing'
+        WHEN ABS(v.Diff_UFC_minus_CDM_SEC) <= @Tolerance
+         AND ABS(v.Diff_FRB_minus_CDM_SEC) <= @Tolerance
+         AND ABS(v.Diff_UFC_minus_FRB)     <= @Tolerance THEN 'All 3 match'
+        WHEN ABS(v.Diff_UFC_minus_CDM_SEC) <= @Tolerance
+         AND ABS(v.Diff_FRB_minus_CDM_SEC) <= @Tolerance THEN 'CDM-SEC = UFC = FRB (by tol)'
+        WHEN ABS(v.Diff_UFC_minus_CDM_SEC) <= @Tolerance THEN 'UFC matches CDM-SEC only'
+        WHEN ABS(v.Diff_FRB_minus_CDM_SEC) <= @Tolerance THEN 'FRB matches CDM-SEC only'
+        WHEN ABS(v.Diff_UFC_minus_FRB)     <= @Tolerance THEN 'UFC matches FRB only'
+        ELSE 'All differ'
+    END                                       AS Unfunded_Match_Status
+
+FROM t
+LEFT JOIN m
+    ON m.CreditLineNumber = t.CUST_LINE_NBR
+   AND m.LoadDate = @AsOfDate
+LEFT JOIN u
+    ON u.CreditLineNumber = t.CUST_LINE_NBR
+   AND u.LoadDate = @AsOfDate
+
+-- Normalize values and compute diffs in one place
+CROSS APPLY (
+    SELECT
+        TRY_CONVERT(decimal(38,4), t.SEC_UNFUNDED)     AS CDM_SEC_UNFUNDED,
+        TRY_CONVERT(decimal(38,4), t.FRB_UNFUNDED_AMT) AS CDM_FRB_UNFUNDED,
+        TRY_CONVERT(decimal(38,4), u.SecUnfunded)      AS UFC_SEC_UNFUNDED
+) n
+CROSS APPLY (
+    SELECT
+        n.CDM_SEC_UNFUNDED                                    AS CDM_SEC_UNFUNDED,
+        n.CDM_FRB_UNFUNDED                                    AS CDM_FRB_UNFUNDED,
+        n.UFC_SEC_UNFUNDED                                    AS UFC_SEC_UNFUNDED,
+        CASE WHEN n.UFC_SEC_UNFUNDED IS NULL OR n.CDM_SEC_UNFUNDED IS NULL
+             THEN NULL
+             ELSE n.UFC_SEC_UNFUNDED - n.CDM_SEC_UNFUNDED END AS Diff_UFC_minus_CDM_SEC,
+        CASE WHEN n.CDM_FRB_UNFUNDED IS NULL OR n.CDM_SEC_UNFUNDED IS NULL
+             THEN NULL
+             ELSE n.CDM_FRB_UNFUNDED - n.CDM_SEC_UNFUNDED END AS Diff_FRB_minus_CDM_SEC,
+        CASE WHEN n.UFC_SEC_UNFUNDED IS NULL OR n.CDM_FRB_UNFUNDED IS NULL
+             THEN NULL
+             ELSE n.UFC_SEC_UNFUNDED - n.CDM_FRB_UNFUNDED END AS Diff_UFC_minus_FRB
+) v
+ORDER BY t.ACCTNBR, t.CUST_LINE_NBR;
+
+
+
+
+
+
+
 /* ============================================
    Unfunded Snapshot (As of 2025-09-30)
    - Filters TOPSIDED to your ACCTNBR list AND LoadDt = '2025-09-30'
