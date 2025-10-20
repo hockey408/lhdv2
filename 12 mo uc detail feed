@@ -1,4 +1,77 @@
 /*=========================================================================*
+  B) DIRECTORY (Latest ME, minimal fields from table)
+ *=========================================================================*/
+WITH
+base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE)              AS month_end,
+    ACCOUNT_IDENTIFIER,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    GL_ACCOUNT_DESCRIPTION,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    COALESCE(SOURCE_SYSTEM_BALANCE, 0.0)::FLOAT8 AS exposure
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+latest AS (SELECT MAX(month_end) AS latest_month_end FROM (SELECT DISTINCT month_end FROM base) d),
+latest_only AS (SELECT * FROM base b JOIN latest l ON b.month_end = l.latest_month_end),
+
+cat1 AS (
+  SELECT lo.*,
+         CASE
+           WHEN UPPER(CONTRACT_SOURCE_SYSTEM) IN
+                ('FRDS_EXCPTN','SYN','ALL','GL','LJ','ADJ','LNIQ01-EXCPTN','INFL05-EXCPTN')
+             OR UPPER(CONTRACT_SOURCE_SYSTEM) LIKE '%EXCPTN%'
+           THEN 1 ELSE 0 END AS cat1_flag
+  FROM latest_only lo
+),
+cat2 AS (
+  SELECT c1.*,
+         CASE
+           WHEN CONTRACT_SOURCE_SYSTEM = 'ALL'
+            AND GL_ACCOUNT_CODE IN (
+                 1041210,1142067,1042213,1042368,1042409,1042424,1042886,
+                 1043008,1142048,1051872,1061833,1041211,1041344,1041364
+               )
+           THEN 1 ELSE 0 END AS cat2_flag
+  FROM cat1 c1
+),
+flags_only AS (
+  SELECT
+    c2.*,
+    CASE
+      WHEN cat1_flag=1 AND cat2_flag=1 THEN 'Cat1+Cat2'
+      WHEN cat1_flag=1 THEN 'Cat1'
+      WHEN cat2_flag=1 THEN 'Cat2'
+      ELSE NULL END AS synthetic_category
+  FROM c2
+  WHERE (cat1_flag=1 OR cat2_flag=1)
+)
+
+SELECT
+  'DIRECTORY' AS view_type,
+  month_end,
+  synthetic_category,
+  CONTRACT_SOURCE_SYSTEM,
+  GL_ACCOUNT_CODE,
+  GL_ACCOUNT_DESCRIPTION,
+  ACCOUNT_IDENTIFIER,
+  exposure
+FROM flags_only
+ORDER BY
+  synthetic_category,
+  CONTRACT_SOURCE_SYSTEM,
+  GL_ACCOUNT_CODE,
+  exposure DESC,
+  ACCOUNT_IDENTIFIER;
+
+
+
+
+
+
+/*=========================================================================*
   B) DIRECTORY (Latest ME). Set params below to filter; if NULLs, returns all.
  *=========================================================================*/
 WITH
