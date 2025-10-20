@@ -1,3 +1,117 @@
+/* ============================================
+   Latest-Month-End Unfunded Snapshot by ACCTNBR
+   Sources:
+     - CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED       (alias: t)
+     - CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED         (alias: u)
+     - CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY         (alias: m)
+   Joins:
+     t.CUST_LINE_NBR = u.CREDITLINENUMBER = m.CREDITLINENUMBER
+     And aligned on the same month-end date column(s) you specify
+   TODOs:
+     1) Replace {{UFC_DATE_COL}} with the date column in CALCULATED_UNFUNDED
+     2) Replace {{CLM_DATE_COL}} with the date column in CREDIT_LINE_MONTHLY
+     3) Replace /* …attributes… */ with the fields you want from u and m
+     4) Put your ACCTNBR list in the IN (…) filter below
+   ============================================ */
+
+-- Option A (recommended): compute a shared @AsOfDate that exists in BOTH tables.
+DECLARE @AsOfDate date;
+
+;WITH maxes AS (
+    SELECT
+        (SELECT MAX({{UFC_DATE_COL}}) FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED) AS max_u,
+        (SELECT MAX({{CLM_DATE_COL}}) FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY) AS max_m
+)
+SELECT
+    @AsOfDate = CASE WHEN max_u <= max_m THEN max_u ELSE max_m END
+FROM maxes;
+
+-- -- Option B: force to the last completed calendar month (uncomment if you prefer)
+-- DECLARE @AsOfDate date = EOMONTH(GETDATE(), -1);
+
+WITH
+-- 1) Seed population from TOPSIDED filtered by ACCTNBR list
+t AS (
+    SELECT
+        t.ACCTNBR,
+        t.CUST_LINE_NBR
+    FROM CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED AS t
+    WHERE t.ACCTNBR IN (
+        /* TODO: paste your ACCTNBR values here, e.g. '12345','67890',... */
+    )
+),
+
+-- 2) One-row-per-credit-line snapshot from CALCULATED_UNFUNDED at @AsOfDate
+u_raw AS (
+    SELECT
+        u.CREDITLINENUMBER,
+        u.{{UFC_DATE_COL}}      AS as_of_date,
+        /* TODO: select attributes you want from CALCULATED_UNFUNDED, e.g.:
+           u.UnfundedCommittedAmount,
+           u.AvailableToDraw,
+           u.FacilityRiskRating,
+           u.UtilizationPct,
+        */
+        ROW_NUMBER() OVER (
+            PARTITION BY u.CREDITLINENUMBER, u.{{UFC_DATE_COL}}
+            ORDER BY u.CREDITLINENUMBER
+        ) AS rn
+    FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED AS u
+    WHERE u.{{UFC_DATE_COL}} = @AsOfDate
+),
+u1 AS (
+    SELECT *
+    FROM u_raw
+    WHERE rn = 1
+),
+
+-- 3) One-row-per-credit-line snapshot from CREDIT_LINE_MONTHLY at @AsOfDate
+m_raw AS (
+    SELECT
+        m.CREDITLINENUMBER,
+        m.{{CLM_DATE_COL}}       AS as_of_date,
+        /* TODO: select attributes you want from CREDIT_LINE_MONTHLY, e.g.:
+           m.TotalCommitment,
+           m.OutstandingBalance,
+           m.InterestRate,
+           m.CovenantStatus,
+        */
+        ROW_NUMBER() OVER (
+            PARTITION BY m.CREDITLINENUMBER, m.{{CLM_DATE_COL}}
+            ORDER BY m.CREDITLINENUMBER
+        ) AS rn
+    FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY AS m
+    WHERE m.{{CLM_DATE_COL}} = @AsOfDate
+),
+m1 AS (
+    SELECT *
+    FROM m_raw
+    WHERE rn = 1
+)
+
+-- 4) Final join: preserve only the TOPSIDED population, enrich from both tables
+SELECT
+    t.ACCTNBR,
+    t.CUST_LINE_NBR,
+    @AsOfDate                      AS AsOfDate,
+    -- Attributes from CALCULATED_UNFUNDED:
+    /* e.g. u1.UnfundedCommittedAmount, u1.AvailableToDraw, u1.FacilityRiskRating, u1.UtilizationPct, */
+    -- Attributes from CREDIT_LINE_MONTHLY:
+    /* e.g. m1.TotalCommitment, m1.OutstandingBalance, m1.InterestRate, m1.CovenantStatus */
+    u1.* EXCEPT (CREDITLINENUMBER, as_of_date, rn),   -- remove keys/housekeeping if on SQL 2022+; else list attrs explicitly
+    m1.* EXCEPT (CREDITLINENUMBER, as_of_date, rn)    -- same note as above
+FROM t
+LEFT JOIN u1
+    ON u1.CREDITLINENUMBER = t.CUST_LINE_NBR
+LEFT JOIN m1
+    ON m1.CREDITLINENUMBER = t.CUST_LINE_NBR;
+
+
+
+
+
+
+
 -- ===== Synthetic GL×System Aggregates: Latest Snapshot + History Trend =====
 -- Source: V_SECURE_PORTFOLIO_DETAIL_LOANHUB
 -- Filters: GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
