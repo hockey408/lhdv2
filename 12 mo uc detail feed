@@ -1,3 +1,148 @@
+AnomParms =
+DATATABLE(
+  "Param", STRING, "Value", DOUBLE,
+  {
+    -- Weights (sum ~ 1.00)
+    {"W_Severity", 0.45},
+    {"W_Move",     0.25},
+    {"W_Miss",     0.20},
+    {"W_Persist",  0.07},
+    {"W_R2",       0.03},
+
+    -- Thresholds / scales
+    {"T_ResidualPct", 0.05},  -- 5% residual viewed as “large”
+    {"T_MovePct",     0.05},  -- 5% of RC size viewed as “large” move
+    {"R2_Good",       0.70},
+    {"R2_Bad",        0.50},
+
+    -- Exposure floor for normalization (only within the score)
+    {"NormFloor", 1000000}    -- $1M, tune as needed
+  }
+)
+
+
+AP(Param) :=
+VAR p = SELECTEDVALUE( AnomParms[Param] )
+RETURN CALCULATE( MAX(AnomParms[Value]), AnomParms[Param] = p )
+
+AP_W_Severity := CALCULATE( MAX(AnomParms[Value]), AnomParms[Param] = "W_Severity")
+AP_W_Move     := CALCULATE( MAX(AnomParms[Value]), AnomParms[Param] = "W_Move")
+AP_W_Miss     := CALCULATE( MAX(AnomParms[Value]), AnomParms[Param] = "W_Miss")
+AP_W_Persist  := CALCULATE( MAX(AnomParms[Value]), AnomParms[Param] = "W_Persist")
+AP_W_R2       := CALCULATE( MAX(AnomParms[Value]), AnomParms[Param] = "W_R2")
+
+AP_T_Residual := CALCULATE( MAX(AnomParms[Value]), AnomParms[Param] = "T_ResidualPct")
+AP_T_Move     := CALCULATE( MAX(AnomParms[Value]), AnomParms[Param] = "T_MovePct")
+AP_R2_Good    := CALCULATE( MAX(AnomParms[Value]), AnomParms[Param] = "R2_Good")
+AP_R2_Bad     := CALCULATE( MAX(AnomParms[Value]), AnomParms[Param] = "R2_Bad")
+AP_NormFloor  := CALCULATE( MAX(AnomParms[Value]), AnomParms[Param] = "NormFloor")
+
+
+Composite Anomaly Score (0–100, LM) :=
+VAR sev_01 =
+    VAR s = [Severity (Weighted, Latest – RC)]
+    RETURN IF( ISBLANK(s), 0, DIVIDE( s, 100.0 ) )                 -- 0..1
+
+VAR miss_01 =
+    VAR r = ABS( [Residual % (LM, per RC)] )                        -- 0..1..?
+    VAR t = [AP_T_Residual]
+    RETURN MIN( 1.0, DIVIDE( r, t ) )                               -- cap @1
+
+VAR move_01 =
+    VAR d      = ABS( [Exposure Δ MoM (per RC)] )                   -- $
+    VAR size   = ABS( [Exposure (Latest)] )
+    VAR floorN = [AP_NormFloor]
+    VAR denom  = MAX( size, floorN )                                -- stabilize small RCs
+    VAR ratio  = DIVIDE( d, denom )                                 -- 0..1..?
+    VAR t      = [AP_T_Move]
+    RETURN MIN( 1.0, DIVIDE( ratio, t ) )                           -- cap @1
+
+VAR persist_01 =
+    IF( [Bias Persistence (3M Same Sign)] = 1, 1.0, 0.0 )
+
+VAR r2_penalty_01 =
+    VAR r2 = [R2_By_Model]  -- or [R2 (LM, per RC)]
+    VAR g  = [AP_R2_Good]
+    VAR b  = [AP_R2_Bad]
+    RETURN
+        IF( ISBLANK(r2),
+            0,
+            IF( r2 >= g, 0,
+                IF( r2 <= b, 1,
+                    -- linear between good→bad
+                    DIVIDE( g - r2, g - b )
+                )
+            )
+        )
+
+-- weights
+VAR w_sev = [AP_W_Severity]
+VAR w_mov = [AP_W_Move]
+VAR w_mis = [AP_W_Miss]
+VAR w_pst = [AP_W_Persist]
+VAR w_r2  = [AP_W_R2]
+
+-- base score 0..1
+VAR score01 =
+        w_sev * sev_01
+      + w_mov * move_01
+      + w_mis * miss_01
+      + w_pst * persist_01
+      + w_r2  * r2_penalty_01
+
+-- monitorable gate (don’t inflate non-monitorables)
+VAR mon = [Is Monitorable (LM, per RC)]  -- or your monitorable logic
+RETURN
+    IF( mon <> 1, BLANK(), ROUND( 100.0 * MIN( 1.0, MAX( 0.0, score01 ) ), 0 ) )
+
+
+
+Anomaly Flag (LM) :=
+VAR s = [Composite Anomaly Score (0–100, LM)]
+RETURN IF( NOT ISBLANK(s) && s >= 80, 1 )      -- threshold you can change
+
+Anomaly Rank (LM) :=
+RANKX(
+  ALLSELECTED('RC_Code_Model_Base'[RC_DESCRIPTION]),
+  [Composite Anomaly Score (0–100, LM)],
+  ,
+  DESC,
+  Dense
+)
+
+# of Anomalous RCs (LM) :=
+COUNTROWS(
+  FILTER(
+    VALUES('RC_Code_Model_Base'[RC_DESCRIPTION]),
+    [Anomaly Flag (LM)] = 1
+  )
+)
+
+Total Exposure in Anomalies (LM) :=
+SUMX(
+  FILTER(
+    VALUES('RC_Code_Model_Base'[RC_DESCRIPTION]),
+    [Anomaly Flag (LM)] = 1
+  ),
+  [Exposure (Latest)]
+)
+
+Avg Composite Score (Portfolio, LM) :=
+AVERAGEX(
+  FILTER(
+    VALUES('RC_Code_Model_Base'[RC_DESCRIPTION]),
+    [Is Monitorable (LM, per RC)] = 1
+  ),
+  [Composite Anomaly Score (0–100, LM)]
+)
+
+
+
+
+
+
+
+
 Page Title – Anomaly & Root Cause Diagnostics :=
 "Anomaly & Root Cause Diagnostics — " &
 FORMAT ( [LM Date (Selected)], "MMM yyyy" )
