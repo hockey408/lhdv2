@@ -1,3 +1,181 @@
+-- ===== Synthetic DETAIL (Top-N per group for latest ME) + LATEST SUMMARY + HISTORY SUMMARY =====
+-- Source: V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+-- Filters: GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+-- Categories:
+--   Cat1: CONTRACT_SOURCE_SYSTEM in list OR like '%EXCPTN%'
+--   Cat2: GL_ACCOUNT_CODE in list AND CONTRACT_SOURCE_SYSTEM = 'ALL'
+
+WITH
+/* -------- Parameters -------- */
+params AS (
+  SELECT
+    10000::INT   AS top_n_per_group,     -- cap per (category × CSS × GL) for latest ME
+    0::FLOAT8    AS min_abs_exposure     -- optional floor for detail (e.g., 25000); keep 0 to disable
+),
+
+/* -------- Base universe -------- */
+base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE)              AS month_end,
+    ACCOUNT_IDENTIFIER,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    GL_ACCOUNT_DESCRIPTION,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    COALESCE(SOURCE_SYSTEM_BALANCE,0.0)::FLOAT8  AS exposure
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+
+/* -------- Latest month-end -------- */
+months AS (
+  SELECT month_end,
+         ROW_NUMBER() OVER (ORDER BY month_end DESC) AS rn
+  FROM (SELECT DISTINCT month_end FROM base) d
+),
+latest_month AS (
+  SELECT month_end FROM months WHERE rn = 1
+),
+
+/* -------- Category flags -------- */
+cat1 AS (
+  SELECT
+    b.*,
+    CASE
+      WHEN UPPER(CONTRACT_SOURCE_SYSTEM) IN
+           ('FRDS_EXCPTN','SYN','ALL','GL','LJ','ADJ','LNIQ01-EXCPTN','INFL05-EXCPTN')
+        OR UPPER(CONTRACT_SOURCE_SYSTEM) LIKE '%EXCPTN%'
+      THEN 1 ELSE 0
+    END AS cat1_flag
+  FROM base b
+),
+cat2 AS (
+  SELECT
+    c1.*,
+    CASE
+      WHEN CONTRACT_SOURCE_SYSTEM = 'ALL'
+       AND GL_ACCOUNT_CODE IN (
+            1041210,1142067,1042213,1042368,1042409,1042424,1042886,
+            1043008,1142048,1051872,1061833,1041211,1041344,1041364
+          )
+      THEN 1 ELSE 0
+    END AS cat2_flag
+  FROM cat1 c1
+),
+labeled AS (
+  SELECT
+    c2.*,
+    CASE
+      WHEN cat1_flag=1 AND cat2_flag=1 THEN 'Cat1+Cat2'
+      WHEN cat1_flag=1 THEN 'Cat1'
+      WHEN cat2_flag=1 THEN 'Cat2'
+      ELSE NULL
+    END AS synthetic_category
+  FROM cat2 c2
+),
+flags_only AS (
+  SELECT * FROM labeled WHERE synthetic_category IS NOT NULL
+),
+
+/* -------- DETAIL (latest ME): Top-N per (category × CSS × GL) by |exposure| -------- */
+detail_pool AS (
+  SELECT f.*
+  FROM flags_only f
+  WHERE f.month_end = (SELECT month_end FROM latest_month)
+    AND ABS(f.exposure) >= (SELECT min_abs_exposure FROM params)
+),
+detail_ranked AS (
+  SELECT
+    detail_pool.*,
+    ROW_NUMBER() OVER (
+      PARTITION BY synthetic_category, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE
+      ORDER BY ABS(exposure) DESC, ACCOUNT_IDENTIFIER
+    ) AS rn_group
+  FROM detail_pool
+),
+detail_rows AS (
+  SELECT
+    'DETAIL'                         AS view_type,
+    month_end,
+    synthetic_category,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    GL_ACCOUNT_DESCRIPTION,
+    ACCOUNT_IDENTIFIER,
+    exposure,
+    CAST(NULL AS INTEGER)            AS rows_flagged,
+    CAST(NULL AS INTEGER)            AS accounts_flagged,
+    CAST(NULL AS NUMERIC(20,2))      AS exposure_sum,
+    CAST(NULL AS NUMERIC(20,2))      AS exposure_abs_sum,
+    CAST(NULL AS NUMERIC(20,2))      AS exposure_abs_avg,
+    ABS(exposure)                    AS sort_key_exposure_abs
+  FROM detail_ranked
+  WHERE rn_group <= (SELECT top_n_per_group FROM params)
+),
+
+/* -------- LATEST MONTH SUMMARY (same latest ME, aggregated) -------- */
+latest_summary AS (
+  SELECT
+    'LATEST_SUMMARY'                 AS view_type,
+    f.month_end,
+    f.synthetic_category,
+    f.CONTRACT_SOURCE_SYSTEM,
+    f.GL_ACCOUNT_CODE,
+    MAX(f.GL_ACCOUNT_DESCRIPTION)    AS GL_ACCOUNT_DESCRIPTION,
+    CAST(NULL AS VARCHAR(64))        AS ACCOUNT_IDENTIFIER,
+    CAST(NULL AS FLOAT8)             AS exposure,
+    COUNT(*)                         AS rows_flagged,
+    COUNT(DISTINCT f.ACCOUNT_IDENTIFIER) AS accounts_flagged,
+    SUM(f.exposure)                  AS exposure_sum,
+    SUM(ABS(f.exposure))             AS exposure_abs_sum,
+    AVG(ABS(f.exposure))             AS exposure_abs_avg,
+    CAST(NULL AS FLOAT8)             AS sort_key_exposure_abs
+  FROM flags_only f
+  WHERE f.month_end = (SELECT month_end FROM latest_month)
+  GROUP BY f.month_end, f.synthetic_category, f.CONTRACT_SOURCE_SYSTEM, f.GL_ACCOUNT_CODE
+),
+
+/* -------- HISTORY SUMMARY (all months before latest) -------- */
+history_summary AS (
+  SELECT
+    'HISTORY_SUMMARY'                AS view_type,
+    f.month_end,
+    f.synthetic_category,
+    f.CONTRACT_SOURCE_SYSTEM,
+    f.GL_ACCOUNT_CODE,
+    MAX(f.GL_ACCOUNT_DESCRIPTION)    AS GL_ACCOUNT_DESCRIPTION,
+    CAST(NULL AS VARCHAR(64))        AS ACCOUNT_IDENTIFIER,
+    CAST(NULL AS FLOAT8)             AS exposure,
+    COUNT(*)                         AS rows_flagged,
+    COUNT(DISTINCT f.ACCOUNT_IDENTIFIER) AS accounts_flagged,
+    SUM(f.exposure)                  AS exposure_sum,
+    SUM(ABS(f.exposure))             AS exposure_abs_sum,
+    AVG(ABS(f.exposure))             AS exposure_abs_avg,
+    CAST(NULL AS FLOAT8)             AS sort_key_exposure_abs
+  FROM flags_only f
+  WHERE f.month_end < (SELECT month_end FROM latest_month)
+  GROUP BY f.month_end, f.synthetic_category, f.CONTRACT_SOURCE_SYSTEM, f.GL_ACCOUNT_CODE
+)
+
+/* -------- Final UNION + valid ORDER BY -------- */
+SELECT * FROM detail_rows
+UNION ALL
+SELECT * FROM latest_summary
+UNION ALL
+SELECT * FROM history_summary
+ORDER BY
+  view_type,               -- Alphabetical: DETAIL, HISTORY_SUMMARY, LATEST_SUMMARY (adjust if desired)
+  month_end DESC,
+  synthetic_category,
+  CONTRACT_SOURCE_SYSTEM,
+  GL_ACCOUNT_CODE,
+  sort_key_exposure_abs DESC,
+  ACCOUNT_IDENTIFIER;
+
+
+
+
+
 -- ===== Synthetic DETAIL (latest ME only) + SUMMARY (all prior history) =====
 -- Source: V_SECURE_PORTFOLIO_DETAIL_LOANHUB
 -- Filters: GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
