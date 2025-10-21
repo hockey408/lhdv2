@@ -1,3 +1,56 @@
+# --- Option A: Read Excel TABLE named RC_Code_Model_Base into pandas, normalize headers, and go ---
+import pandas as pd
+import re
+import unicodedata
+
+TABLE_NAME = "RC_Code_Model_Base"   # <-- Excel Table name (not a column name)
+
+# 1) Load the Excel Table into a DataFrame
+df = xl(TABLE_NAME)   # In Python in Excel, xl("TableName") pulls the table data
+
+# 2) Normalize column headers (safe even if already ALL-CAPS)
+def normalize_headers(cols):
+    def norm(c):
+        c = '' if c is None else str(c)
+        c = unicodedata.normalize('NFKC', c)  # normalize unicode
+        c = c.strip()
+        c = re.sub(r'\s+', '_', c)            # spaces -> underscores
+        return c.upper()                      # standardize to ALL CAPS
+    return [norm(c) for c in cols]
+
+df.columns = normalize_headers(df.columns)
+
+# 3) (Optional) If a table was mis-imported and headers became a row, fix it.
+#    This is rare with proper Excel Tables, but harmless to keep:
+if all(isinstance(c, (int, float)) for c in df.columns):
+    # assume first row contains headers
+    new_headers = normalize_headers(df.iloc[0].tolist())
+    df = df.iloc[1:].reset_index(drop=True)
+    df.columns = new_headers
+
+# 4) EXAMPLES — use your ALL-CAPS columns directly (replace with your real ones):
+#    Example: filter out NULLs and 0s from RC_EXPOSURE
+def nz_nonzero(s):
+    # keeps non-null and non-zero values
+    return s.notna() & (s != 0)
+
+# ---- Example usage (uncomment and adapt as needed) ----
+# filtered = df[nz_nonzero(df["RC_EXPOSURE"])]
+# top10 = (df.sort_values("RC_EXPOSURE", ascending=False).head(10))
+# keep_cols = ["RC_CODE", "RC_DESCRIPTION", "RC_EXPOSURE"]
+# result = filtered[keep_cols].copy()
+
+# 5) Show what columns are available (useful for quick verification)
+print("Columns:", list(df.columns))
+
+# 6) Return `df` (or any derived DataFrame, e.g., `filtered`) as the cell output
+df
+
+
+
+
+
+
 import pandas as pd
 import numpy as np
 
