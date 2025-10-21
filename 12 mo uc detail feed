@@ -1,3 +1,124 @@
+-- ============================================================
+-- RC_CODE PSI Contributions by RC (per month)
+-- - 13-month window
+-- - PSI term per rc_val: (A - E) * ln(A/E)
+-- - Includes current/prior shares & exposures + ranks
+-- - Netezza-safe (uses LN, no POWER)
+-- ============================================================
+
+WITH params AS (
+  SELECT
+    ADD_MONTHS(CURRENT_DATE, -13)::DATE AS min_me,
+    0.0001::FLOAT8 AS min_share   -- optional tiny-share gate
+),
+
+-- 1) Base (Total Loans, 13m)
+base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+    CAST(RC_CODE AS VARCHAR(64))    AS rc_val,
+    SOURCE_SYSTEM_BALANCE::FLOAT8   AS exposure
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, params p
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND END_OF_MONTH_DATE >= p.min_me
+    AND SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+
+-- 2) Aggregate exposure per RC per month
+agg AS (
+  SELECT
+    month_end,
+    rc_val,
+    SUM(exposure) AS exp_sum
+  FROM base
+  GROUP BY month_end, rc_val
+),
+
+-- 3) Compute monthly shares
+norm AS (
+  SELECT
+    a.month_end,
+    a.rc_val,
+    a.exp_sum,
+    a.exp_sum / NULLIF(SUM(a.exp_sum) OVER (PARTITION BY a.month_end), 0) AS pct_share
+  FROM agg a
+),
+
+-- 4) Bring prior-month values for same RC
+lagged AS (
+  SELECT
+    rc_val,
+    month_end,
+    exp_sum,
+    pct_share,
+    LAG(exp_sum)   OVER (PARTITION BY rc_val ORDER BY month_end) AS prev_exp_sum,
+    LAG(pct_share) OVER (PARTITION BY rc_val ORDER BY month_end) AS prev_pct,
+    LAG(month_end) OVER (PARTITION BY rc_val ORDER BY month_end) AS prev_me
+  FROM norm
+),
+
+-- 5) PSI piece + deltas (only adjacent months)
+psi_piece AS (
+  SELECT
+    month_end,
+    rc_val,
+    exp_sum,
+    prev_exp_sum,
+    pct_share,
+    prev_pct,
+    (pct_share - prev_pct)                  AS delta_pct,
+    (exp_sum   - prev_exp_sum)              AS delta_exp,
+    /* PSI contribution of this RC to the month's RC_CODE PSI */
+    (pct_share - prev_pct)
+      * LN( NULLIF(pct_share / NULLIF(prev_pct, 0), 0) )         AS psi_contrib
+  FROM lagged, params p
+  WHERE prev_me = ADD_MONTHS(month_end, -1)
+    AND prev_pct IS NOT NULL
+    AND pct_share  > 0
+    AND prev_pct   > 0
+    AND pct_share >= p.min_share         -- damp tiny categories (optional)
+    AND prev_pct  >= p.min_share
+),
+
+-- 6) Total PSI per month (for % contribution calc)
+psi_month AS (
+  SELECT
+    month_end,
+    SUM(psi_contrib) AS psi_total
+  FROM psi_piece
+  GROUP BY month_end
+)
+
+SELECT
+  p.month_end,
+  p.rc_val,
+  /* direction & magnitude */
+  p.psi_contrib,
+  ABS(p.psi_contrib)                            AS psi_contrib_abs,
+  m.psi_total,
+  CASE
+    WHEN m.psi_total IS NULL OR m.psi_total = 0 THEN NULL
+    ELSE p.psi_contrib / m.psi_total
+  END                                          AS psi_contrib_pct_of_total,
+  /* exposure & share context */
+  p.prev_exp_sum,
+  p.exp_sum,
+  p.delta_exp,
+  p.prev_pct,
+  p.pct_share,
+  p.delta_pct,
+  /* ranks within month by absolute contribution */
+  DENSE_RANK() OVER (PARTITION BY p.month_end ORDER BY ABS(p.psi_contrib) DESC) AS rk_by_abs_contrib
+FROM psi_piece p
+JOIN psi_month m USING (month_end)
+ORDER BY p.month_end DESC, rk_by_abs_contrib, p.rc_val;
+
+
+
+
+
+
+
 -- ============================================
 -- RC_CODE Population Stability Index (PSI)
 -- - Compares each month to the prior month
