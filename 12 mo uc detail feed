@@ -1,3 +1,44 @@
+# ==== Python in Excel: import an Excel Table named RC_Code_Model_Base ====
+# Paste this entire cell as-is. Do not add other lines that reference df['RC_Code_Model_Base'].
+
+import pandas as pd
+import re
+import unicodedata
+
+TABLE_NAME = "RC_Code_Model_Base"   # <-- Excel TABLE name (not a column)
+
+# 1) Import the Excel Table
+df = xl(TABLE_NAME)  # pulls the table/range into a pandas DataFrame
+
+# 2) Normalize headers (safe across weird spacing/unicode). Keeps only actual column names.
+def normalize_headers(cols):
+    def norm(c):
+        c = '' if c is None else str(c)
+        c = unicodedata.normalize('NFKC', c)
+        c = c.strip()
+        c = re.sub(r'\s+', '_', c)   # spaces -> underscores
+        return c.upper()             # standardize to ALL CAPS
+    return [norm(c) for c in cols]
+
+df.columns = normalize_headers(df.columns)
+
+# 3) Sanity check: show exactly what columns exist
+print("Imported table:", TABLE_NAME)
+print("Columns:", list(df.columns))
+
+# 4) Example access that CANNOT raise KeyError for the table name:
+#    Replace 'RC_CODE' etc. with *real* columns you see printed above.
+#    (Commented out so this cell can't fail. Uncomment after you confirm names.)
+# filtered = df[(df["SOURCE_SYSTEM_BALANCE"].notna()) & (df["SOURCE_SYSTEM_BALANCE"] != 0)]
+# filtered[["RC_CODE", "RC_DESCRIPTION", "SOURCE_SYSTEM_BALANCE"]]
+
+# 5) Return df so you can see it in the cell output
+df
+
+
+
+
+
 # --- Option A: Read Excel TABLE named RC_Code_Model_Base into pandas, normalize headers, and go ---
 import pandas as pd
 import re
