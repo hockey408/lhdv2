@@ -1,3 +1,77 @@
+import pandas as pd
+import numpy as np
+
+# --- Read Excel Tables into DataFrames ---
+df_model = pd.DataFrame(xl("RC_Code_Model_Base"))
+df_psi   = pd.DataFrame(xl("RC_PSI_ByDescription"))
+
+# --- Normalize column names (lowercase, underscores) ---
+def norm_cols(df):
+    df = df.copy()
+    df.columns = (
+        df.columns.astype(str)
+        .str.strip().str.lower()
+        .str.replace(r"[^a-z0-9]+", "_", regex=True)
+        .str.replace(r"_+", "_", regex=True)
+        .str.strip("_")
+    )
+    return df
+
+m = norm_cols(df_model)
+p = norm_cols(df_psi)
+
+# --- Robust date parsing ---
+for c in ["month_end","end_of_month_date"]:
+    if c in m.columns:
+        m["month_end"] = pd.to_datetime(m[c])
+for c in ["month_end"]:
+    if c in p.columns:
+        p["month_end"] = pd.to_datetime(p[c])
+
+# --- Robust RC description mapping ---
+# Prefer 'rc_description' in model; 'rc_desc' in PSI
+rc_model_col = "rc_description" if "rc_description" in m.columns else "rc_desc" if "rc_desc" in m.columns else None
+rc_psi_col   = "rc_desc"        if "rc_desc"        in p.columns else "rc_description" if "rc_description" in p.columns else None
+if rc_model_col is None or rc_psi_col is None:
+    raise ValueError(f"Couldn't find RC description column. Model cols: {m.columns.tolist()} | PSI cols: {p.columns.tolist()}")
+
+# --- Keep only the columns we need now; keep extras if present ---
+keep_model = [c for c in [rc_model_col, "month_end", "r2_by_model",
+                          "severity_weighted_latest_rc",  # if you used this exact name
+                          "severity_weighted_latest___rc", # fallback if punctuation collapsed
+                          "exposure_latest",
+                          "exposure___moM_per_rc", "exposure_delta_mom_per_rc", "actual", "forecast_selected"]
+              if c in m.columns]
+m_small = m[keep_model].copy()
+
+# Align severity col name
+if "severity_weighted_latest_rc" not in m_small.columns:
+    if "severity_weighted_latest___rc" in m_small.columns:
+        m_small = m_small.rename(columns={"severity_weighted_latest___rc":"severity_weighted_latest_rc"})
+
+# PSI essentials
+keep_psi = [c for c in ["rc_desc", "rc_description", "month_end",
+                        "psi_contrib_abs", "psi_contrib", "delta_pct", "exp_sum", "delta_exp"]
+            if c in p.columns]
+p_small = p[keep_psi].copy()
+
+# Unify RC column name on both sides
+m_small = m_small.rename(columns={rc_model_col:"rc_desc"})
+p_small = p_small.rename(columns={rc_psi_col:"rc_desc"})
+
+# --- Basic sanity: drop blank rc_desc and bad dates ---
+m_small = m_small.dropna(subset=["rc_desc","month_end"])
+p_small = p_small.dropna(subset=["rc_desc","month_end"])
+
+# Preview (Excel: right-click output → Convert to Table to persist)
+m_small.head(5), p_small.head(5)
+
+
+
+
+
+
+
 -- MoM Non-Accrual Adds & Drops Only (Option 3: per-month positive balance)
 -- Source: V_SECURE_PORTFOLIO_DETAIL_LOANHUB
 WITH params AS (
