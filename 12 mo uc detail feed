@@ -1,3 +1,72 @@
+--Query 5 - MoM Changes / Persisting (vs prior EOM)
+WITH params AS (
+  SELECT
+    DATE '2025-09-30'                 AS curr_eom,
+    ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
+),
+pop AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Identifier,
+      Account_Name,
+      Bank_Code,
+      Contract_Source_System,
+      Source_System_Balance,
+      Non_Accrual_Flag
+  FROM V_DPRT_CREDIT_INSTRUMENTS_ME
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 in ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance > 0
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+),
+curr AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+),
+prev AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+)
+SELECT
+  COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+  COALESCE(c.Account_Name,       p.Account_Name)       AS Account_Name,
+  COALESCE(c.Bank_Code,          p.Bank_Code)          AS Bank_Code,
+  COALESCE(c.Contract_Source_System, p.Contract_Source_System) AS Contract_Source_System,
+  CASE
+    WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'Added (New NA)'
+    WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'Removed (Resolved/Out)'
+    ELSE 'Persisting'
+  END AS NA_Status_Change,
+  p.Source_System_Balance AS Prev_Bal,
+  c.Source_System_Balance AS Curr_Bal,
+  /* use a numeric sort key instead of ordering by the alias */
+  CASE
+    WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 0
+    WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 1
+    WHEN c.Account_Identifier IS NOT NULL AND p.Account_Identifier IS NOT NULL THEN 2
+    ELSE 3
+  END AS Sort_Order
+FROM curr c
+FULL OUTER JOIN prev p
+  ON c.Account_Identifier = p.Account_Identifier
+ORDER BY
+  Sort_Order,
+  Bank_Code,
+  Account_Identifier;
+
+
+
+
+
+
+
+
+
+
 -- ============================================================
 -- RC_DESCRIPTION PSI Classification (Netezza-safe)
 -- - 13-month window
