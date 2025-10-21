@@ -1,6 +1,110 @@
 import pandas as pd
 import numpy as np
 
+# ---------- Helpers ----------
+def promote_first_row_to_header(df):
+    """If columns look like 0,1,2..., use the first row as headers."""
+    if all(isinstance(c, (int, np.integer)) or str(c).isdigit() for c in df.columns):
+        header = df.iloc[0].astype(str).str.strip()
+        df = df.iloc[1:].copy()
+        df.columns = header
+    return df
+
+def normalize_columns(df):
+    out = df.copy()
+    out.columns = (
+        out.columns.astype(str)
+        .str.strip()
+        .str.replace(r"[^A-Za-z0-9]+", "_", regex=True)
+        .str.replace(r"_+", "_", regex=True)
+        .str.strip("_")
+        .str.lower()
+    )
+    return out
+
+def find_rc_desc(cols):
+    # Try exacts
+    for c in ["rc_description","rc_desc","rc_code_description","rc_name","rcdescription"]:
+        if c in cols: return c
+    # Fuzzy contains rc + (desc|descr|description)
+    for c in cols:
+        cl = c.lower()
+        if "rc" in cl and ("desc" in cl or "descr" in cl or "description" in cl):
+            return c
+    return None
+
+def try_parse_dates(df, candidates):
+    for c in candidates:
+        if c in df.columns:
+            df["month_end"] = pd.to_datetime(df[c], errors="coerce")
+    return df
+
+# ---------- Load from Excel Tables ----------
+# IMPORTANT: This xl() object exists only in Python in Excel.
+# If you see NameError: xl, make sure this code is running in a Python cell inside Excel.
+model_tbl = "RC_Code_Model_Base"
+psi_tbl   = "RC_PSI_ByDescription"
+
+m_raw = pd.DataFrame(xl(model_tbl))
+p_raw = pd.DataFrame(xl(psi_tbl))
+
+# Promote first row to header if needed, then normalize headers
+m = normalize_columns(promote_first_row_to_header(m_raw))
+p = normalize_columns(promote_first_row_to_header(p_raw))
+
+# Try to create a canonical 'month_end' column
+m = try_parse_dates(m, ["month_end","end_of_month_date","monthend"])
+p = try_parse_dates(p, ["month_end","end_of_month_date","monthend"])
+
+# Find RC description columns
+rc_model_col = find_rc_desc(m.columns)
+rc_psi_col   = find_rc_desc(p.columns)
+
+# Make rc_desc the unified name on both
+if rc_model_col is None or rc_psi_col is None:
+    raise ValueError(
+        "Couldn't find RC description column.\n"
+        f"Model columns: {list(m.columns)}\n"
+        f"PSI columns:   {list(p.columns)}\n"
+        "Tip: Make sure your headers include 'RC_DESCRIPTION' (or similar) "
+        "and that the first row really is headers."
+    )
+
+m = m.rename(columns={rc_model_col:"rc_desc"})
+p = p.rename(columns={rc_psi_col:"rc_desc"})
+
+# Minimal columns we expect
+need_m = {"rc_desc","month_end"}
+need_p = {"rc_desc","month_end"}
+if not need_m.issubset(m.columns) or not need_p.issubset(p.columns):
+    raise ValueError(
+        "Missing key columns after normalization.\n"
+        f"Model has: {list(m.columns)}\n"
+        f"PSI has:   {list(p.columns)}\n"
+        "Make sure each table has RC description and a month_end/date column."
+    )
+
+# Drop empty rc_desc / invalid dates
+m = m.dropna(subset=["rc_desc","month_end"])
+p = p.dropna(subset=["rc_desc","month_end"])
+
+# Show what we detected so you can confirm
+print("✅ Loaded tables with headers:")
+print("Model columns:", list(m.columns))
+print("PSI columns:  ", list(p.columns))
+print("\nMODEL preview:")
+display(m.head(5))
+print("\nPSI preview:")
+display(p.head(5))
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+
 # --- Read Excel Tables into DataFrames ---
 df_model = pd.DataFrame(xl("RC_Code_Model_Base"))
 df_psi   = pd.DataFrame(xl("RC_PSI_ByDescription"))
