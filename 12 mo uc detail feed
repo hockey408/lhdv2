@@ -1,4 +1,200 @@
 -- ============================================================
+-- RC_DESCRIPTION PSI Classification (Netezza-safe)
+-- - 13-month window
+-- - Computes per-RC PSI contribution and classifies:
+--     * Portfolio_PSI_Flag: Stable / Monitor / Drift
+--     * RC_PSI_Class: Dominant/Major/Moderate/Minor/Background (+ direction)
+--     * RC_PSI_Alert_Flag: 1/0 for high-impact RCs in Drift/Monitor months
+-- - No POWER; uses LN only; parameters tunable below.
+-- ============================================================
+
+WITH params AS (
+  SELECT
+    ADD_MONTHS(CURRENT_DATE, -13)::DATE AS min_me,
+
+    /* tiny share cutoff to damp micro-categories (set to 0 to include all) */
+    0.0001::FLOAT8 AS min_share,
+
+    /* Portfolio PSI bands (industry-typical) */
+    0.10::FLOAT8 AS psi_stable_max,     -- < 0.10 = Stable
+    0.25::FLOAT8 AS psi_monitor_max,    -- 0.10–0.25 = Monitor; >0.25 = Drift
+
+    /* RC contribution bands by % of total PSI (choose what fits your scale) */
+    0.20::FLOAT8 AS pct_dom,            -- >=20% of month’s PSI = Dominant
+    0.10::FLOAT8 AS pct_major,          -- >=10% = Major
+    0.05::FLOAT8 AS pct_moderate,       -- >=5%  = Moderate
+    0.02::FLOAT8 AS pct_minor,          -- >=2%  = Minor (else Background)
+
+    /* Optional alert floor on share movement (percentage points of portfolio) */
+    0.0025::FLOAT8 AS min_delta_pct_for_alert  -- 0.25 ppts = 0.0025
+),
+
+-- 1) Base: 13-month Total Loans population
+base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE)          AS month_end,
+    SOURCE_SYSTEM_BALANCE::FLOAT8            AS exposure,
+    CAST(RC_DESCRIPTION AS VARCHAR(128))     AS rc_desc
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, params p
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND END_OF_MONTH_DATE >= p.min_me
+    AND SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND RC_DESCRIPTION IS NOT NULL
+),
+
+-- 2) Monthly exposure per RC_DESCRIPTION
+agg AS (
+  SELECT
+    month_end,
+    rc_desc,
+    SUM(exposure) AS exp_sum
+  FROM base
+  GROUP BY month_end, rc_desc
+),
+
+-- 3) Monthly percent share of exposure
+norm AS (
+  SELECT
+    a.month_end,
+    a.rc_desc,
+    a.exp_sum,
+    a.exp_sum / NULLIF(SUM(a.exp_sum) OVER (PARTITION BY a.month_end), 0) AS pct_share
+  FROM agg a
+),
+
+-- 4) Bring prior-month shares for same RC
+lagged AS (
+  SELECT
+    rc_desc,
+    month_end,
+    exp_sum,
+    pct_share,
+    LAG(exp_sum)   OVER (PARTITION BY rc_desc ORDER BY month_end) AS prev_exp_sum,
+    LAG(pct_share) OVER (PARTITION BY rc_desc ORDER BY month_end) AS prev_pct,
+    LAG(month_end) OVER (PARTITION BY rc_desc ORDER BY month_end) AS prev_me
+  FROM norm
+),
+
+-- 5) PSI piece + deltas (adjacent months only)
+psi_piece AS (
+  SELECT
+    l.month_end,
+    l.rc_desc,
+    l.exp_sum,
+    l.prev_exp_sum,
+    l.pct_share,
+    l.prev_pct,
+    (l.pct_share - l.prev_pct)                       AS delta_pct,
+    (l.exp_sum   - l.prev_exp_sum)                   AS delta_exp,
+    /* classic PSI term: (A - E) * ln(A/E) [non-negative when A,E>0] */
+    (l.pct_share - l.prev_pct)
+      * LN( NULLIF(l.pct_share / NULLIF(l.prev_pct, 0), 0) )      AS psi_contrib
+  FROM lagged l, params p
+  WHERE l.prev_me = ADD_MONTHS(l.month_end, -1)
+    AND l.prev_pct IS NOT NULL
+    AND l.pct_share  > 0
+    AND l.prev_pct   > 0
+    AND l.pct_share >= p.min_share
+    AND l.prev_pct  >= p.min_share
+),
+
+-- 6) Total PSI per month
+psi_month AS (
+  SELECT
+    month_end,
+    SUM(psi_contrib) AS psi_total
+  FROM psi_piece
+  GROUP BY month_end
+),
+
+-- 7) Join totals and compute % contribution + direction
+joined AS (
+  SELECT
+    p.month_end,
+    p.rc_desc,
+    p.exp_sum,
+    p.prev_exp_sum,
+    p.delta_exp,
+    p.pct_share,
+    p.prev_pct,
+    p.delta_pct,
+    p.psi_contrib,
+    m.psi_total,
+    /* share of total PSI this RC drove (can be NULL if total=0) */
+    CASE WHEN m.psi_total IS NULL OR m.psi_total = 0 THEN NULL
+         ELSE p.psi_contrib / m.psi_total END AS psi_contrib_pct_of_total,
+    /* direction sign (+1 share up, -1 share down) */
+    CASE WHEN p.delta_pct >= 0 THEN 1 ELSE -1 END AS dir_sign
+  FROM psi_piece p
+  JOIN psi_month m USING (month_end)
+),
+
+-- 8) Portfolio PSI flag + RC class + alert flag
+classified AS (
+  SELECT
+    j.*,
+    /* Portfolio-level PSI band */
+    CASE
+      WHEN j.psi_total <  (SELECT psi_stable_max  FROM params) THEN 'Stable'
+      WHEN j.psi_total <  (SELECT psi_monitor_max FROM params) THEN 'Monitor'
+      ELSE 'Drift'
+    END AS portfolio_psi_flag,
+
+    /* RC contribution class by % of total PSI (with direction suffix) */
+    CASE
+      WHEN j.psi_total IS NULL OR j.psi_total = 0 OR j.psi_contrib_pct_of_total IS NULL THEN 'Background'
+      WHEN j.psi_contrib_pct_of_total >= (SELECT pct_dom     FROM params)
+        THEN CASE WHEN j.dir_sign = 1 THEN 'Dominant (Share↑)' ELSE 'Dominant (Share↓)' END
+      WHEN j.psi_contrib_pct_of_total >= (SELECT pct_major   FROM params)
+        THEN CASE WHEN j.dir_sign = 1 THEN 'Major (Share↑)'    ELSE 'Major (Share↓)'    END
+      WHEN j.psi_contrib_pct_of_total >= (SELECT pct_moderate FROM params)
+        THEN CASE WHEN j.dir_sign = 1 THEN 'Moderate (Share↑)' ELSE 'Moderate (Share↓)' END
+      WHEN j.psi_contrib_pct_of_total >= (SELECT pct_minor   FROM params)
+        THEN CASE WHEN j.dir_sign = 1 THEN 'Minor (Share↑)'    ELSE 'Minor (Share↓)'    END
+      ELSE CASE WHEN j.dir_sign = 1 THEN 'Background (Share↑)' ELSE 'Background (Share↓)' END
+    END AS rc_psi_class,
+
+    /* Simple alert: only flag RCs that are sizable contributors in Monitor/Drift months
+       and changed share by at least min_delta_pct_for_alert (to avoid micro flicker). */
+    CASE
+      WHEN ( (j.psi_total >= (SELECT psi_stable_max FROM params))     -- Monitor/Drift
+             AND j.psi_contrib_pct_of_total IS NOT NULL
+             AND j.psi_contrib_pct_of_total >= (SELECT pct_moderate FROM params) -- >= moderate contributor
+             AND ABS(j.delta_pct) >= (SELECT min_delta_pct_for_alert FROM params)
+           )
+      THEN 1 ELSE 0
+    END AS rc_psi_alert_flag,
+
+    /* Rank by absolute contribution (magnitude) within the month */
+    DENSE_RANK() OVER (PARTITION BY j.month_end ORDER BY j.psi_contrib DESC) AS rk_by_abs_contrib
+  FROM joined j
+)
+
+SELECT
+  month_end,
+  rc_desc,
+  exp_sum,
+  prev_exp_sum,
+  delta_exp,
+  pct_share,
+  prev_pct,
+  delta_pct,
+  psi_contrib,
+  psi_total,
+  psi_contrib_pct_of_total,
+  portfolio_psi_flag,
+  rc_psi_class,
+  rc_psi_alert_flag,
+  rk_by_abs_contrib
+FROM classified
+ORDER BY month_end DESC, rk_by_abs_contrib, rc_desc;
+
+
+
+
+
+
+-- ============================================================
 -- RC_DESCRIPTION PSI Contributions by Month
 -- - Uses RC_DESCRIPTION instead of RC_CODE
 -- - Measures each RC's contribution to month-over-month PSI
