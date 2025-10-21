@@ -1,4 +1,126 @@
 /*=========================================================================*
+  Directional Flip Analysis: Non-Synthetic ↔ Synthetic
+ *=========================================================================*/
+WITH
+params AS (SELECT 24::INT AS lookback_months),
+
+base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE)              AS month_end,
+    ACCOUNT_IDENTIFIER,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    GL_ACCOUNT_DESCRIPTION,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    COALESCE(SOURCE_SYSTEM_BALANCE,0.0)::FLOAT8  AS exposure
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+
+-- recent window
+latest AS (SELECT MAX(month_end) AS latest_month_end FROM (SELECT DISTINCT month_end FROM base) d),
+windowed AS (
+  SELECT b.*
+  FROM base b
+  JOIN latest l ON 1=1
+  WHERE b.month_end >= ADD_MONTHS(l.latest_month_end, -((SELECT lookback_months FROM params) - 1))
+),
+
+-- tagging
+cat1 AS (
+  SELECT w.*,
+         CASE
+           WHEN UPPER(CONTRACT_SOURCE_SYSTEM) IN
+                ('FRDS_EXCPTN','SYN','ALL','GL','LJ','ADJ','LNIQ01-EXCPTN','INFL05-EXCPTN')
+             OR UPPER(CONTRACT_SOURCE_SYSTEM) LIKE '%EXCPTN%'
+           THEN 1 ELSE 0 END AS cat1_flag
+  FROM windowed w
+),
+cat2 AS (
+  SELECT c1.*,
+         CASE
+           WHEN CONTRACT_SOURCE_SYSTEM='ALL'
+            AND GL_ACCOUNT_CODE IN (
+                 1041210,1142067,1042213,1042368,1042409,1042424,1042886,
+                 1043008,1142048,1051872,1061833,1041211,1041344,1041364
+               )
+           THEN 1 ELSE 0 END AS cat2_flag
+  FROM cat1 c1
+),
+labeled AS (
+  SELECT
+    c2.*,
+    CASE
+      WHEN cat1_flag=1 AND cat2_flag=1 THEN 'Cat1+Cat2'
+      WHEN cat1_flag=1 THEN 'Cat1'
+      WHEN cat2_flag=1 THEN 'Cat2'
+      ELSE 'Non-Synthetic' END AS category
+  FROM cat2 c2
+),
+
+-- add previous month’s category per account
+lagged AS (
+  SELECT
+    l.*,
+    LAG(category) OVER (PARTITION BY ACCOUNT_IDENTIFIER ORDER BY month_end) AS prev_category
+  FROM labeled l
+),
+
+-- determine direction of change
+flagged AS (
+  SELECT
+    month_end,
+    ACCOUNT_IDENTIFIER,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    category           AS curr_category,
+    prev_category,
+    CASE
+      WHEN prev_category = 'Non-Synthetic' AND category <> 'Non-Synthetic' THEN 1 ELSE 0 END AS flip_in_flag,
+    CASE
+      WHEN prev_category <> 'Non-Synthetic' AND category = 'Non-Synthetic' THEN 1 ELSE 0 END AS flip_out_flag,
+    CASE
+      WHEN prev_category NOT IN ('Non-Synthetic') AND category NOT IN ('Non-Synthetic')
+           AND prev_category <> category THEN 1 ELSE 0 END AS flip_type_flag
+  FROM lagged
+  WHERE prev_category IS NOT NULL
+),
+
+-- aggregate to GL × System × direction
+summary AS (
+  SELECT
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    COUNT(DISTINCT ACCOUNT_IDENTIFIER)                      AS acct_cnt,
+    SUM(flip_in_flag)                                       AS flips_in,
+    SUM(flip_out_flag)                                      AS flips_out,
+    SUM(flip_type_flag)                                     AS flips_typechange,
+    COUNT(*)                                                AS obs_cnt,
+    ROUND(100.0 * SUM(flip_in_flag)  / NULLIF(COUNT(*),0),2) AS flip_in_pct,
+    ROUND(100.0 * SUM(flip_out_flag) / NULLIF(COUNT(*),0),2) AS flip_out_pct
+  FROM flagged
+  GROUP BY CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE
+)
+
+SELECT
+  CONTRACT_SOURCE_SYSTEM,
+  GL_ACCOUNT_CODE,
+  acct_cnt,
+  flips_in,
+  flips_out,
+  flips_typechange,
+  flip_in_pct,
+  flip_out_pct,
+  (flips_in - flips_out) AS net_inflow
+FROM summary
+ORDER BY ABS(flips_in - flips_out) DESC;
+
+
+
+
+
+
+/*=========================================================================*
   C) FLIP ANALYSIS (Synthetic category flips across months)
  *=========================================================================*/
 WITH
