@@ -1,4 +1,31 @@
-      CASE
+      Account_Name,
+      Contract_Source_System,
+      CIS_Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      GL_Account_Hier_Level_4,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag,
+      PROD_HIER_LEVEL_5,
+      RBC_Code
+
+
+
+
+
+
+
+
+
+
+CASE
         WHEN CONTRACT_SOURCE_SYSTEM IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN') THEN 'L-SVB'
         WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1051872' THEN 'L-SVB'
         WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE = '1061833' THEN 'L-SVB'
