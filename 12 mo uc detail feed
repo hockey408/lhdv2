@@ -1,3 +1,97 @@
+-- ============================================
+-- RC_CODE Population Stability Index (PSI)
+-- - Compares each month to the prior month
+-- - 13-month window for performance
+-- - Netezza-safe (no POWER; uses LN)
+-- ============================================
+
+WITH params AS (
+  SELECT ADD_MONTHS(CURRENT_DATE, -13)::DATE AS min_me
+),
+
+-- 1) Base (Total Loans, 13m)
+base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE)       AS month_end,
+    SOURCE_SYSTEM_BALANCE::FLOAT8         AS exposure,
+    CAST(RC_CODE AS VARCHAR(64))          AS rc_val
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, params p
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND END_OF_MONTH_DATE >= p.min_me
+    AND SOURCE_SYSTEM_BALANCE IS NOT NULL
+),
+
+-- 2) Aggregate exposure per RC_CODE value per month
+agg AS (
+  SELECT
+    month_end,
+    rc_val,
+    SUM(exposure) AS exp_sum
+  FROM base
+  GROUP BY month_end, rc_val
+),
+
+-- 3) Normalize to monthly percentage shares
+norm AS (
+  SELECT
+    a.month_end,
+    a.rc_val,
+    a.exp_sum,
+    a.exp_sum / NULLIF(SUM(a.exp_sum) OVER (PARTITION BY a.month_end), 0) AS pct_share
+  FROM agg a
+),
+
+-- 4) Bring prior-month shares for the same rc_val
+lagged AS (
+  SELECT
+    rc_val,
+    month_end,
+    pct_share,
+    LAG(pct_share) OVER (PARTITION BY rc_val ORDER BY month_end) AS prev_pct,
+    LAG(month_end) OVER (PARTITION BY rc_val ORDER BY month_end) AS prev_me
+  FROM norm
+),
+
+-- 5) PSI contributions per rc_val (only when month is directly prior)
+psi_piece AS (
+  SELECT
+    month_end,
+    rc_val,
+    /* classic PSI term: (A - E) * ln(A/E) */
+    (pct_share - prev_pct) * LN( NULLIF(pct_share / NULLIF(prev_pct,0), 0) ) AS psi_term
+  FROM lagged
+  WHERE prev_me = ADD_MONTHS(month_end, -1)
+    AND prev_pct IS NOT NULL
+    AND pct_share > 0
+    AND prev_pct  > 0
+),
+
+-- 6) Sum contributions into one PSI per month
+psi_month AS (
+  SELECT
+    month_end,
+    SUM(psi_term) AS psi_value
+  FROM psi_piece
+  GROUP BY month_end
+)
+
+SELECT
+  month_end,
+  ROUND(psi_value, 4) AS psi_value,
+  CASE
+    WHEN psi_value < 0.10 THEN 'Stable'
+    WHEN psi_value < 0.25 THEN 'Monitor'
+    ELSE 'Drift'
+  END AS psi_flag
+FROM psi_month
+ORDER BY month_end DESC;
+
+
+
+
+
+
+
 /*=========================================================================*
   Directional Flip Analysis: Non-Synthetic ↔ Synthetic
  *=========================================================================*/
