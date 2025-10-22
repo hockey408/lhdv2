@@ -1,3 +1,253 @@
+-- ==================== KDE MoM Changes — Changes-Only (Upgraded+) ====================
+-- - 13-month rolling window (tune in params)
+-- - Aggregate ONLY changed rows: counts, exposure deltas, MoM%
+-- - Flip-type breakdown: NULL→VAL, VAL→NULL, VAL→VAL (counts & $ deltas)
+-- - Rolling 12M stability stats (mean, stddev) on $Δ for each KDE
+-- - Drift Severity Index per KDE×month: 0.7*|%Δ exposure on changed| + 0.3*share of changed accts
+-- - Per-month ranks by |$Δ|, #accounts, Severity Index
+-- - Optional materiality gates (min accounts OR min |$Δ|)
+-- ===================================================================================
+
+WITH
+/* 0) Parameters */
+params AS (
+  SELECT
+    ADD_MONTHS(CURRENT_DATE, -13)::DATE AS min_me,          -- 13 months back from today
+    5::INTEGER                         AS min_accts_gate,   -- minimum changed accounts to keep
+    1000000.0::FLOAT8                  AS min_abs_exp_delta_gate  -- OR minimum absolute $Δ to keep
+),
+
+/* 1) Base rows (Total Loans, 13-month window) */
+base AS (
+  SELECT
+    Account_Identifier,
+    CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+    SOURCE_SYSTEM_BALANCE::FLOAT8   AS exposure,
+    -- ---- KDE columns ----
+    CRE_FLAG, PD_GRADE, FDIC_CALL_CODE, NON_ACCRUAL_FLAG, INDUSTRY_CODE, LTV,
+    GL_ACCOUNT_CODE, DAYS_PAST_DUE, RBC_CODE, MATURITY_DATE, NAICS_CODE, RC_CODE,
+    REVOLVING_CODE, NEXT_RATE_CHANGE_DATE, ACCOUNT_OFFICER_NAME, BOOK_DATE,
+    BUS_UNIT_CODE, COLLATERAL_CODE, ISSUE_DATE, OCCUPANCY_CODE, PAST_DUE_FLAG,
+    PROD_HIER_LEVEL_5, PURPOSE_CODE, STATUS_CODE, RISK_UNIT
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, params p
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND END_OF_MONTH_DATE >= p.min_me
+),
+
+/* 2) Long-form (UNION ALL) for selected KDEs; cast to stable VARCHAR sizes */
+kde_flat AS (
+  SELECT 'CRE_FLAG' AS kde_name, Account_Identifier, month_end, exposure, CAST(CRE_FLAG AS VARCHAR(64)) AS kde_val FROM base
+  UNION ALL SELECT 'PD_GRADE', Account_Identifier, month_end, exposure, CAST(PD_GRADE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'FDIC_CALL_CODE', Account_Identifier, month_end, exposure, CAST(FDIC_CALL_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'NON_ACCRUAL_FLAG', Account_Identifier, month_end, exposure, CAST(NON_ACCRUAL_FLAG AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'INDUSTRY_CODE', Account_Identifier, month_end, exposure, CAST(INDUSTRY_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'LTV', Account_Identifier, month_end, exposure, CAST(LTV AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'GL_ACCOUNT_CODE', Account_Identifier, month_end, exposure, CAST(GL_ACCOUNT_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'DAYS_PAST_DUE', Account_Identifier, month_end, exposure, CAST(DAYS_PAST_DUE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'RBC_CODE', Account_Identifier, month_end, exposure, CAST(RBC_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'MATURITY_DATE', Account_Identifier, month_end, exposure, CAST(MATURITY_DATE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'NAICS_CODE', Account_Identifier, month_end, exposure, CAST(NAICS_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'RC_CODE', Account_Identifier, month_end, exposure, CAST(RC_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'REVOLVING_CODE', Account_Identifier, month_end, exposure, CAST(REVOLVING_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'NEXT_RATE_CHANGE_DATE', Account_Identifier, month_end, exposure, CAST(NEXT_RATE_CHANGE_DATE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'ACCOUNT_OFFICER_NAME', Account_Identifier, month_end, exposure, CAST(ACCOUNT_OFFICER_NAME AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'BOOK_DATE', Account_Identifier, month_end, exposure, CAST(BOOK_DATE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'BUS_UNIT_CODE', Account_Identifier, month_end, exposure, CAST(BUS_UNIT_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'COLLATERAL_CODE', Account_Identifier, month_end, exposure, CAST(COLLATERAL_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'ISSUE_DATE', Account_Identifier, month_end, exposure, CAST(ISSUE_DATE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'OCCUPANCY_CODE', Account_Identifier, month_end, exposure, CAST(OCCUPANCY_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'PAST_DUE_FLAG', Account_Identifier, month_end, exposure, CAST(PAST_DUE_FLAG AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'PROD_HIER_LEVEL_5', Account_Identifier, month_end, exposure, CAST(PROD_HIER_LEVEL_5 AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'PURPOSE_CODE', Account_Identifier, month_end, exposure, CAST(PURPOSE_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'STATUS_CODE', Account_Identifier, month_end, exposure, CAST(STATUS_CODE AS VARCHAR(64)) FROM base
+  UNION ALL SELECT 'RISK_UNIT', Account_Identifier, month_end, exposure, CAST(RISK_UNIT AS VARCHAR(64)) FROM base
+),
+
+/* 3) LAG prev month value/exposure for change detection */
+lagged AS (
+  SELECT
+    kde_name,
+    Account_Identifier,
+    month_end,
+    exposure,
+    kde_val,
+    LAG(kde_val)   OVER (PARTITION BY kde_name, Account_Identifier ORDER BY month_end) AS prev_val,
+    LAG(exposure)  OVER (PARTITION BY kde_name, Account_Identifier ORDER BY month_end) AS prev_exp,
+    LAG(month_end) OVER (PARTITION BY kde_name, Account_Identifier ORDER BY month_end) AS prev_me
+  FROM kde_flat
+),
+
+/* 4) Keep only rows that changed vs prior month (incl. NULL flips), adjacent months only */
+changed AS (
+  SELECT
+    kde_name,
+    month_end,
+    Account_Identifier,
+    exposure AS this_exp,
+    prev_exp,
+    CASE
+      WHEN prev_val IS NULL AND kde_val IS NOT NULL THEN 'NULL→VAL'
+      WHEN prev_val IS NOT NULL AND kde_val IS NULL THEN 'VAL→NULL'
+      ELSE 'VAL→VAL'
+    END AS flip_type
+  FROM lagged
+  WHERE prev_me = ADD_MONTHS(month_end, -1)
+    AND COALESCE(kde_val,'~NULL~') <> COALESCE(prev_val,'~NULL~')
+),
+
+/* 5) Aggregate change-only rows + flip-type breakdowns */
+agg AS (
+  SELECT
+    kde_name,
+    month_end,
+    COUNT(*) AS accounts_changed,
+    SUM(COALESCE(prev_exp,0))                        AS exposure_prev_on_changed,
+    SUM(COALESCE(this_exp,0))                        AS exposure_cur_on_changed,
+    SUM(COALESCE(this_exp,0) - COALESCE(prev_exp,0)) AS exposure_delta_on_changed,
+
+    -- Flip counts
+    SUM(CASE WHEN flip_type='NULL→VAL' THEN 1 ELSE 0 END) AS cnt_null_to_val,
+    SUM(CASE WHEN flip_type='VAL→NULL' THEN 1 ELSE 0 END) AS cnt_val_to_null,
+    SUM(CASE WHEN flip_type='VAL→VAL'  THEN 1 ELSE 0 END) AS cnt_val_to_val,
+
+    -- Flip exposure deltas
+    SUM(CASE WHEN flip_type='NULL→VAL' THEN COALESCE(this_exp,0) - COALESCE(prev_exp,0) ELSE 0 END) AS exp_delta_null_to_val,
+    SUM(CASE WHEN flip_type='VAL→NULL' THEN COALESCE(this_exp,0) - COALESCE(prev_exp,0) ELSE 0 END) AS exp_delta_val_to_null,
+    SUM(CASE WHEN flip_type='VAL→VAL'  THEN COALESCE(this_exp,0) - COALESCE(prev_exp,0) ELSE 0 END) AS exp_delta_val_to_val
+  FROM changed
+  GROUP BY kde_name, month_end
+),
+
+/* 6) Final metrics + MoM% on changed population */
+final_raw AS (
+  SELECT
+    kde_name,
+    month_end,
+    accounts_changed,
+    exposure_prev_on_changed,
+    exposure_cur_on_changed,
+    exposure_delta_on_changed,
+    CASE
+      WHEN exposure_prev_on_changed = 0 THEN NULL
+      ELSE (exposure_delta_on_changed / exposure_prev_on_changed)
+    END::FLOAT8 AS exposure_mom_pct_on_changed,
+
+    cnt_null_to_val, cnt_val_to_null, cnt_val_to_val,
+    exp_delta_null_to_val, exp_delta_val_to_null, exp_delta_val_to_val
+  FROM agg
+),
+
+/* 7) Apply optional materiality gates */
+final_gated AS (
+  SELECT fr.*
+  FROM final_raw fr, params p
+  WHERE (fr.accounts_changed >= p.min_accts_gate)
+     OR (ABS(fr.exposure_delta_on_changed) >= p.min_abs_exp_delta_gate)
+),
+
+/* 8) Rolling 12M stability stats on $Δ per KDE */
+rolling_stats AS (
+  SELECT
+    f.kde_name,
+    f.month_end,
+    f.accounts_changed,
+    f.exposure_prev_on_changed,
+    f.exposure_cur_on_changed,
+    f.exposure_delta_on_changed,
+    f.exposure_mom_pct_on_changed,
+    f.cnt_null_to_val, f.cnt_val_to_null, f.cnt_val_to_val,
+    f.exp_delta_null_to_val, f.exp_delta_val_to_null, f.exp_delta_val_to_val,
+
+    AVG(f.exposure_delta_on_changed) OVER (
+      PARTITION BY f.kde_name
+      ORDER BY f.month_end
+      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+    )::FLOAT8 AS rolling_mean_12m,
+
+    STDDEV_SAMP(f.exposure_delta_on_changed) OVER (
+      PARTITION BY f.kde_name
+      ORDER BY f.month_end
+      ROWS BETWEEN 11 PRECEDING AND CURRENT ROW
+    )::FLOAT8 AS rolling_sd_12m
+  FROM final_gated f
+),
+
+/* 9) Drift components: exposure change % and share of changed accounts (per month) */
+drift_components AS (
+  SELECT
+    r.*,
+    -- % change of exposure on changed cohort
+    (CASE
+       WHEN r.exposure_prev_on_changed = 0 THEN NULL
+       ELSE (r.exposure_delta_on_changed / r.exposure_prev_on_changed) * 100.0
+     END)::FLOAT8 AS exposure_change_pct,
+
+    -- total changed accounts this month across all KDEs
+    SUM(r.accounts_changed) OVER (PARTITION BY r.month_end) AS month_total_accounts_changed
+  FROM rolling_stats r
+),
+
+/* 10) Severity index + per-month ranks */
+scored AS (
+  SELECT
+    d.*,
+
+    -- Share of changes (as % of total changed accounts this month)
+    (CASE
+       WHEN d.month_total_accounts_changed = 0 OR d.month_total_accounts_changed IS NULL
+         THEN NULL
+       ELSE (d.accounts_changed::FLOAT8 / d.month_total_accounts_changed::FLOAT8) * 100.0
+     END)::FLOAT8 AS share_of_changes_pct,
+
+    -- Drift Severity Index (0..∞): 0.7*|%Δ exposure| + 0.3*share_of_changes
+    ( 0.70 * COALESCE(ABS(d.exposure_change_pct),0)
+    + 0.30 * COALESCE(
+         (CASE
+            WHEN d.month_total_accounts_changed = 0 OR d.month_total_accounts_changed IS NULL
+            THEN NULL
+            ELSE (d.accounts_changed::FLOAT8 / d.month_total_accounts_changed::FLOAT8) * 100.0
+          END), 0)
+    )::FLOAT8 AS drift_severity_idx
+  FROM drift_components d
+)
+
+SELECT
+  s.kde_name,
+  s.month_end,
+
+  -- core totals
+  s.accounts_changed,
+  s.exposure_prev_on_changed,
+  s.exposure_cur_on_changed,
+  s.exposure_delta_on_changed,
+  s.exposure_mom_pct_on_changed,
+
+  -- flip breakdowns
+  s.cnt_null_to_val, s.cnt_val_to_null, s.cnt_val_to_val,
+  s.exp_delta_null_to_val, s.exp_delta_val_to_null, s.exp_delta_val_to_val,
+
+  -- rolling stability
+  s.rolling_mean_12m,
+  s.rolling_sd_12m,
+
+  -- drift components + index
+  s.exposure_change_pct,
+  s.month_total_accounts_changed,
+  s.share_of_changes_pct,
+  s.drift_severity_idx,
+
+  -- per-month ranks
+  DENSE_RANK() OVER (PARTITION BY s.month_end ORDER BY ABS(s.exposure_delta_on_changed) DESC) AS rk_by_abs_exposure,
+  DENSE_RANK() OVER (PARTITION BY s.month_end ORDER BY s.accounts_changed DESC)               AS rk_by_accounts,
+  DENSE_RANK() OVER (PARTITION BY s.month_end ORDER BY s.drift_severity_idx DESC)             AS rk_by_severity
+
+FROM scored s
+ORDER BY s.month_end DESC, rk_by_severity, rk_by_abs_exposure, s.kde_name;
+
+
+
+
+
 -- ==================== KDE MoM Changes — Changes-Only (Upgraded) ====================
 -- - 13-month rolling window (tune in params)
 #NAME?
