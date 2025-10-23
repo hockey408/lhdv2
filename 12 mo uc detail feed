@@ -1,3 +1,422 @@
+/*=========================================================================
+  Unified Synthetic Analytics (LOANHUB) — One Script, Param-Driven Sections
+  Table: V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  NOTE: Set params.p_section to one of:
+        'SNAPSHOT_TREND' | 'MOM_DECOMP' | 'TOP_MOVERS' | 'VOLATILITY'
+ *=========================================================================*/
+
+WITH
+/* ---------- Parameters ---------- */
+params AS (
+  SELECT
+    24::INT               AS lookback_months,    -- window for history/volatility
+    1000::INT             AS topN_movers,        -- TOP N for TOP_MOVERS section
+    'MOM_DECOMP'::VARCHAR AS p_section           -- << set per PBI copy
+),
+
+/* ---------- Base (Total Loans only) ---------- */
+base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE)              AS month_end,
+    ACCOUNT_IDENTIFIER,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    GL_ACCOUNT_DESCRIPTION,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    COALESCE(SOURCE_SYSTEM_BALANCE,0.0)::FLOAT8  AS exposure
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+
+/* ---------- Latest & Prior Month ---------- */
+latest AS (
+  SELECT MAX(month_end) AS latest_me
+  FROM (SELECT DISTINCT month_end FROM base) d
+),
+prior AS (
+  SELECT MAX(month_end) AS prior_me
+  FROM (SELECT DISTINCT month_end FROM base) d
+  WHERE month_end < (SELECT latest_me FROM latest)
+),
+
+/* ---------- Window for history/volatility ---------- */
+windowed AS (
+  SELECT b.*
+  FROM base b
+  JOIN latest l ON 1=1
+  WHERE b.month_end >= ADD_MONTHS(l.latest_me, -((SELECT lookback_months FROM params) - 1))
+),
+
+/* ---------- Synthetic tagging (Cat1 / Cat2) ---------- */
+tagged AS (
+  SELECT
+    w.*,
+    CASE
+      WHEN UPPER(CONTRACT_SOURCE_SYSTEM) IN
+           ('FRDS_EXCPTN','SYN','ALL','GL','LJ','ADJ','LNIQ01-EXCPTN','INFL05-EXCPTN')
+        OR UPPER(CONTRACT_SOURCE_SYSTEM) LIKE '%EXCPTN%' THEN 1
+      WHEN CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE IN
+           (1041210,1142067,1042213,1042368,1042409,1042424,1042886,
+            1043008,1142048,1051872,1061833,1041211,1041344,1041364) THEN 1
+      ELSE 0
+    END AS is_synth,
+    CASE
+      WHEN (UPPER(CONTRACT_SOURCE_SYSTEM) IN
+              ('FRDS_EXCPTN','SYN','ALL','GL','LJ','ADJ','LNIQ01-EXCPTN','INFL05-EXCPTN')
+             OR UPPER(CONTRACT_SOURCE_SYSTEM) LIKE '%EXCPTN%')
+           AND (CONTRACT_SOURCE_SYSTEM = 'ALL' AND GL_ACCOUNT_CODE IN
+              (1041210,1142067,1042213,1042368,1042409,1042424,1042886,
+               1043008,1142048,1051872,1061833,1041211,1041344,1041364))
+      THEN 'Cat1+Cat2'
+      WHEN (UPPER(CONTRACT_SOURCE_SYSTEM) IN
+              ('FRDS_EXCPTN','SYN','ALL','GL','LJ','ADJ','LNIQ01-EXCPTN','INFL05-EXCPTN')
+             OR UPPER(CONTRACT_SOURCE_SYSTEM) LIKE '%EXCPTN%')
+      THEN 'Cat1'
+      WHEN CONTRACT_SOURCE_SYSTEM='ALL' AND GL_ACCOUNT_CODE IN
+           (1041210,1142067,1042213,1042368,1042409,1042424,1042886,
+            1043008,1142048,1051872,1061833,1041211,1041344,1041364)
+      THEN 'Cat2'
+      ELSE NULL
+    END AS synthetic_category
+  FROM windowed w
+),
+
+/* ---------- Monthly aggregates for SNAPSHOT/TREND ---------- */
+monthly_group AS (
+  SELECT
+    month_end,
+    synthetic_category,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    MAX(GL_ACCOUNT_DESCRIPTION)                  AS GL_ACCOUNT_DESCRIPTION,
+    COUNT(*)                                     AS rows_flagged,
+    COUNT(DISTINCT ACCOUNT_IDENTIFIER)           AS accounts_flagged,
+    SUM(exposure)                                AS exposure_sum,
+    SUM(ABS(exposure))                           AS exposure_abs_sum,
+    AVG(ABS(exposure))                           AS exposure_abs_avg
+  FROM tagged
+  WHERE is_synth = 1
+  GROUP BY month_end, synthetic_category, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE
+),
+m_latest AS (SELECT MAX(month_end) AS month_end FROM monthly_group),
+m_prior2 AS (
+  SELECT MAX(month_end) AS month_end
+  FROM monthly_group
+  WHERE month_end < (SELECT month_end FROM m_latest)
+),
+latest_per_group AS (
+  SELECT g.* FROM monthly_group g JOIN m_latest ml ON g.month_end = ml.month_end
+),
+prior_per_group AS (
+  SELECT g.* FROM monthly_group g JOIN m_prior2 mp ON g.month_end = mp.month_end
+),
+history_stats AS (
+  SELECT
+    synthetic_category,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    MAX(GL_ACCOUNT_DESCRIPTION)            AS GL_ACCOUNT_DESCRIPTION,
+    COUNT(*)                               AS hist_months,
+    AVG(ABS(exposure_sum))                 AS hist_avg_abs_exposure,
+    STDDEV_SAMP(ABS(exposure_sum))         AS hist_std_abs_exposure,
+    MIN(ABS(exposure_sum))                 AS hist_min_abs_exposure,
+    MAX(ABS(exposure_sum))                 AS hist_max_abs_exposure
+  FROM monthly_group
+  WHERE month_end < (SELECT month_end FROM m_latest)
+  GROUP BY synthetic_category, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE
+),
+
+/* ---------- SNAPSHOT rows ---------- */
+snapshot AS (
+  SELECT
+    'SNAPSHOT_TREND'::VARCHAR AS section,
+    lp.month_end,
+    lp.synthetic_category,
+    lp.CONTRACT_SOURCE_SYSTEM,
+    lp.GL_ACCOUNT_CODE,
+    lp.GL_ACCOUNT_DESCRIPTION,
+    CAST(NULL AS VARCHAR(128)) AS account_identifier,
+    CAST(NULL AS FLOAT8)       AS exposure_prev,
+    CAST(NULL AS FLOAT8)       AS exposure_cur,
+    CAST(NULL AS FLOAT8)       AS delta_total,
+    CAST(NULL AS FLOAT8)       AS cont_growth,
+    CAST(NULL AS FLOAT8)       AS adds,
+    CAST(NULL AS FLOAT8)       AS drops,
+    lp.rows_flagged,
+    lp.accounts_flagged,
+    lp.exposure_sum,
+    lp.exposure_abs_sum,
+    lp.exposure_abs_avg,
+    (SELECT month_end FROM m_prior2)          AS prev_month_end,
+    COALESCE(pp.exposure_sum,0.0)             AS prev_exposure_sum,
+    CASE WHEN COALESCE(pp.exposure_sum,0.0)=0 THEN NULL
+         ELSE (lp.exposure_sum - pp.exposure_sum) / NULLIF(pp.exposure_sum,0.0) END AS pct_delta_exposure,
+    hs.hist_months,
+    hs.hist_avg_abs_exposure,
+    hs.hist_std_abs_exposure,
+    hs.hist_min_abs_exposure,
+    hs.hist_max_abs_exposure,
+    CASE WHEN COALESCE(hs.hist_std_abs_exposure,0)=0 THEN NULL
+         ELSE (ABS(lp.exposure_sum) - hs.hist_avg_abs_exposure) / hs.hist_std_abs_exposure END AS zscore_abs,
+    CAST(NULL AS FLOAT8) AS volatility_avg_abs,
+    CAST(NULL AS FLOAT8) AS volatility_std_abs,
+    CAST(NULL AS FLOAT8) AS volatility_cv_abs,
+    CAST(NULL AS FLOAT8) AS exposure_delta
+  FROM latest_per_group lp
+  LEFT JOIN prior_per_group pp
+    ON pp.synthetic_category=lp.synthetic_category
+   AND pp.CONTRACT_SOURCE_SYSTEM=lp.CONTRACT_SOURCE_SYSTEM
+   AND pp.GL_ACCOUNT_CODE=lp.GL_ACCOUNT_CODE
+  LEFT JOIN history_stats hs
+    ON hs.synthetic_category=lp.synthetic_category
+   AND hs.CONTRACT_SOURCE_SYSTEM=lp.CONTRACT_SOURCE_SYSTEM
+   AND hs.GL_ACCOUNT_CODE=lp.GL_ACCOUNT_CODE
+),
+
+/* ---------- TREND rows ---------- */
+trend AS (
+  SELECT
+    'SNAPSHOT_TREND'::VARCHAR AS section,
+    g.month_end,
+    g.synthetic_category,
+    g.CONTRACT_SOURCE_SYSTEM,
+    g.GL_ACCOUNT_CODE,
+    g.GL_ACCOUNT_DESCRIPTION,
+    CAST(NULL AS VARCHAR(128)) AS account_identifier,
+    CAST(NULL AS FLOAT8) AS exposure_prev,
+    CAST(NULL AS FLOAT8) AS exposure_cur,
+    CAST(NULL AS FLOAT8) AS delta_total,
+    CAST(NULL AS FLOAT8) AS cont_growth,
+    CAST(NULL AS FLOAT8) AS adds,
+    CAST(NULL AS FLOAT8) AS drops,
+    g.rows_flagged,
+    g.accounts_flagged,
+    g.exposure_sum,
+    g.exposure_abs_sum,
+    g.exposure_abs_avg,
+    CAST(NULL AS DATE)   AS prev_month_end,
+    CAST(NULL AS FLOAT8) AS prev_exposure_sum,
+    CAST(NULL AS FLOAT8) AS pct_delta_exposure,
+    CAST(NULL AS INTEGER)AS hist_months,
+    CAST(NULL AS FLOAT8) AS hist_avg_abs_exposure,
+    CAST(NULL AS FLOAT8) AS hist_std_abs_exposure,
+    CAST(NULL AS FLOAT8) AS hist_min_abs_exposure,
+    CAST(NULL AS FLOAT8) AS hist_max_abs_exposure,
+    CAST(NULL AS FLOAT8) AS zscore_abs,
+    CAST(NULL AS FLOAT8) AS volatility_avg_abs,
+    CAST(NULL AS FLOAT8) AS volatility_std_abs,
+    CAST(NULL AS FLOAT8) AS volatility_cv_abs,
+    CAST(NULL AS FLOAT8) AS exposure_delta
+  FROM monthly_group g
+),
+
+/* ---------- MoM Decomposition (synthetic only) ---------- */
+cur_syn AS (
+  SELECT * FROM tagged
+  WHERE is_synth=1 AND month_end=(SELECT latest_me FROM latest)
+),
+prev_syn AS (
+  SELECT * FROM tagged
+  WHERE is_synth=1 AND month_end=(SELECT prior_me FROM prior)
+),
+aligned_mom AS (
+  SELECT
+    COALESCE(c.ACCOUNT_IDENTIFIER, p.ACCOUNT_IDENTIFIER) AS ACCOUNT_IDENTIFIER,
+    COALESCE(c.CONTRACT_SOURCE_SYSTEM, p.CONTRACT_SOURCE_SYSTEM) AS css_key,
+    COALESCE(c.GL_ACCOUNT_CODE,        p.GL_ACCOUNT_CODE)        AS gl_key,
+    COALESCE(c.GL_ACCOUNT_DESCRIPTION, p.GL_ACCOUNT_DESCRIPTION)  AS gl_desc,
+    p.exposure AS prev_exp,
+    c.exposure AS cur_exp
+  FROM cur_syn c
+  FULL OUTER JOIN prev_syn p
+    ON c.ACCOUNT_IDENTIFIER = p.ACCOUNT_IDENTIFIER
+),
+rolled_mom AS (
+  SELECT
+    css_key  AS CONTRACT_SOURCE_SYSTEM,
+    gl_key   AS GL_ACCOUNT_CODE,
+    MAX(gl_desc) AS GL_ACCOUNT_DESCRIPTION,
+    SUM(CASE WHEN prev_exp IS NOT NULL AND cur_exp IS NOT NULL THEN cur_exp - prev_exp ELSE 0 END) AS cont_growth,
+    SUM(CASE WHEN prev_exp IS NULL  AND cur_exp IS NOT NULL THEN cur_exp ELSE 0 END)               AS adds,
+    SUM(CASE WHEN prev_exp IS NOT NULL AND cur_exp IS NULL THEN -prev_exp ELSE 0 END)              AS drops,
+    SUM(COALESCE(prev_exp,0.0)) AS exposure_prev,
+    SUM(COALESCE(cur_exp,0.0))  AS exposure_cur
+  FROM aligned_mom
+  GROUP BY css_key, gl_key
+),
+
+mom_decomp AS (
+  SELECT
+    'MOM_DECOMP'::VARCHAR AS section,
+    (SELECT latest_me FROM latest) AS month_end,
+    CAST(NULL AS VARCHAR(12))      AS synthetic_category,
+    r.CONTRACT_SOURCE_SYSTEM,
+    r.GL_ACCOUNT_CODE,
+    r.GL_ACCOUNT_DESCRIPTION,
+    CAST(NULL AS VARCHAR(128))     AS account_identifier,
+    r.exposure_prev,
+    r.exposure_cur,
+    (r.exposure_cur - r.exposure_prev) AS delta_total,
+    r.cont_growth,
+    r.adds,
+    r.drops,
+    CAST(NULL AS INTEGER) AS rows_flagged,
+    CAST(NULL AS INTEGER) AS accounts_flagged,
+    CAST(NULL AS FLOAT8)  AS exposure_sum,
+    CAST(NULL AS FLOAT8)  AS exposure_abs_sum,
+    CAST(NULL AS FLOAT8)  AS exposure_abs_avg,
+    (SELECT prior_me FROM prior)   AS prev_month_end,
+    CAST(NULL AS FLOAT8)  AS prev_exposure_sum,
+    CAST(NULL AS FLOAT8)  AS pct_delta_exposure,
+    CAST(NULL AS INTEGER) AS hist_months,
+    CAST(NULL AS FLOAT8)  AS hist_avg_abs_exposure,
+    CAST(NULL AS FLOAT8)  AS hist_std_abs_exposure,
+    CAST(NULL AS FLOAT8)  AS hist_min_abs_exposure,
+    CAST(NULL AS FLOAT8)  AS hist_max_abs_exposure,
+    CAST(NULL AS FLOAT8)  AS zscore_abs,
+    CAST(NULL AS FLOAT8)  AS volatility_avg_abs,
+    CAST(NULL AS FLOAT8)  AS volatility_std_abs,
+    CAST(NULL AS FLOAT8)  AS volatility_cv_abs,
+    CAST(NULL AS FLOAT8)  AS exposure_delta
+  FROM rolled_mom r
+),
+
+/* ---------- Top Movers (account-level, latest vs prior) ---------- */
+aligned_movers AS (
+  SELECT
+    COALESCE(c.ACCOUNT_IDENTIFIER, p.ACCOUNT_IDENTIFIER) AS ACCOUNT_IDENTIFIER,
+    COALESCE(c.CONTRACT_SOURCE_SYSTEM, p.CONTRACT_SOURCE_SYSTEM) AS CONTRACT_SOURCE_SYSTEM,
+    COALESCE(c.GL_ACCOUNT_CODE,        p.GL_ACCOUNT_CODE)        AS GL_ACCOUNT_CODE,
+    COALESCE(c.GL_ACCOUNT_DESCRIPTION, p.GL_ACCOUNT_DESCRIPTION)  AS GL_ACCOUNT_DESCRIPTION,
+    COALESCE(p.exposure,0.0) AS exposure_prev,
+    COALESCE(c.exposure,0.0) AS exposure_cur
+  FROM cur_syn c
+  FULL OUTER JOIN prev_syn p
+    ON c.ACCOUNT_IDENTIFIER = p.ACCOUNT_IDENTIFIER
+),
+ranked_movers AS (
+  SELECT
+    am.*,
+    (exposure_cur - exposure_prev) AS exposure_delta,
+    ROW_NUMBER() OVER (ORDER BY ABS(exposure_cur - exposure_prev) DESC) AS rn
+  FROM aligned_movers am
+),
+top_movers AS (
+  SELECT
+    'TOP_MOVERS'::VARCHAR AS section,
+    (SELECT latest_me FROM latest) AS month_end,
+    CAST(NULL AS VARCHAR(12))      AS synthetic_category,
+    rm.CONTRACT_SOURCE_SYSTEM,
+    rm.GL_ACCOUNT_CODE,
+    rm.GL_ACCOUNT_DESCRIPTION,
+    rm.ACCOUNT_IDENTIFIER          AS account_identifier,
+    rm.exposure_prev,
+    rm.exposure_cur,
+    rm.exposure_cur - rm.exposure_prev AS delta_total,
+    CAST(NULL AS FLOAT8) AS cont_growth,
+    CAST(NULL AS FLOAT8) AS adds,
+    CAST(NULL AS FLOAT8) AS drops,
+    CAST(NULL AS INTEGER) AS rows_flagged,
+    CAST(NULL AS INTEGER) AS accounts_flagged,
+    CAST(NULL AS FLOAT8)  AS exposure_sum,
+    CAST(NULL AS FLOAT8)  AS exposure_abs_sum,
+    CAST(NULL AS FLOAT8)  AS exposure_abs_avg,
+    (SELECT prior_me FROM prior)   AS prev_month_end,
+    CAST(NULL AS FLOAT8)  AS prev_exposure_sum,
+    CAST(NULL AS FLOAT8)  AS pct_delta_exposure,
+    CAST(NULL AS INTEGER) AS hist_months,
+    CAST(NULL AS FLOAT8)  AS hist_avg_abs_exposure,
+    CAST(NULL AS FLOAT8)  AS hist_std_abs_exposure,
+    CAST(NULL AS FLOAT8)  AS hist_min_abs_exposure,
+    CAST(NULL AS FLOAT8)  AS hist_max_abs_exposure,
+    CAST(NULL AS FLOAT8)  AS zscore_abs,
+    CAST(NULL AS FLOAT8)  AS volatility_avg_abs,
+    CAST(NULL AS FLOAT8)  AS volatility_std_abs,
+    CAST(NULL AS FLOAT8)  AS volatility_cv_abs,
+    rm.exposure_delta
+  FROM ranked_movers rm
+  WHERE rn <= (SELECT topN_movers FROM params)
+),
+
+/* ---------- Volatility (window) ---------- */
+bucket_month AS (
+  SELECT
+    month_end,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    MAX(GL_ACCOUNT_DESCRIPTION) AS GL_ACCOUNT_DESCRIPTION,
+    SUM(exposure)               AS exposure_sum
+  FROM tagged
+  WHERE is_synth = 1
+  GROUP BY month_end, CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE
+),
+volatility AS (
+  SELECT
+    'VOLATILITY'::VARCHAR        AS section,
+    MAX(month_end)               AS month_end,
+    CAST(NULL AS VARCHAR(12))    AS synthetic_category,
+    CONTRACT_SOURCE_SYSTEM,
+    GL_ACCOUNT_CODE,
+    MAX(GL_ACCOUNT_DESCRIPTION)  AS GL_ACCOUNT_DESCRIPTION,
+    CAST(NULL AS VARCHAR(128))   AS account_identifier,
+    CAST(NULL AS FLOAT8)         AS exposure_prev,
+    CAST(NULL AS FLOAT8)         AS exposure_cur,
+    CAST(NULL AS FLOAT8)         AS delta_total,
+    CAST(NULL AS FLOAT8)         AS cont_growth,
+    CAST(NULL AS FLOAT8)         AS adds,
+    CAST(NULL AS FLOAT8)         AS drops,
+    CAST(NULL AS INTEGER)        AS rows_flagged,
+    CAST(NULL AS INTEGER)        AS accounts_flagged,
+    CAST(NULL AS FLOAT8)         AS exposure_sum,
+    CAST(NULL AS FLOAT8)         AS exposure_abs_sum,
+    CAST(NULL AS FLOAT8)         AS exposure_abs_avg,
+    CAST(NULL AS DATE)           AS prev_month_end,
+    CAST(NULL AS FLOAT8)         AS prev_exposure_sum,
+    CAST(NULL AS FLOAT8)         AS pct_delta_exposure,
+    CAST(NULL AS INTEGER)        AS hist_months,
+    CAST(NULL AS FLOAT8)         AS hist_avg_abs_exposure,
+    CAST(NULL AS FLOAT8)         AS hist_std_abs_exposure,
+    CAST(NULL AS FLOAT8)         AS hist_min_abs_exposure,
+    CAST(NULL AS FLOAT8)         AS hist_max_abs_exposure,
+    CAST(NULL AS FLOAT8)         AS zscore_abs,
+    AVG(ABS(exposure_sum))       AS volatility_avg_abs,
+    STDDEV_SAMP(ABS(exposure_sum)) AS volatility_std_abs,
+    CASE WHEN AVG(ABS(exposure_sum))=0 THEN NULL
+         ELSE (STDDEV_SAMP(ABS(exposure_sum)) / AVG(ABS(exposure_sum))) END AS volatility_cv_abs,
+    CAST(NULL AS FLOAT8)         AS exposure_delta
+  FROM bucket_month
+  GROUP BY CONTRACT_SOURCE_SYSTEM, GL_ACCOUNT_CODE
+)
+
+/* ---------- Final selector (one result set) ---------- */
+SELECT * FROM snapshot
+WHERE (SELECT p_section FROM params) = 'SNAPSHOT_TREND'
+UNION ALL
+SELECT * FROM trend
+WHERE (SELECT p_section FROM params) = 'SNAPSHOT_TREND'
+UNION ALL
+SELECT * FROM mom_decomp
+WHERE (SELECT p_section FROM params) = 'MOM_DECOMP'
+UNION ALL
+SELECT * FROM top_movers
+WHERE (SELECT p_section FROM params) = 'TOP_MOVERS'
+UNION ALL
+SELECT * FROM volatility
+WHERE (SELECT p_section FROM params) = 'VOLATILITY'
+
+ORDER BY
+  section,
+  month_end DESC,
+  synthetic_category NULLS FIRST,
+  CONTRACT_SOURCE_SYSTEM,
+  GL_ACCOUNT_CODE,
+  COALESCE(ABS(exposure_delta), ABS(delta_total), ABS(exposure_sum), 0) DESC;
+
+
+
+
+
+
 -- ==================== KDE MoM Changes — Changes-Only (Upgraded+) ====================
 -- - 13-month rolling window (tune in params)
 -- - Aggregate ONLY changed rows: counts, exposure deltas, MoM%
