@@ -1,3 +1,127 @@
+-- MoM Non-Accrual Adds & Drops Only
+WITH params AS (
+  SELECT
+    DATE '2025-09-30'                 AS curr_eom,
+    ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
+),
+pop AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Name,
+      Contract_Source_System,
+      CIS_Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag,
+      PROD_HIER_LEVEL_5,
+      RBC_Code,
+      GL_ACCOUNT_CODE
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+),
+curr AS (  -- current EOM non-accruals (must have positive exposure)
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+prev AS (  -- prior EOM non-accruals (must have positive exposure)
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+)
+SELECT
+  /* Identity / keys */
+  COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+  COALESCE(c.Account_Key,        p.Account_Key)        AS Account_Key,
+  COALESCE(c.Account_Name,       p.Account_Name)       AS Account_Name,
+  COALESCE(c.CIS_Customer_Number,p.CIS_Customer_Number)AS CIS_Customer_Number,
+  COALESCE(c.Facility_ID,        p.Facility_ID)        AS Facility_ID,
+
+  /* Source / hierarchy / descriptors */
+  COALESCE(c.Contract_Source_System, p.Contract_Source_System)  AS Contract_Source_System,
+  COALESCE(c.Status_Code_Description, p.Status_Code_Description)AS Status_Code_Description,
+  COALESCE(c.GL_ACCOUNT_HIER_LEVEL_4, p.GL_ACCOUNT_HIER_LEVEL_4)AS GL_ACCOUNT_HIER_LEVEL_4,
+  COALESCE(c.PROD_HIER_LEVEL_5, p.PROD_HIER_LEVEL_5)            AS PROD_HIER_LEVEL_5,
+
+  /* Bank_Code mapping */
+  CASE
+    WHEN COALESCE(c.Contract_Source_System, p.Contract_Source_System) IN
+         ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN')
+      THEN 'L-SVB'
+    WHEN COALESCE(c.Contract_Source_System, p.Contract_Source_System) = 'ALL'
+         AND COALESCE(c.GL_ACCOUNT_CODE, p.GL_ACCOUNT_CODE) IN
+         ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+          '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+          '1100001','1142067','1042886','1043008')
+      THEN 'L-SVB'
+    WHEN COALESCE(c.Contract_Source_System, p.Contract_Source_System) IN
+         ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO')
+      THEN 'L-FCB'
+    WHEN COALESCE(c.Contract_Source_System, p.Contract_Source_System) IN
+         ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN',
+          'INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001',
+          'SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+          'STRAT1','STRAT1-EXCPTN')
+      THEN 'L-CIT'
+    ELSE 'NULL-Need to Research'
+  END AS Bank_Code,
+
+  /* Risk / credit attributes */
+  COALESCE(c.Borrower_Risk_Rating, p.Borrower_Risk_Rating) AS Borrower_Risk_Rating,
+  COALESCE(c.PD_Grade,            p.PD_Grade)               AS PD_Grade,
+  COALESCE(c.Days_Past_Due,       p.Days_Past_Due)          AS Days_Past_Due,
+
+  /* Flags / codes */
+  COALESCE(c.Non_Accrual_Flag, p.Non_Accrual_Flag) AS Non_Accrual_Flag,
+  COALESCE(c.RBC_Code,         p.RBC_Code)         AS RBC_Code,
+
+  /* Balances */
+  p.Source_System_Balance AS Prev_Bal,
+  c.Source_System_Balance AS Curr_Bal,
+  COALESCE(c.GL_Balance,        p.GL_Balance)        AS GL_Balance,
+  COALESCE(c.Available_Balance, p.Available_Balance) AS Available_Balance,
+
+  /* Change tag + exposure for sort */
+  CASE
+    WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 'Added (New NA)'
+    WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 'Dropped (Resolved/Out)'
+  END AS NA_Status_Change,
+  CASE
+    WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN c.Source_System_Balance
+    WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN p.Source_System_Balance
+  END AS Exposure_For_Sort
+FROM curr c
+FULL OUTER JOIN prev p
+  ON c.Account_Identifier = p.Account_Identifier
+WHERE
+  (p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL)  -- Added
+  OR
+  (c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL)  -- Dropped
+ORDER BY
+  Exposure_For_Sort DESC,
+  Bank_Code,
+  COALESCE(c.Account_Identifier, p.Account_Identifier);
+
+
+
+
+
+
 /* ---------- Final selector (one result set) ---------- */
 SELECT *
 FROM (
