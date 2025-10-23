@@ -1,3 +1,37 @@
+by_bank_prev AS (
+  SELECT
+    bank_code,
+    SUM(GL_Balance) AS prev_total_gl,
+    COUNT(DISTINCT Account_Identifier) AS prev_total_cnt
+  FROM prev_with_bank
+  GROUP BY bank_code
+),
+by_bank_curr AS (
+  SELECT
+    bank_code,
+    SUM(GL_Balance) AS curr_total_gl,
+    COUNT(DISTINCT Account_Identifier) AS curr_total_cnt
+  FROM curr_with_bank
+  GROUP BY bank_code
+),
+agg_by_bank_prev_curr AS (
+  SELECT
+    COALESCE(p.bank_code, c.bank_code) AS bank_code,
+    COALESCE(p.prev_total_gl,  0) AS prev_total_gl,
+    COALESCE(p.prev_total_cnt, 0) AS prev_total_cnt,
+    COALESCE(c.curr_total_gl,  0) AS curr_total_gl,
+    COALESCE(c.curr_total_cnt, 0) AS curr_total_cnt
+  FROM by_bank_prev p
+  FULL OUTER JOIN by_bank_curr c
+    ON p.bank_code = c.bank_code
+),
+
+
+
+
+
+
+
 overall_prev AS (
   SELECT
     SUM(GL_Balance) AS prev_total_gl,
