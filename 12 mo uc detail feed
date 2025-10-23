@@ -1,3 +1,38 @@
+pop_total AS (
+  SELECT
+    'POP_TOTAL' AS level,
+    CAST(NULL AS VARCHAR(20)) AS Bank_Code,
+    CAST(NULL AS VARCHAR(20)) AS Change_Type,
+    -- GL sums (both months)
+    SUM(prev_gl)                               AS prev_gl_sum,
+    SUM(curr_gl)                               AS curr_gl_sum,
+    CAST(NULL AS NUMERIC(18,2))                AS delta_gl_sum,
+    CAST(NULL AS BIGINT)                       AS acct_count,
+    -- month-specific counts (AGGREGATED — this fixes the error)
+    SUM(prev_cnt)                              AS prev_acct_count,
+    SUM(curr_cnt)                              AS curr_acct_count
+  FROM (
+    SELECT
+      SUM(GL_Balance)                              AS prev_gl,
+      CAST(0 AS NUMERIC(18,2))                     AS curr_gl,
+      COUNT(DISTINCT Account_Identifier)           AS prev_cnt,
+      CAST(0 AS BIGINT)                            AS curr_cnt
+    FROM prev
+
+    UNION ALL
+
+    SELECT
+      CAST(0 AS NUMERIC(18,2))                     AS prev_gl,
+      SUM(GL_Balance)                              AS curr_gl,
+      CAST(0 AS BIGINT)                            AS prev_cnt,
+      COUNT(DISTINCT Account_Identifier)           AS curr_cnt
+    FROM curr
+  ) u
+)
+
+
+
+
 -- ==========================================================
 -- MoM Non-Accrual: Summary (Totals & By Bank) + Population Totals + Detail
 -- ==========================================================
