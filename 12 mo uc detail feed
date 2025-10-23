@@ -1,4 +1,72 @@
 -- ============================================
+-- Simple Non-Accrual Population Pull (Prev & Curr Month)
+-- Includes Bank_Code logic
+-- ============================================
+WITH params AS (
+  SELECT
+    DATE '2025-09-30'                 AS curr_eom,
+    ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
+)
+SELECT
+    End_of_Month_Date,
+    Account_Name,
+    Contract_Source_System,
+    CIS_Customer_Number,
+    Facility_ID,
+    Account_Identifier,
+    Account_Key,
+    Status_Code_Description,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    Source_System_Balance,
+    GL_Balance,
+    Available_Balance,
+    Borrower_Risk_Rating,
+    PD_Grade,
+    Days_Past_Due,
+    Non_Accrual_Flag,
+    PROD_HIER_LEVEL_5,
+    RBC_Code,
+    GL_ACCOUNT_CODE,
+    CASE
+      WHEN Contract_Source_System IN
+           ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN')
+        THEN 'L-SVB'
+      WHEN Contract_Source_System = 'ALL'
+           AND GL_ACCOUNT_CODE IN
+           ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+            '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+            '1100001','1142067','1042886','1043008')
+        THEN 'L-SVB'
+      WHEN Contract_Source_System IN
+           ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO')
+        THEN 'L-FCB'
+      WHEN Contract_Source_System IN
+           ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN',
+            'INFL05','INFL05-EXCPTN','INFL10','INFL10-EXCPTN',
+            'LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001','SBO001-EXCPTN',
+            'STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+            'STRAT1','STRAT1-EXCPTN')
+        THEN 'L-CIT'
+      ELSE 'NULL-Need to Research'
+    END AS Bank_Code
+FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+  AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                            (SELECT prev_eom FROM params))
+  AND Non_Accrual_Flag = 'Y'
+  AND Source_System_Balance > 0
+ORDER BY
+  End_of_Month_Date,
+  Bank_Code,
+  Account_Identifier;
+
+
+
+
+
+
+
+-- ============================================
 -- Simple pull: Non-Accrual populations for prev & curr EOM
 -- (same filters, same fields as your original pop CTE)
 -- ============================================
