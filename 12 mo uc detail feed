@@ -1,4 +1,602 @@
 -- ==========================================================
+-- MoM Non-Accrual Portfolio Movement: Pop totals, Summaries,
+-- Bridges (overall & by Bank_Code), and Detail
+-- ==========================================================
+WITH params AS (
+  SELECT
+    DATE '2025-09-30'                 AS curr_eom,
+    ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
+),
+pop AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Name,
+      Contract_Source_System,
+      CIS_Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag,
+      PROD_HIER_LEVEL_5,
+      RBC_Code,
+      GL_ACCOUNT_CODE
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+),
+curr AS (  -- Current EOM NA (must have positive exposure)
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+prev AS (  -- Prior EOM NA (must have positive exposure)
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+
+-- =========================
+-- JOIN + CLASSIFICATION
+-- =========================
+joined AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+    COALESCE(c.Account_Key,        p.Account_Key)        AS Account_Key,
+    COALESCE(c.Account_Name,       p.Account_Name)       AS Account_Name,
+    COALESCE(c.CIS_Customer_Number,p.CIS_Customer_Number)AS CIS_Customer_Number,
+    COALESCE(c.Facility_ID,        p.Facility_ID)        AS Facility_ID,
+
+    COALESCE(c.Contract_Source_System,  p.Contract_Source_System)  AS Contract_Source_System,
+    COALESCE(c.Status_Code_Description, p.Status_Code_Description) AS Status_Code_Description,
+    COALESCE(c.GL_ACCOUNT_HIER_LEVEL_4, p.GL_ACCOUNT_HIER_LEVEL_4) AS GL_ACCOUNT_HIER_LEVEL_4,
+    COALESCE(c.PROD_HIER_LEVEL_5,       p.PROD_HIER_LEVEL_5)       AS PROD_HIER_LEVEL_5,
+    COALESCE(c.RBC_Code,                p.RBC_Code)                AS RBC_Code,
+    COALESCE(c.GL_ACCOUNT_CODE,         p.GL_ACCOUNT_CODE)         AS GL_ACCOUNT_CODE,
+
+    COALESCE(p.GL_Balance, 0) AS Prev_GL_Balance,
+    COALESCE(c.GL_Balance, 0) AS Curr_GL_Balance,
+
+    CASE WHEN p.Account_Identifier IS NULL AND c.Account_Identifier IS NOT NULL THEN 1 ELSE 0 END AS Is_Add,
+    CASE WHEN c.Account_Identifier IS NULL AND p.Account_Identifier IS NOT NULL THEN 1 ELSE 0 END AS Is_Drop,
+    CASE WHEN p.Account_Identifier IS NOT NULL AND c.Account_Identifier IS NOT NULL THEN 1 ELSE 0 END AS Is_Persist
+  FROM curr c
+  FULL OUTER JOIN prev p
+    ON c.Account_Identifier = p.Account_Identifier
+),
+with_bank AS (
+  SELECT
+    j.*,
+    CASE
+      WHEN j.Contract_Source_System IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN')
+        THEN 'L-SVB'
+      WHEN j.Contract_Source_System = 'ALL'
+           AND j.GL_ACCOUNT_CODE IN
+           ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+            '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+            '1100001','1142067','1042886','1043008')
+        THEN 'L-SVB'
+      WHEN j.Contract_Source_System IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO')
+        THEN 'L-FCB'
+      WHEN j.Contract_Source_System IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN',
+                                        'INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001',
+                                        'SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+                                        'STRAT1','STRAT1-EXCPTN')
+        THEN 'L-CIT'
+      ELSE 'NULL-Need to Research'
+    END AS Bank_Code
+  FROM joined j
+),
+classified AS (
+  SELECT
+    wb.*,
+    (wb.Curr_GL_Balance - wb.Prev_GL_Balance) AS GL_Delta,
+    CASE
+      WHEN wb.Is_Add = 1  THEN 'ADD'
+      WHEN wb.Is_Drop = 1 THEN 'DROP'
+      WHEN wb.Is_Persist = 1 AND wb.Curr_GL_Balance <> wb.Prev_GL_Balance THEN 'BAL_CHANGE'
+      WHEN wb.Is_Persist = 1 AND wb.Curr_GL_Balance  = wb.Prev_GL_Balance THEN 'NO_CHANGE'
+      ELSE 'UNCLASSIFIED'
+    END AS Change_Type
+  FROM with_bank wb
+),
+
+-- =========================
+-- POPULATION TOTALS (curr/prev) — overall and by bank
+-- =========================
+curr_with_bank AS (
+  SELECT
+    c.*,
+    CASE
+      WHEN c.Contract_Source_System IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN')
+        THEN 'L-SVB'
+      WHEN c.Contract_Source_System = 'ALL'
+           AND c.GL_ACCOUNT_CODE IN
+           ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+            '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+            '1100001','1142067','1042886','1043008')
+        THEN 'L-SVB'
+      WHEN c.Contract_Source_System IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO')
+        THEN 'L-FCB'
+      WHEN c.Contract_Source_System IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN',
+                                        'INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001',
+                                        'SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+                                        'STRAT1','STRAT1-EXCPTN')
+        THEN 'L-CIT'
+      ELSE 'NULL-Need to Research'
+    END AS Bank_Code
+  FROM curr c
+),
+prev_with_bank AS (
+  SELECT
+    p.*,
+    CASE
+      WHEN p.Contract_Source_System IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN')
+        THEN 'L-SVB'
+      WHEN p.Contract_Source_System = 'ALL'
+           AND p.GL_ACCOUNT_CODE IN
+           ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+            '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+            '1100001','1142067','1042886','1043008')
+        THEN 'L-SVB'
+      WHEN p.Contract_Source_System IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO')
+        THEN 'L-FCB'
+      WHEN p.Contract_Source_System IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN',
+                                        'INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001',
+                                        'SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+                                        'STRAT1','STRAT1-EXCPTN')
+        THEN 'L-CIT'
+      ELSE 'NULL-Need to Research'
+    END AS Bank_Code
+  FROM prev p
+),
+pop_total AS (
+  SELECT
+    'POP_TOTAL' AS level,
+    CAST(NULL AS VARCHAR(20)) AS Bank_Code,
+    CAST(NULL AS VARCHAR(20)) AS Change_Type,
+    SUM(prev_gl)                        AS prev_gl_sum,
+    SUM(curr_gl)                        AS curr_gl_sum,
+    CAST(NULL AS NUMERIC(18,2))         AS delta_gl_sum,
+    CAST(NULL AS BIGINT)                AS acct_count,
+    SUM(prev_cnt)                       AS prev_acct_count,
+    SUM(curr_cnt)                       AS curr_acct_count
+  FROM (
+    SELECT SUM(GL_Balance) AS prev_gl, CAST(0 AS NUMERIC(18,2)) AS curr_gl,
+           COUNT(DISTINCT Account_Identifier) AS prev_cnt, CAST(0 AS BIGINT) AS curr_cnt
+    FROM prev
+    UNION ALL
+    SELECT CAST(0 AS NUMERIC(18,2)), SUM(GL_Balance),
+           CAST(0 AS BIGINT), COUNT(DISTINCT Account_Identifier)
+    FROM curr
+  ) u
+),
+pop_by_bank AS (
+  SELECT
+    'POP_BY_BANK' AS level,
+    bank_code,
+    CAST(NULL AS VARCHAR(20)) AS Change_Type,
+    SUM(prev_gl) AS prev_gl_sum,
+    SUM(curr_gl) AS curr_gl_sum,
+    CAST(NULL AS NUMERIC(18,2)) AS delta_gl_sum,
+    CAST(NULL AS BIGINT)        AS acct_count,
+    SUM(prev_cnt) AS prev_acct_count,
+    SUM(curr_cnt) AS curr_acct_count
+  FROM (
+    SELECT bank_code, SUM(GL_Balance) AS prev_gl, CAST(0 AS NUMERIC(18,2)) AS curr_gl,
+           COUNT(DISTINCT Account_Identifier) AS prev_cnt, CAST(0 AS BIGINT) AS curr_cnt
+    FROM prev_with_bank
+    GROUP BY bank_code
+    UNION ALL
+    SELECT bank_code, CAST(0 AS NUMERIC(18,2)), SUM(GL_Balance),
+           CAST(0 AS BIGINT), COUNT(DISTINCT Account_Identifier)
+    FROM curr_with_bank
+    GROUP BY bank_code
+  ) u
+  GROUP BY bank_code
+),
+
+-- =========================
+-- SUMMARY (ADD/DROP/BAL_CHANGE)
+-- =========================
+summary_total AS (
+  SELECT
+    'SUMMARY_TOTAL' AS level,
+    CAST(NULL AS VARCHAR(20)) AS Bank_Code,
+    Change_Type,
+    SUM(Prev_GL_Balance)         AS prev_gl_sum,
+    SUM(Curr_GL_Balance)         AS curr_gl_sum,
+    SUM(GL_Delta)                AS delta_gl_sum,
+    COUNT(DISTINCT Account_Identifier) AS acct_count,
+    CAST(NULL AS BIGINT) AS prev_acct_count,
+    CAST(NULL AS BIGINT) AS curr_acct_count
+  FROM classified
+  WHERE Change_Type IN ('ADD','DROP','BAL_CHANGE')
+  GROUP BY Change_Type
+),
+summary_by_bank AS (
+  SELECT
+    'SUMMARY_BY_BANK' AS level,
+    Bank_Code,
+    Change_Type,
+    SUM(Prev_GL_Balance)         AS prev_gl_sum,
+    SUM(Curr_GL_Balance)         AS curr_gl_sum,
+    SUM(GL_Delta)                AS delta_gl_sum,
+    COUNT(DISTINCT Account_Identifier) AS acct_count,
+    CAST(NULL AS BIGINT) AS prev_acct_count,
+    CAST(NULL AS BIGINT) AS curr_acct_count
+  FROM classified
+  WHERE Change_Type IN ('ADD','DROP','BAL_CHANGE')
+  GROUP BY Bank_Code, Change_Type
+)
+
+-- ==========================================================
+-- FINAL OUTPUT:
+--   - BRIDGE (BALANCE & COUNT)
+--   - BRIDGE_BY_BANK (BALANCE & COUNT)
+--   - POP_* , SUMMARY_* , DETAIL
+-- ==========================================================
+SELECT
+  level,
+  Bank_Code,
+  Change_Type,
+  prev_gl_sum,
+  curr_gl_sum,
+  delta_gl_sum,
+  acct_count,
+  prev_acct_count,
+  curr_acct_count,
+  -- Detail columns (NULL for non-detail rows)
+  Account_Identifier,
+  Account_Key,
+  Account_Name,
+  CIS_Customer_Number,
+  Facility_ID,
+  Contract_Source_System,
+  Status_Code_Description,
+  GL_ACCOUNT_HIER_LEVEL_4,
+  PROD_HIER_LEVEL_5,
+  RBC_Code,
+  GL_ACCOUNT_CODE,
+  Prev_GL_Balance,
+  Curr_GL_Balance,
+  GL_Delta,
+  -- sort helpers
+  level_order,
+  change_order
+FROM (
+
+  /* ---------------------------
+     BRIDGE (BALANCE) — overall
+     --------------------------- */
+  SELECT
+    'BRIDGE' AS level,
+    'BALANCE' AS Bank_Code,
+    'Prev Month Balance' AS Change_Type,
+    CAST(NULL AS NUMERIC(18,2)),
+    (SELECT prev_gl_sum FROM pop_total),
+    CAST(NULL AS NUMERIC(18,2)),
+    CAST(NULL AS BIGINT),
+    CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+    -- detail nulls
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+    CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+    CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+    0 AS level_order, 0 AS change_order
+  UNION ALL
+  SELECT 'BRIDGE','BALANCE','Adds',
+         CAST(NULL AS NUMERIC(18,2)),
+         COALESCE((SELECT curr_gl_sum FROM summary_total WHERE Change_Type='ADD'),0),
+         CAST(NULL AS NUMERIC(18,2)),
+         CAST(NULL AS BIGINT),
+         CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         0, 1
+  UNION ALL
+  SELECT 'BRIDGE','BALANCE','Drops',
+         CAST(NULL AS NUMERIC(18,2)),
+         -COALESCE((SELECT prev_gl_sum FROM summary_total WHERE Change_Type='DROP'),0),
+         CAST(NULL AS NUMERIC(18,2)),
+         CAST(NULL AS BIGINT),
+         CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         0, 2
+  UNION ALL
+  SELECT 'BRIDGE','BALANCE','Persisting Bal Changes',
+         CAST(NULL AS NUMERIC(18,2)),
+         COALESCE((SELECT delta_gl_sum FROM summary_total WHERE Change_Type='BAL_CHANGE'),0),
+         CAST(NULL AS NUMERIC(18,2)),
+         CAST(NULL AS BIGINT),
+         CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         0, 3
+  UNION ALL
+  SELECT 'BRIDGE','BALANCE','Current Month Balance',
+         CAST(NULL AS NUMERIC(18,2)),
+         (SELECT curr_gl_sum FROM pop_total),
+         CAST(NULL AS NUMERIC(18,2)),
+         CAST(NULL AS BIGINT),
+         CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         0, 4
+
+  /* ------------------------
+     BRIDGE (COUNT) — overall
+     ------------------------ */
+  UNION ALL
+  SELECT 'BRIDGE','COUNT','Prev Month Count',
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         (SELECT prev_acct_count FROM pop_total),
+         CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         0, 10
+  UNION ALL
+  SELECT 'BRIDGE','COUNT','Adds',
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         COALESCE((SELECT acct_count FROM summary_total WHERE Change_Type='ADD'),0),
+         CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         0, 11
+  UNION ALL
+  SELECT 'BRIDGE','COUNT','Drops',
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         -COALESCE((SELECT acct_count FROM summary_total WHERE Change_Type='DROP'),0),
+         CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         0, 12
+  UNION ALL
+  SELECT 'BRIDGE','COUNT','Current Month Count',
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         (SELECT curr_acct_count FROM pop_total),
+         CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         0, 13
+
+  /* ---------------------------------------
+     BRIDGE_BY_BANK (BALANCE) — per bank
+     --------------------------------------- */
+  UNION ALL
+  SELECT 'BRIDGE_BY_BANK', pbb.bank_code, 'Prev Month Balance',
+         CAST(NULL AS NUMERIC(18,2)), pbb.prev_gl_sum, CAST(NULL AS NUMERIC(18,2)),
+         CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         1 AS level_order, 0 AS change_order
+  FROM pop_by_bank pbb
+  UNION ALL
+  SELECT 'BRIDGE_BY_BANK', sbb.bank_code, 'Adds',
+         CAST(NULL AS NUMERIC(18,2)),
+         sbb.curr_gl_sum, CAST(NULL AS NUMERIC(18,2)),
+         CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         1, 1
+  FROM summary_by_bank sbb
+  WHERE sbb.Change_Type = 'ADD'
+  UNION ALL
+  SELECT 'BRIDGE_BY_BANK', sbb.bank_code, 'Drops',
+         CAST(NULL AS NUMERIC(18,2)),
+         -sbb.prev_gl_sum, CAST(NULL AS NUMERIC(18,2)),
+         CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         1, 2
+  FROM summary_by_bank sbb
+  WHERE sbb.Change_Type = 'DROP'
+  UNION ALL
+  SELECT 'BRIDGE_BY_BANK', sbb.bank_code, 'Persisting Bal Changes',
+         CAST(NULL AS NUMERIC(18,2)),
+         sbb.delta_gl_sum, CAST(NULL AS NUMERIC(18,2)),
+         CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         1, 3
+  FROM summary_by_bank sbb
+  WHERE sbb.Change_Type = 'BAL_CHANGE'
+  UNION ALL
+  SELECT 'BRIDGE_BY_BANK', pbb.bank_code, 'Current Month Balance',
+         CAST(NULL AS NUMERIC(18,2)), pbb.curr_gl_sum, CAST(NULL AS NUMERIC(18,2)),
+         CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         1, 4
+  FROM pop_by_bank pbb
+
+  /* ------------------------------------
+     BRIDGE_BY_BANK (COUNT) — per bank
+     ------------------------------------ */
+  UNION ALL
+  SELECT 'BRIDGE_BY_BANK','COUNT:' || pbb.bank_code,'Prev Month Count',
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         pbb.prev_acct_count, CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         1, 10
+  FROM pop_by_bank pbb
+  UNION ALL
+  SELECT 'BRIDGE_BY_BANK','COUNT:' || sbb.bank_code,'Adds',
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         sbb.acct_count, CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         1, 11
+  FROM summary_by_bank sbb
+  WHERE sbb.Change_Type = 'ADD'
+  UNION ALL
+  SELECT 'BRIDGE_BY_BANK','COUNT:' || sbb.bank_code,'Drops',
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         -sbb.acct_count, CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         1, 12
+  FROM summary_by_bank sbb
+  WHERE sbb.Change_Type = 'DROP'
+  UNION ALL
+  SELECT 'BRIDGE_BY_BANK','COUNT:' || pbb.bank_code,'Current Month Count',
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         pbb.curr_acct_count, CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+         CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+         CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+         1, 13
+  FROM pop_by_bank pbb
+
+  /* -----------------------------------------
+     existing POP_*, SUMMARY_*, and DETAIL rows
+     ----------------------------------------- */
+  UNION ALL
+  SELECT
+    'POP_TOTAL' AS level,
+    CAST(NULL AS VARCHAR(20)) AS Bank_Code,
+    CAST(NULL AS VARCHAR(20)) AS Change_Type,
+    prev_gl_sum, curr_gl_sum, delta_gl_sum, acct_count, prev_acct_count, curr_acct_count,
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+    CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+    CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+    2 AS level_order, 0 AS change_order
+  FROM pop_total
+
+  UNION ALL
+  SELECT
+    'POP_BY_BANK', Bank_Code, CAST(NULL AS VARCHAR(20)),
+    prev_gl_sum, curr_gl_sum, delta_gl_sum, acct_count, prev_acct_count, curr_acct_count,
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+    CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+    CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+    3, 0
+  FROM pop_by_bank
+
+  UNION ALL
+  SELECT
+    'SUMMARY_TOTAL', CAST(NULL AS VARCHAR(20)), Change_Type,
+    prev_gl_sum, curr_gl_sum, delta_gl_sum, acct_count, prev_acct_count, curr_acct_count,
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+    CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+    CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+    4,
+    CASE Change_Type WHEN 'ADD' THEN 1 WHEN 'DROP' THEN 2 WHEN 'BAL_CHANGE' THEN 3 WHEN 'NO_CHANGE' THEN 4 ELSE 99 END
+  FROM summary_total
+
+  UNION ALL
+  SELECT
+    'SUMMARY_BY_BANK', Bank_Code, Change_Type,
+    prev_gl_sum, curr_gl_sum, delta_gl_sum, acct_count, prev_acct_count, curr_acct_count,
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(256)),
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+    CAST(NULL AS VARCHAR(128)), CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(128)),
+    CAST(NULL AS VARCHAR(64)), CAST(NULL AS VARCHAR(64)),
+    CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+    5,
+    CASE Change_Type WHEN 'ADD' THEN 1 WHEN 'DROP' THEN 2 WHEN 'BAL_CHANGE' THEN 3 WHEN 'NO_CHANGE' THEN 4 ELSE 99 END
+  FROM summary_by_bank
+
+  UNION ALL
+  SELECT
+    'DETAIL' AS level,
+    Bank_Code,
+    Change_Type,
+    CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)), CAST(NULL AS NUMERIC(18,2)),
+    CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), CAST(NULL AS BIGINT),
+    Account_Identifier, Account_Key, Account_Name, CIS_Customer_Number, Facility_ID,
+    Contract_Source_System, Status_Code_Description, GL_ACCOUNT_HIER_LEVEL_4,
+    PROD_HIER_LEVEL_5, RBC_Code, GL_ACCOUNT_CODE, Prev_GL_Balance, Curr_GL_Balance, GL_Delta,
+    6 AS level_order,
+    CASE Change_Type WHEN 'ADD' THEN 1 WHEN 'DROP' THEN 2 WHEN 'BAL_CHANGE' THEN 3 WHEN 'NO_CHANGE' THEN 4 ELSE 99 END
+  FROM classified
+
+) z
+ORDER BY
+  z.level_order,
+  COALESCE(z.Bank_Code,'~'),
+  z.change_order,
+  z.Change_Type,
+  z.Account_Identifier;
+
+
+
+
+
+
+
+-- ==========================================================
 -- FINAL OUTPUT (adds sort helper columns to satisfy Netezza)
 -- ==========================================================
 SELECT
