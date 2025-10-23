@@ -1,3 +1,51 @@
+-- ============================================
+-- Simple pull: Non-Accrual populations for prev & curr EOM
+-- (same filters, same fields as your original pop CTE)
+-- ============================================
+WITH params AS (
+  SELECT
+    DATE '2025-09-30'                 AS curr_eom,
+    ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
+),
+pop AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Name,
+      Contract_Source_System,
+      CIS_Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag,
+      PROD_HIER_LEVEL_5,
+      RBC_Code,
+      GL_ACCOUNT_CODE
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+)
+SELECT *
+FROM pop
+WHERE Non_Accrual_Flag = 'Y'
+  AND Source_System_Balance > 0
+ORDER BY
+  End_of_Month_Date,
+  Account_Identifier;
+
+
+
+
+
+
 by_bank_prev AS (
   SELECT
     bank_code,
