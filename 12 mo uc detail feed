@@ -1,3 +1,38 @@
+/* ---------- Final selector (one result set) ---------- */
+SELECT *
+FROM (
+    SELECT * FROM snapshot
+    WHERE (SELECT p_section FROM params) = 'SNAPSHOT_TREND'
+    UNION ALL
+    SELECT * FROM trend
+    WHERE (SELECT p_section FROM params) = 'SNAPSHOT_TREND'
+    UNION ALL
+    SELECT * FROM mom_decomp
+    WHERE (SELECT p_section FROM params) = 'MOM_DECOMP'
+    UNION ALL
+    SELECT * FROM top_movers
+    WHERE (SELECT p_section FROM params) = 'TOP_MOVERS'
+    UNION ALL
+    SELECT * FROM volatility
+    WHERE (SELECT p_section FROM params) = 'VOLATILITY'
+) u
+-- Netezza requires ORDER BY columns to be in the result set.
+-- Column ordinals in this unified schema:
+-- 1=section, 2=month_end, 3=synthetic_category, 4=contract_source_system,
+-- 5=gl_account_code, ..., 32=sort_key
+ORDER BY
+  1,         -- section
+  2 DESC,    -- month_end
+  3,         -- synthetic_category
+  4,         -- contract_source_system
+  5,         -- gl_account_code
+  32 DESC;   -- sort_key
+
+
+
+
+
+
 /*=========================================================================
   Unified Synthetic Analytics (LOANHUB) — Param-Driven Sections (Netezza)
   Source: V_SECURE_PORTFOLIO_DETAIL_LOANHUB
