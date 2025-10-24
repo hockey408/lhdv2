@@ -1,3 +1,284 @@
+/* ===== RC MoM Movement with Transfers (Netezza-safe; uses RC_CODE exactly) =====
+   Grain: RC_CODE x RC_DESCRIPTION x MONTH_END
+   Categories (adjacent months only, exposure>0 considered active):
+     - NEW_ACCOUNT     : prev_exp<=0 or NULL (any RC) -> curr_exp>0 in THIS RC
+     - CLOSED_ACCOUNT  : prev_exp>0 in THIS RC -> next_exp<=0 or NULL (any RC)  (attributed to next month)
+     - TRANSFER_IN     : prev_exp>0 in DIFFERENT RC -> curr_exp>0 in THIS RC
+     - TRANSFER_OUT    : prev_exp>0 in THIS RC -> curr_exp>0 in DIFFERENT RC
+   Waterfall order: Prev Total → New Accounts → Transfer In → Transfer Out → Closed → Curr Total
+=============================================================================== */
+
+WITH
+params AS (
+  SELECT
+    ADD_MONTHS(CURRENT_DATE, -13)::DATE AS min_me,
+    0.0::FLOAT8 AS active_floor   -- set to e.g. 10000.0 to use a dollar floor instead of >0
+),
+
+/* 1) Base rows (recent window, Total Loans) */
+base AS (
+  SELECT
+    CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+    RC_CODE,
+    RC_DESCRIPTION,
+    Account_Identifier,
+    SOURCE_SYSTEM_BALANCE::FLOAT8   AS exposure
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, params p
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND END_OF_MONTH_DATE >= p.min_me
+),
+
+/* 2) One row per account×month (pick RC row with highest exposure if dupes) */
+acct_month AS (
+  SELECT
+      month_end,
+      Account_Identifier,
+      RC_CODE        AS rc_code,
+      RC_DESCRIPTION AS rc_description,
+      exposure
+  FROM (
+      SELECT
+          month_end,
+          Account_Identifier,
+          RC_CODE,
+          RC_DESCRIPTION,
+          exposure,
+          ROW_NUMBER() OVER (
+              PARTITION BY month_end, Account_Identifier
+              ORDER BY exposure DESC, RC_CODE
+          ) AS rn
+      FROM base
+  ) s
+  WHERE rn = 1
+),
+
+/* 3) Add prev/next month info per account */
+seq AS (
+  SELECT
+    a.month_end,
+    a.Account_Identifier,
+    a.rc_code         AS curr_rc,
+    a.rc_description  AS curr_rc_desc,
+    a.exposure        AS curr_exp,
+
+    LAG(a.month_end)      OVER (PARTITION BY a.Account_Identifier ORDER BY a.month_end) AS prev_me,
+    LAG(a.rc_code)        OVER (PARTITION BY a.Account_Identifier ORDER BY a.month_end) AS prev_rc,
+    LAG(a.rc_description) OVER (PARTITION BY a.Account_Identifier ORDER BY a.month_end) AS prev_rc_desc,
+    LAG(a.exposure)       OVER (PARTITION BY a.Account_Identifier ORDER BY a.month_end) AS prev_exp,
+
+    LEAD(a.month_end)     OVER (PARTITION BY a.Account_Identifier ORDER BY a.month_end) AS next_me,
+    LEAD(a.rc_code)       OVER (PARTITION BY a.Account_Identifier ORDER BY a.month_end) AS next_rc,
+    LEAD(a.exposure)      OVER (PARTITION BY a.Account_Identifier ORDER BY a.month_end) AS next_exp
+  FROM acct_month a
+),
+
+/* 4) Inbound to current RC (this month) */
+inbound AS (
+  SELECT
+    s.month_end,
+    s.curr_rc        AS rc_code,
+    s.curr_rc_desc   AS rc_description,
+    CASE
+      WHEN s.prev_me = ADD_MONTHS(s.month_end, -1)
+           AND (s.prev_exp IS NULL OR s.prev_exp <= (SELECT active_floor FROM params))
+           AND s.curr_exp >  (SELECT active_floor FROM params)
+        THEN 'NEW_ACCOUNT'
+      WHEN s.prev_me = ADD_MONTHS(s.month_end, -1)
+           AND s.prev_exp >  (SELECT active_floor FROM params)
+           AND s.prev_rc <> s.curr_rc
+           AND s.curr_exp >  (SELECT active_floor FROM params)
+        THEN 'TRANSFER_IN'
+      ELSE NULL
+    END AS movement_type,
+    CASE
+      WHEN s.prev_me = ADD_MONTHS(s.month_end, -1)
+           AND (s.prev_exp IS NULL OR s.prev_exp <= (SELECT active_floor FROM params))
+           AND s.curr_exp >  (SELECT active_floor FROM params)
+        THEN s.curr_exp
+      WHEN s.prev_me = ADD_MONTHS(s.month_end, -1)
+           AND s.prev_exp >  (SELECT active_floor FROM params)
+           AND s.prev_rc <> s.curr_rc
+           AND s.curr_exp >  (SELECT active_floor FROM params)
+        THEN s.curr_exp
+      ELSE 0 END AS amount,
+    1 AS acct_count,
+    s.prev_rc      AS from_rc_code,
+    s.curr_rc      AS to_rc_code
+  FROM seq s
+  WHERE
+    s.prev_me = ADD_MONTHS(s.month_end, -1)
+    AND s.curr_exp > (SELECT active_floor FROM params)
+    AND (
+          (s.prev_exp IS NULL OR s.prev_exp <= (SELECT active_floor FROM params))
+       OR (s.prev_exp >  (SELECT active_floor FROM params) AND s.prev_rc <> s.curr_rc)
+    )
+),
+
+/* 5) Outbound from previous RC (this month) */
+outbound AS (
+  -- TRANSFER_OUT: prev>floor in prev_rc -> curr>floor in DIFFERENT rc
+  SELECT
+    s.month_end,
+    s.prev_rc         AS rc_code,
+    s.prev_rc_desc    AS rc_description,
+    'TRANSFER_OUT'    AS movement_type,
+    -s.prev_exp       AS amount,               -- negative
+    1                 AS acct_count,
+    s.prev_rc         AS from_rc_code,
+    s.curr_rc         AS to_rc_code
+  FROM seq s
+  WHERE s.prev_me = ADD_MONTHS(s.month_end, -1)
+    AND s.prev_exp >  (SELECT active_floor FROM params)
+    AND s.curr_exp >  (SELECT active_floor FROM params)
+    AND s.prev_rc <> s.curr_rc
+
+  UNION ALL
+
+  -- CLOSED_ACCOUNT: prev>floor and next month <=floor or missing anywhere
+  SELECT
+    s.next_me         AS month_end,            -- attribute closure to the next month
+    s.curr_rc         AS rc_code,
+    s.curr_rc_desc    AS rc_description,
+    'CLOSED_ACCOUNT'  AS movement_type,
+    -s.curr_exp       AS amount,               -- negative
+    1                 AS acct_count,
+    s.curr_rc         AS from_rc_code,
+    NULL              AS to_rc_code
+  FROM seq s
+  WHERE s.next_me = ADD_MONTHS(s.month_end, 1)
+    AND s.curr_exp >  (SELECT active_floor FROM params)
+    AND (s.next_exp IS NULL OR s.next_exp <= (SELECT active_floor FROM params))
+),
+
+/* 6) Combine movements */
+movements AS (
+  SELECT * FROM inbound WHERE movement_type IS NOT NULL
+  UNION ALL
+  SELECT * FROM outbound
+),
+
+/* 7) RC-month totals for endpoints */
+rc_totals AS (
+  SELECT
+    month_end,
+    curr_rc AS rc_code,
+    MAX(curr_rc_desc) AS rc_description,
+    SUM(curr_exp)     AS curr_total_exposure
+  FROM seq
+  GROUP BY month_end, curr_rc
+),
+rc_totals_with_prev AS (
+  SELECT
+    t.month_end,
+    t.rc_code,
+    t.rc_description,
+    t.curr_total_exposure,
+    LAG(t.curr_total_exposure) OVER (PARTITION BY t.rc_code ORDER BY t.month_end) AS prev_total_exposure
+  FROM rc_totals t
+),
+
+/* 8) Aggregate movements per RC×Month×Type */
+rc_movement_agg AS (
+  SELECT
+    m.month_end,
+    m.rc_code,
+    MAX(m.rc_description) AS rc_description,
+    m.movement_type,
+    SUM(m.amount)         AS amount,
+    SUM(m.acct_count)     AS acct_count,
+    -- optional: counterpart RCs at detail grain (omit in agg; available from detail table below)
+    MIN(m.from_rc_code)   AS example_from_rc,
+    MIN(m.to_rc_code)     AS example_to_rc
+  FROM movements m
+  GROUP BY m.month_end, m.rc_code, m.movement_type
+),
+
+/* 9) Pivot-ish summary */
+rc_movement_pivot AS (
+  SELECT
+    a.month_end,
+    a.rc_code,
+    MAX(a.rc_description) AS rc_description,
+    SUM(CASE WHEN a.movement_type='NEW_ACCOUNT'    THEN a.amount ELSE 0 END) AS new_acct_amt,
+    SUM(CASE WHEN a.movement_type='TRANSFER_IN'    THEN a.amount ELSE 0 END) AS transfer_in_amt,
+    SUM(CASE WHEN a.movement_type='TRANSFER_OUT'   THEN a.amount ELSE 0 END) AS transfer_out_amt,  -- negative
+    SUM(CASE WHEN a.movement_type='CLOSED_ACCOUNT' THEN a.amount ELSE 0 END) AS closed_amt         -- negative
+  FROM rc_movement_agg a
+  GROUP BY a.month_end, a.rc_code
+),
+
+/* 10) Final summary per RC×Month */
+summary AS (
+  SELECT
+    p.month_end,
+    p.rc_code,
+    p.rc_description,
+    COALESCE(t.prev_total_exposure,0) AS prev_total_exposure,
+    COALESCE(p.new_acct_amt,0)        AS new_acct_amt,
+    COALESCE(p.transfer_in_amt,0)     AS transfer_in_amt,
+    COALESCE(p.transfer_out_amt,0)    AS transfer_out_amt,
+    COALESCE(p.closed_amt,0)          AS closed_amt,
+    COALESCE(t.curr_total_exposure,0) AS curr_total_exposure
+  FROM rc_movement_pivot p
+  JOIN rc_totals_with_prev t
+    ON t.month_end = p.month_end AND t.rc_code = p.rc_code
+),
+
+/* 11) Waterfall rows */
+waterfall AS (
+  SELECT month_end, rc_code, rc_description, 'Prev Total'     AS step_label, prev_total_exposure   AS step_value FROM summary
+  UNION ALL
+  SELECT month_end, rc_code, rc_description, 'New Accounts'   AS step_label, new_acct_amt          AS step_value FROM summary
+  UNION ALL
+  SELECT month_end, rc_code, rc_description, 'Transfer In'    AS step_label, transfer_in_amt       AS step_value FROM summary
+  UNION ALL
+  SELECT month_end, rc_code, rc_description, 'Transfer Out'   AS step_label, transfer_out_amt      AS step_value FROM summary
+  UNION ALL
+  SELECT month_end, rc_code, rc_description, 'Closed'         AS step_label, closed_amt            AS step_value FROM summary
+  UNION ALL
+  SELECT month_end, rc_code, rc_description, 'Curr Total'     AS step_label, curr_total_exposure   AS step_value FROM summary
+)
+
+-- =================== OUTPUTS ===================
+-- 1) SUMMARY: per RC×Month totals by movement type
+-- 2) DETAIL : per RC×Month×movement type (counts & amounts)
+-- 3) WATERFALL: pre-baked steps for PBI waterfall
+SELECT
+  'SUMMARY'::VARCHAR(8) AS row_type,
+  s.month_end, s.rc_code, s.rc_description,
+  s.prev_total_exposure, s.new_acct_amt, s.transfer_in_amt, s.transfer_out_amt, s.closed_amt, s.curr_total_exposure,
+  NULL::VARCHAR(16) AS movement_type, NULL::INTEGER AS acct_count,
+  NULL::VARCHAR(32) AS from_rc_code, NULL::VARCHAR(32) AS to_rc_code, NULL::FLOAT8 AS amount,
+  NULL::VARCHAR(32) AS step_label, NULL::FLOAT8 AS step_value
+FROM summary s
+
+UNION ALL
+
+SELECT
+  'DETAIL'::VARCHAR(8) AS row_type,
+  m.month_end, m.rc_code, m.rc_description,
+  NULL, NULL, NULL, NULL, NULL,
+  m.movement_type, m.acct_count,
+  NULL::VARCHAR(32) AS from_rc_code, NULL::VARCHAR(32) AS to_rc_code, m.amount,
+  NULL::VARCHAR(32) AS step_label, NULL::FLOAT8 AS step_value
+FROM rc_movement_agg m
+
+UNION ALL
+
+SELECT
+  'WATERFALL'::VARCHAR(8) AS row_type,
+  w.month_end, w.rc_code, w.rc_description,
+  NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL,
+  w.step_label, w.step_value
+FROM waterfall w
+
+ORDER BY rc_code, month_end, row_type, step_label;
+
+
+
+
+
 /* =============== RC MoM Movement with Transfers (Adds/Drops/Transfers) =================
    Grain: RC_CODE x RC_DESCRIPTION x MONTH_END
    Categories (account-level, adjacent months only):
