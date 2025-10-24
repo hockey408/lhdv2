@@ -1,3 +1,375 @@
+-- ============================================
+-- Query A: AUDIT + BRIDGES + POP/SUMMARY (no DETAIL)
+-- Keeps the plan small and avoids channel overflow
+-- ============================================
+WITH params AS (
+  SELECT DATE '2025-09-30' AS curr_eom,
+         ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
+),
+-- Base pull for two months (same filters)
+pop AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Name,
+      Contract_Source_System,
+      CIS_Customer_Number,
+      Facility_ID,
+      Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag,
+      PROD_HIER_LEVEL_5,
+      RBC_Code,
+      GL_ACCOUNT_CODE
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+),
+curr_raw AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+    AND Account_Identifier IS NOT NULL
+),
+prev_raw AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+    AND Account_Identifier IS NOT NULL
+),
+
+-- Normalize to 1 row per account per month
+curr_norm AS (
+  SELECT
+    Account_Identifier,
+    MAX(Account_Key) AS Account_Key,
+    MAX(Account_Name) AS Account_Name,
+    MAX(CIS_Customer_Number) AS CIS_Customer_Number,
+    MAX(Facility_ID) AS Facility_ID,
+    MAX(Contract_Source_System) AS Contract_Source_System,
+    MAX(Status_Code_Description) AS Status_Code_Description,
+    MAX(GL_ACCOUNT_HIER_LEVEL_4) AS GL_ACCOUNT_HIER_LEVEL_4,
+    SUM(Source_System_Balance) AS Source_System_Balance,
+    SUM(GL_Balance) AS GL_Balance,
+    MAX(Available_Balance) AS Available_Balance,
+    MAX(Borrower_Risk_Rating) AS Borrower_Risk_Rating,
+    MAX(PD_Grade) AS PD_Grade,
+    MAX(Days_Past_Due) AS Days_Past_Due,
+    MAX(Non_Accrual_Flag) AS Non_Accrual_Flag,
+    MAX(PROD_HIER_LEVEL_5) AS PROD_HIER_LEVEL_5,
+    MAX(RBC_Code) AS RBC_Code,
+    MAX(GL_ACCOUNT_CODE) AS GL_ACCOUNT_CODE
+  FROM curr_raw
+  GROUP BY Account_Identifier
+),
+prev_norm AS (
+  SELECT
+    Account_Identifier,
+    MAX(Account_Key) AS Account_Key,
+    MAX(Account_Name) AS Account_Name,
+    MAX(CIS_Customer_Number) AS CIS_Customer_Number,
+    MAX(Facility_ID) AS Facility_ID,
+    MAX(Contract_Source_System) AS Contract_Source_System,
+    MAX(Status_Code_Description) AS Status_Code_Description,
+    MAX(GL_ACCOUNT_HIER_LEVEL_4) AS GL_ACCOUNT_HIER_LEVEL_4,
+    SUM(Source_System_Balance) AS Source_System_Balance,
+    SUM(GL_Balance) AS GL_Balance,
+    MAX(Available_Balance) AS Available_Balance,
+    MAX(Borrower_Risk_Rating) AS Borrower_Risk_Rating,
+    MAX(PD_Grade) AS PD_Grade,
+    MAX(Days_Past_Due) AS Days_Past_Due,
+    MAX(Non_Accrual_Flag) AS Non_Accrual_Flag,
+    MAX(PROD_HIER_LEVEL_5) AS PROD_HIER_LEVEL_5,
+    MAX(RBC_Code) AS RBC_Code,
+    MAX(GL_ACCOUNT_CODE) AS GL_ACCOUNT_CODE
+  FROM prev_raw
+  GROUP BY Account_Identifier
+),
+
+-- Joined + Change_Type (no detail output here)
+joined AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+    COALESCE(c.GL_Balance, 0) AS Curr_GL_Balance,
+    COALESCE(p.GL_Balance, 0) AS Prev_GL_Balance,
+    COALESCE(COALESCE(c.Contract_Source_System, p.Contract_Source_System),'') AS Contract_Source_System,
+    COALESCE(COALESCE(c.GL_ACCOUNT_CODE, p.GL_ACCOUNT_CODE),'') AS GL_ACCOUNT_CODE
+  FROM curr_norm c
+  FULL OUTER JOIN prev_norm p
+    ON c.Account_Identifier = p.Account_Identifier
+),
+with_bank AS (
+  SELECT
+    j.*,
+    CASE
+      WHEN j.Contract_Source_System IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN')
+        THEN 'L-SVB'
+      WHEN j.Contract_Source_System = 'ALL'
+           AND j.GL_ACCOUNT_CODE IN ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+                                     '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+                                     '1100001','1142067','1042886','1043008')
+        THEN 'L-SVB'
+      WHEN j.Contract_Source_System IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO')
+        THEN 'L-FCB'
+      WHEN j.Contract_Source_System IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN',
+                                        'INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001',
+                                        'SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+                                        'STRAT1','STRAT1-EXCPTN')
+        THEN 'L-CIT'
+      ELSE 'NULL-Need to Research'
+    END AS Bank_Code
+  FROM joined j
+),
+classified AS (
+  SELECT
+    Bank_Code,
+    Prev_GL_Balance,
+    Curr_GL_Balance,
+    (Curr_GL_Balance - Prev_GL_Balance) AS GL_Delta,
+    CASE
+      WHEN Prev_GL_Balance = 0  AND Curr_GL_Balance > 0 THEN 'ADD'
+      WHEN Curr_GL_Balance = 0  AND Prev_GL_Balance > 0 THEN 'DROP'
+      WHEN Curr_GL_Balance <> Prev_GL_Balance           THEN 'BAL_CHANGE'
+      ELSE 'NO_CHANGE'
+    END AS Change_Type
+  FROM with_bank
+),
+
+-- Overall POP totals (normalized)
+overall_prev AS (
+  SELECT SUM(GL_Balance) AS prev_total_gl,
+         COUNT(DISTINCT Account_Identifier) AS prev_total_cnt
+  FROM prev_norm
+),
+overall_curr AS (
+  SELECT SUM(GL_Balance) AS curr_total_gl,
+         COUNT(DISTINCT Account_Identifier) AS curr_total_cnt
+  FROM curr_norm
+),
+
+-- Bridge pieces (overall)
+overall_bridge AS (
+  SELECT
+    (SELECT prev_total_gl FROM overall_prev) AS prev_total_gl,
+    (SELECT curr_total_gl FROM overall_curr) AS curr_total_gl,
+    COALESCE(SUM(CASE WHEN Change_Type='ADD'        THEN Curr_GL_Balance END),0) AS adds_gl,
+    -COALESCE(SUM(CASE WHEN Change_Type='DROP'      THEN Prev_GL_Balance END),0) AS drops_gl,
+    COALESCE(SUM(CASE WHEN Change_Type='BAL_CHANGE' THEN GL_Delta END),0)        AS bal_delta,
+    COALESCE(SUM(CASE WHEN Change_Type='ADD'        THEN 1 END),0)               AS adds_cnt,
+    -COALESCE(SUM(CASE WHEN Change_Type='DROP'      THEN 1 END),0)               AS drops_cnt
+  FROM classified
+),
+
+-- By-bank POP totals (normalized)
+by_bank_prev AS (
+  SELECT Bank_Code,
+         SUM(p.GL_Balance) AS prev_total_gl,
+         COUNT(DISTINCT p.Account_Identifier) AS prev_total_cnt
+  FROM (
+    SELECT
+      CASE
+        WHEN Contract_Source_System IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN') THEN 'L-SVB'
+        WHEN Contract_Source_System = 'ALL'
+             AND GL_ACCOUNT_CODE IN ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+                                     '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+                                     '1100001','1142067','1042886','1043008') THEN 'L-SVB'
+        WHEN Contract_Source_System IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO') THEN 'L-FCB'
+        WHEN Contract_Source_System IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN',
+                                        'INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001',
+                                        'SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+                                        'STRAT1','STRAT1-EXCPTN') THEN 'L-CIT'
+        ELSE 'NULL-Need to Research'
+      END AS Bank_Code,
+      GL_Balance,
+      Account_Identifier
+    FROM prev_norm
+  ) p
+  GROUP BY Bank_Code
+),
+by_bank_curr AS (
+  SELECT Bank_Code,
+         SUM(c.GL_Balance) AS curr_total_gl,
+         COUNT(DISTINCT c.Account_Identifier) AS curr_total_cnt
+  FROM (
+    SELECT
+      CASE
+        WHEN Contract_Source_System IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN') THEN 'L-SVB'
+        WHEN Contract_Source_System = 'ALL'
+             AND GL_ACCOUNT_CODE IN ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+                                     '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+                                     '1100001','1142067','1042886','1043008') THEN 'L-SVB'
+        WHEN Contract_Source_System IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO') THEN 'L-FCB'
+        WHEN Contract_Source_System IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN',
+                                        'INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001',
+                                        'SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+                                        'STRAT1','STRAT1-EXCPTN') THEN 'L-CIT'
+        ELSE 'NULL-Need to Research'
+      END AS Bank_Code,
+      GL_Balance,
+      Account_Identifier
+    FROM curr_norm
+  ) c
+  GROUP BY Bank_Code
+),
+by_bank_bridge_pieces AS (
+  SELECT
+    b.Bank_Code,
+    COALESCE(SUM(CASE WHEN Change_Type='ADD'        THEN Curr_GL_Balance END),0) AS adds_gl,
+    -COALESCE(SUM(CASE WHEN Change_Type='DROP'      THEN Prev_GL_Balance END),0) AS drops_gl,
+    COALESCE(SUM(CASE WHEN Change_Type='BAL_CHANGE' THEN GL_Delta END),0)        AS bal_delta,
+    COALESCE(SUM(CASE WHEN Change_Type='ADD'        THEN 1 END),0)               AS adds_cnt,
+    -COALESCE(SUM(CASE WHEN Change_Type='DROP'      THEN 1 END),0)               AS drops_cnt
+  FROM classified b
+  GROUP BY b.Bank_Code
+),
+by_bank_bridge AS (
+  SELECT
+    COALESCE(p.Bank_Code, c.Bank_Code) AS Bank_Code,
+    COALESCE(p.prev_total_gl, 0) AS prev_total_gl,
+    COALESCE(p.prev_total_cnt, 0) AS prev_total_cnt,
+    COALESCE(c.curr_total_gl, 0) AS curr_total_gl,
+    COALESCE(c.curr_total_cnt, 0) AS curr_total_cnt,
+    COALESCE(x.adds_gl, 0)  AS adds_gl,
+    COALESCE(x.drops_gl, 0) AS drops_gl,
+    COALESCE(x.bal_delta,0) AS bal_delta,
+    COALESCE(x.adds_cnt,0)  AS adds_cnt,
+    COALESCE(x.drops_cnt,0) AS drops_cnt
+  FROM by_bank_prev p
+  FULL OUTER JOIN by_bank_curr c
+    ON p.Bank_Code = c.Bank_Code
+  LEFT JOIN by_bank_bridge_pieces x
+    ON COALESCE(p.Bank_Code, c.Bank_Code) = x.Bank_Code
+),
+
+-- AUDIT: simple vs normalized totals
+simple_prev AS (
+  SELECT SUM(GL_Balance) AS simple_prev_gl,
+         COUNT(DISTINCT Account_Identifier) AS simple_prev_cnt
+  FROM prev_raw
+),
+simple_curr AS (
+  SELECT SUM(GL_Balance) AS simple_curr_gl,
+         COUNT(DISTINCT Account_Identifier) AS simple_curr_cnt
+  FROM curr_raw
+),
+norm_prev AS (
+  SELECT SUM(GL_Balance) AS norm_prev_gl,
+         COUNT(DISTINCT Account_Identifier) AS norm_prev_cnt
+  FROM prev_norm
+),
+norm_curr AS (
+  SELECT SUM(GL_Balance) AS norm_curr_gl,
+         COUNT(DISTINCT Account_Identifier) AS norm_curr_cnt
+  FROM curr_norm
+)
+
+-- ====================== OUTPUT (compact) ======================
+-- A1) AUDIT rows (4)
+SELECT
+  'AUDIT' AS level, 'GL' AS Bank_Code, 'PREV_GL' AS Change_Type,
+  (SELECT simple_prev_gl FROM simple_prev) AS simple_val,
+  (SELECT norm_prev_gl   FROM norm_prev)   AS norm_val,
+  (SELECT norm_prev_gl FROM norm_prev) - (SELECT simple_prev_gl FROM simple_prev) AS delta_val
+UNION ALL
+SELECT 'AUDIT','GL','CURR_GL',
+       (SELECT simple_curr_gl FROM simple_curr),
+       (SELECT norm_curr_gl   FROM norm_curr),
+       (SELECT norm_curr_gl FROM norm_curr) - (SELECT simple_curr_gl FROM simple_curr)
+UNION ALL
+SELECT 'AUDIT','GL','PREV_CNT',
+       (SELECT simple_prev_cnt FROM simple_prev),
+       (SELECT norm_prev_cnt   FROM norm_prev),
+       (SELECT norm_prev_cnt FROM norm_prev) - (SELECT simple_prev_cnt FROM simple_prev)
+UNION ALL
+SELECT 'AUDIT','GL','CURR_CNT',
+       (SELECT simple_curr_cnt FROM simple_curr),
+       (SELECT norm_curr_cnt   FROM norm_curr),
+       (SELECT norm_curr_cnt FROM norm_curr) - (SELECT simple_curr_cnt FROM simple_curr)
+
+-- A2) BRIDGE (overall) — BALANCE (5 rows)
+UNION ALL SELECT 'BRIDGE','BALANCE','Prev Month Balance',
+  NULL, (SELECT prev_total_gl FROM overall_prev), NULL
+UNION ALL SELECT 'BRIDGE','BALANCE','Adds',
+  NULL, (SELECT adds_gl FROM overall_bridge), NULL
+UNION ALL SELECT 'BRIDGE','BALANCE','Drops',
+  NULL, (SELECT drops_gl FROM overall_bridge), NULL
+UNION ALL SELECT 'BRIDGE','BALANCE','Persisting Bal Changes',
+  NULL, (SELECT bal_delta FROM overall_bridge), NULL
+UNION ALL SELECT 'BRIDGE','BALANCE','Current Month Balance',
+  NULL, (SELECT curr_total_gl FROM overall_curr), NULL
+
+-- A3) BRIDGE (overall) — COUNT (4 rows)
+UNION ALL SELECT 'BRIDGE','COUNT','Prev Month Count',
+  (SELECT prev_total_cnt FROM overall_prev), NULL, NULL
+UNION ALL SELECT 'BRIDGE','COUNT','Adds',
+  (SELECT adds_cnt FROM overall_bridge), NULL, NULL
+UNION ALL SELECT 'BRIDGE','COUNT','Drops',
+  (SELECT drops_cnt FROM overall_bridge), NULL, NULL
+UNION ALL SELECT 'BRIDGE','COUNT','Current Month Count',
+  (SELECT curr_total_cnt FROM overall_curr), NULL, NULL
+
+-- A4) BRIDGE_BY_BANK — BALANCE (5 rows per bank; generated via VALUES)
+UNION ALL
+SELECT 'BRIDGE_BY_BANK','BALANCE', label,
+       NULL,
+       CASE label
+         WHEN 'Prev Month Balance'      THEN b.prev_total_gl
+         WHEN 'Adds'                    THEN b.adds_gl
+         WHEN 'Drops'                   THEN b.drops_gl
+         WHEN 'Persisting Bal Changes'  THEN b.bal_delta
+         WHEN 'Current Month Balance'   THEN b.curr_total_gl
+       END,
+       NULL
+FROM by_bank_bridge b
+CROSS JOIN (SELECT 'Prev Month Balance' AS label
+            UNION ALL SELECT 'Adds'
+            UNION ALL SELECT 'Drops'
+            UNION ALL SELECT 'Persisting Bal Changes'
+            UNION ALL SELECT 'Current Month Balance') labels
+
+-- A5) BRIDGE_BY_BANK — COUNT (4 rows per bank; generated via VALUES)
+UNION ALL
+SELECT 'BRIDGE_BY_BANK','COUNT', label,
+       CASE label
+         WHEN 'Prev Month Count' THEN b.prev_total_cnt
+         WHEN 'Adds'             THEN b.adds_cnt
+         WHEN 'Drops'            THEN b.drops_cnt
+         WHEN 'Current Month Count' THEN b.curr_total_cnt
+       END,
+       NULL,
+       NULL
+FROM by_bank_bridge b
+CROSS JOIN (SELECT 'Prev Month Count' AS label
+            UNION ALL SELECT 'Adds'
+            UNION ALL SELECT 'Drops'
+            UNION ALL SELECT 'Current Month Count') labels
+
+-- A6) POP_TOTAL (2 rows: prev & curr totals) — optional quick view
+UNION ALL
+SELECT 'POP_TOTAL','GL','Prev Total',
+       (SELECT prev_total_gl FROM overall_prev), NULL, NULL
+UNION ALL
+SELECT 'POP_TOTAL','GL','Curr Total',
+       (SELECT curr_total_gl FROM overall_curr), NULL, NULL
+;
+
+
+
+
+
+
 -- =============================================================================
 -- MoM Non-Accrual Portfolio Movement (Ties Exactly) + AUDIT
 --  - Normalizes to 1 row per Account_Identifier per month
