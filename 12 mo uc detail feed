@@ -1,3 +1,224 @@
+/* ---------- MOM_WATERFALL (balances & counts) ---------- */
+-- prev synthetic universe & curr synthetic universe exist as cur_syn / prev_syn in your script
+paired AS (
+  SELECT
+    COALESCE(c.account_identifier, p.account_identifier)             AS account_identifier,
+    -- prev side
+    p.contract_source_system AS prev_css,
+    p.gl_account_code        AS prev_gl,
+    p.gl_account_description AS prev_gl_desc,
+    p.exposure               AS prev_exp,
+    CASE WHEN p.account_identifier IS NOT NULL THEN 1 ELSE 0 END    AS prev_is_synth,
+    -- curr side
+    c.contract_source_system AS cur_css,
+    c.gl_account_code        AS cur_gl,
+    c.gl_account_description AS cur_gl_desc,
+    c.exposure               AS cur_exp,
+    CASE WHEN c.account_identifier IS NOT NULL THEN 1 ELSE 0 END    AS cur_is_synth
+  FROM cur_syn c
+  FULL OUTER JOIN prev_syn p
+    ON c.account_identifier = p.account_identifier
+),
+
+-- Per-bucket contributions (balances)
+wb AS (
+  -- Prev balance (by previous bucket)
+  SELECT prev_css AS css, prev_gl AS gl, MAX(prev_gl_desc) AS gl_desc,
+         SUM(prev_exp) AS prev_bal,
+         0.0::FLOAT8 AS adds_bal, 0.0::FLOAT8 AS drops_bal,
+         0.0::FLOAT8 AS transfers_in_bal, 0.0::FLOAT8 AS transfers_out_bal,
+         0.0::FLOAT8 AS persist_bal,
+         0::INT AS prev_cnt, 0::INT AS adds_cnt, 0::INT AS drops_cnt,
+         0::INT AS transfers_in_cnt, 0::INT AS transfers_out_cnt, 0::INT AS persist_cnt
+  FROM paired
+  WHERE prev_is_synth=1
+  GROUP BY prev_css, prev_gl
+
+  UNION ALL
+  -- Curr balance (by current bucket)
+  SELECT cur_css, cur_gl, MAX(cur_gl_desc),
+         0.0, 0.0, 0.0, 0.0, 0.0,
+         0.0,
+         0,0,0,0,0,0
+  FROM paired
+  WHERE cur_is_synth=1
+  GROUP BY cur_css, cur_gl
+
+  UNION ALL
+  -- Adds: non-synth prev -> synth now in this bucket
+  SELECT cur_css, cur_gl, MAX(cur_gl_desc),
+         0.0, SUM(cur_exp), 0.0, 0.0, 0.0, 0.0,
+         0, SUM(1), 0, 0, 0, 0
+  FROM paired
+  WHERE prev_is_synth=0 AND cur_is_synth=1
+  GROUP BY cur_css, cur_gl
+
+  UNION ALL
+  -- Drops: synth prev in this bucket -> non-synth now
+  SELECT prev_css, prev_gl, MAX(prev_gl_desc),
+         0.0, 0.0, SUM(prev_exp), 0.0, 0.0, 0.0,
+         0, 0, SUM(1), 0, 0, 0
+  FROM paired
+  WHERE prev_is_synth=1 AND cur_is_synth=0
+  GROUP BY prev_css, prev_gl
+
+  UNION ALL
+  -- Transfers IN: synth prev elsewhere -> synth now in this bucket
+  SELECT cur_css, cur_gl, MAX(cur_gl_desc),
+         0.0, 0.0, 0.0, SUM(cur_exp), 0.0, 0.0,
+         0, 0, 0, SUM(1), 0, 0
+  FROM paired
+  WHERE prev_is_synth=1 AND cur_is_synth=1
+    AND (prev_css<>cur_css OR prev_gl<>cur_gl)
+  GROUP BY cur_css, cur_gl
+
+  UNION ALL
+  -- Transfers OUT: synth prev in this bucket -> synth now elsewhere
+  SELECT prev_css, prev_gl, MAX(prev_gl_desc),
+         0.0, 0.0, 0.0, 0.0, SUM(prev_exp)*(-1.0), 0.0,
+         0, 0, 0, 0, SUM(1), 0
+  FROM paired
+  WHERE prev_is_synth=1 AND cur_is_synth=1
+    AND (prev_css<>cur_css OR prev_gl<>cur_gl)
+  GROUP BY prev_css, prev_gl
+
+  UNION ALL
+  -- Persisting balance change: stayed in same bucket (cur - prev)
+  SELECT cur_css, cur_gl, MAX(cur_gl_desc),
+         0.0, 0.0, 0.0, 0.0, 0.0, SUM(cur_exp - prev_exp),
+         0, 0, 0, 0, 0, SUM(1)
+  FROM paired
+  WHERE prev_is_synth=1 AND cur_is_synth=1
+    AND prev_css=cur_css AND prev_gl=cur_gl
+  GROUP BY cur_css, cur_gl
+),
+
+waterfall AS (
+  SELECT
+    CAST('MOM_WATERFALL' AS VARCHAR(20)) AS section,
+    (SELECT latest_me FROM latest)        AS month_end,
+    -- BALANCE rows
+    CAST('BAL' AS VARCHAR(12))           AS synthetic_category,
+    CAST(css AS VARCHAR(128))            AS contract_source_system,
+    CAST(gl AS INTEGER)                  AS gl_account_code,
+    CAST(MAX(gl_desc) AS VARCHAR(256))   AS gl_account_description,
+    CAST(NULL AS VARCHAR(128))           AS account_identifier,
+
+    -- Balances mapped to existing columns
+    SUM(prev_bal)                        AS exposure_prev,
+    -- Cur is computed at the end; we still keep it here in case you want to inspect
+    SUM(0.0)::FLOAT8                     AS exposure_cur,
+
+    -- For the visual, the steps are: Adds, Drops, Transfers (net), Persisting
+    CAST(NULL AS FLOAT8)                 AS delta_total,
+    SUM(persist_bal)                     AS cont_growth,         -- Persisting balance change
+    SUM(adds_bal)                        AS adds,
+    SUM(drops_bal)*(-1.0)                AS drops,               -- make Drops negative for clarity
+    -- Snapshot columns (not used here)
+    CAST(NULL AS INTEGER)                AS rows_flagged,
+    CAST(NULL AS INTEGER)                AS accounts_flagged,
+    CAST(NULL AS FLOAT8)                 AS exposure_sum,
+    CAST(NULL AS FLOAT8)                 AS exposure_abs_sum,
+    CAST(NULL AS FLOAT8)                 AS exposure_abs_avg,
+    (SELECT prior_me FROM prior)         AS prev_month_end,
+    CAST(NULL AS FLOAT8)                 AS prev_exposure_sum,
+    CAST(NULL AS FLOAT8)                 AS pct_delta_exposure,
+    CAST(NULL AS INTEGER)                AS hist_months,
+    CAST(NULL AS FLOAT8)                 AS hist_avg_abs_exposure,
+    CAST(NULL AS FLOAT8)                 AS hist_std_abs_exposure,
+    CAST(NULL AS FLOAT8)                 AS hist_min_abs_exposure,
+    CAST(NULL AS FLOAT8)                 AS hist_max_abs_exposure,
+    CAST(NULL AS FLOAT8)                 AS zscore_abs,
+    CAST(NULL AS FLOAT8)                 AS volatility_avg_abs,
+    CAST(NULL AS FLOAT8)                 AS volatility_std_abs,
+    CAST(NULL AS FLOAT8)                 AS volatility_cv_abs,
+
+    -- We’ll carry Transfers Net in exposure_delta, and compute Curr & Sort last
+    (SUM(transfers_in_bal) + SUM(transfers_out_bal))  AS exposure_delta,
+    -- sort_key
+    ABS( (SUM(adds_bal) - SUM(drops_bal)) + (SUM(transfers_in_bal)+SUM(transfers_out_bal)) + SUM(persist_bal) )
+      ::FLOAT8 AS sort_key
+
+  FROM wb
+  GROUP BY css, gl
+
+  UNION ALL
+
+  -- COUNT rows: reuse the same numeric columns but filled with counts
+  SELECT
+    CAST('MOM_WATERFALL' AS VARCHAR(20)) AS section,
+    (SELECT latest_me FROM latest)        AS month_end,
+    CAST('COUNT' AS VARCHAR(12))          AS synthetic_category,
+    CAST(css AS VARCHAR(128))             AS contract_source_system,
+    CAST(gl AS INTEGER)                   AS gl_account_code,
+    CAST(MAX(gl_desc) AS VARCHAR(256))    AS gl_account_description,
+    CAST(NULL AS VARCHAR(128))            AS account_identifier,
+
+    -- Counts mapped into the same fields
+    SUM(prev_cnt)::FLOAT8                 AS exposure_prev,      -- prev count
+    SUM(0)::FLOAT8                        AS exposure_cur,       -- (computed in outer SELECT if needed)
+    CAST(NULL AS FLOAT8)                  AS delta_total,
+    SUM(persist_cnt)::FLOAT8              AS cont_growth,        -- persisting count (informational)
+    SUM(adds_cnt)::FLOAT8                 AS adds,               -- adds count
+    (SUM(drops_cnt) * 1.0)::FLOAT8        AS drops,              -- drops count (positive)
+    CAST(NULL AS INTEGER)                 AS rows_flagged,
+    CAST(NULL AS INTEGER)                 AS accounts_flagged,
+    CAST(NULL AS FLOAT8)                  AS exposure_sum,
+    CAST(NULL AS FLOAT8)                  AS exposure_abs_sum,
+    CAST(NULL AS FLOAT8)                  AS exposure_abs_avg,
+    (SELECT prior_me FROM prior)          AS prev_month_end,
+    CAST(NULL AS FLOAT8)                  AS prev_exposure_sum,
+    CAST(NULL AS FLOAT8)                  AS pct_delta_exposure,
+    CAST(NULL AS INTEGER)                 AS hist_months,
+    CAST(NULL AS FLOAT8)                  AS hist_avg_abs_exposure,
+    CAST(NULL AS FLOAT8)                  AS hist_std_abs_exposure,
+    CAST(NULL AS FLOAT8)                  AS hist_min_abs_exposure,
+    CAST(NULL AS FLOAT8)                  AS hist_max_abs_exposure,
+    CAST(NULL AS FLOAT8)                  AS zscore_abs,
+    CAST(NULL AS FLOAT8)                  AS volatility_avg_abs,
+    CAST(NULL AS FLOAT8)                  AS volatility_std_abs,
+    CAST(NULL AS FLOAT8)                  AS volatility_cv_abs,
+
+    -- Transfers Net count (In – Out) into exposure_delta
+    (SUM(transfers_in_cnt) - SUM(transfers_out_cnt))::FLOAT8  AS exposure_delta,
+    -- sort_key by absolute net change in count
+    ABS( (SUM(adds_cnt) - SUM(drops_cnt)) + (SUM(transfers_in_cnt) - SUM(transfers_out_cnt)) )
+      ::FLOAT8 AS sort_key
+  FROM wb
+  GROUP BY css, gl
+),
+
+-- Finalize current values for both BAL and COUNT rows (recompute curr from prev + steps)
+mom_waterfall AS (
+  SELECT
+    w.section, w.month_end, w.synthetic_category,
+    w.contract_source_system, w.gl_account_code, w.gl_account_description,
+    w.account_identifier,
+    w.exposure_prev,
+    /* exposure_cur / curr_count reconstructed for clarity in visuals */
+    (w.exposure_prev
+      + w.adds
+      + (-w.drops)               -- drops is positive; subtract it
+      + w.exposure_delta         -- transfers net
+      + w.cont_growth            -- persisting balance change
+    ) AS exposure_cur,
+    w.delta_total, w.cont_growth, w.adds, w.drops,
+    w.rows_flagged, w.accounts_flagged,
+    w.exposure_sum, w.exposure_abs_sum, w.exposure_abs_avg,
+    w.prev_month_end, w.prev_exposure_sum, w.pct_delta_exposure,
+    w.hist_months, w.hist_avg_abs_exposure, w.hist_std_abs_exposure,
+    w.hist_min_abs_exposure, w.hist_max_abs_exposure, w.zscore_abs,
+    w.volatility_avg_abs, w.volatility_std_abs, w.volatility_cv_abs,
+    w.exposure_delta,
+    w.sort_key
+  FROM waterfall w
+)
+
+
+
+
+
+
 /* ===== RC MoM Movement with Transfers (Netezza-safe; RC_CODE exact) =====
    Categories (adjacent months, active if exposure > active_floor):
      - NEW_ACCOUNT     : prev<=floor or NULL -> curr>floor in THIS RC
