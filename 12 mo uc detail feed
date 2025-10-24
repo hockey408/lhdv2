@@ -1,4 +1,138 @@
 -- ============================================================
+-- MoM Non-Accrual Bridge (using Source_System_Balance)
+-- ============================================================
+WITH params AS (
+  SELECT DATE '2025-09-30' AS curr_eom,
+         ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
+),
+-- Base pull (same filters)
+pop AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Name,
+      Contract_Source_System,
+      CIS_Customer_Number,
+      Facility_ID,
+      CASE
+        WHEN Account_Identifier IS NULL OR TRIM(Account_Identifier) = '' THEN '§NULL§'
+        ELSE TRIM(Account_Identifier)
+      END AS Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag,
+      PROD_HIER_LEVEL_5,
+      RBC_Code,
+      GL_ACCOUNT_CODE
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+),
+curr_raw AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+prev_raw AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+
+-- Normalize: one row per account per month
+curr_norm AS (
+  SELECT
+    Account_Identifier,
+    SUM(Source_System_Balance) AS Source_System_Balance
+  FROM curr_raw
+  GROUP BY Account_Identifier
+),
+prev_norm AS (
+  SELECT
+    Account_Identifier,
+    SUM(Source_System_Balance) AS Source_System_Balance
+  FROM prev_raw
+  GROUP BY Account_Identifier
+),
+
+-- Combine months
+joined AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+    COALESCE(p.Source_System_Balance, 0) AS Prev_Bal,
+    COALESCE(c.Source_System_Balance, 0) AS Curr_Bal
+  FROM curr_norm c
+  FULL OUTER JOIN prev_norm p
+    ON c.Account_Identifier = p.Account_Identifier
+),
+
+-- Compute bridge pieces
+overall_prev AS (
+  SELECT SUM(Source_System_Balance) AS prev_total_bal,
+         COUNT(DISTINCT Account_Identifier) AS prev_total_cnt
+  FROM prev_norm
+),
+overall_curr AS (
+  SELECT SUM(Source_System_Balance) AS curr_total_bal,
+         COUNT(DISTINCT Account_Identifier) AS curr_total_cnt
+  FROM curr_norm
+),
+overall_bridge AS (
+  SELECT
+    (SELECT prev_total_bal FROM overall_prev) AS prev_total_bal,
+    (SELECT curr_total_bal FROM overall_curr) AS curr_total_bal,
+
+    /* Adds, Drops, Persisting Changes */
+    COALESCE(SUM(CASE WHEN Prev_Bal = 0  AND Curr_Bal > 0 THEN Curr_Bal END),0)                         AS adds_bal,
+    -COALESCE(SUM(CASE WHEN Curr_Bal = 0  AND Prev_Bal > 0 THEN Prev_Bal END),0)                         AS drops_bal,
+    COALESCE(SUM(CASE WHEN Prev_Bal > 0 AND Curr_Bal > 0 AND Curr_Bal <> Prev_Bal
+                      THEN (Curr_Bal - Prev_Bal) END),0)                                                 AS pers_delta_bal,
+
+    /* Counts */
+    COALESCE(SUM(CASE WHEN Prev_Bal = 0  AND Curr_Bal > 0 THEN 1 END),0)                                 AS adds_cnt,
+    -COALESCE(SUM(CASE WHEN Curr_Bal = 0  AND Prev_Bal > 0 THEN 1 END),0)                                AS drops_cnt
+  FROM joined
+)
+
+-- ============================================================
+-- FINAL OUTPUT: simple 2-part bridge (balance + count)
+-- ============================================================
+SELECT 'Prev Month Balance'      AS bridge_line, (SELECT prev_total_bal FROM overall_prev) AS balance_val, NULL AS count_val
+UNION ALL
+SELECT 'Adds',                   (SELECT adds_bal FROM overall_bridge),                    NULL
+UNION ALL
+SELECT 'Drops',                  (SELECT drops_bal FROM overall_bridge),                   NULL
+UNION ALL
+SELECT 'Persisting Bal Changes', (SELECT pers_delta_bal FROM overall_bridge),               NULL
+UNION ALL
+SELECT 'Current Month Balance',  (SELECT curr_total_bal FROM overall_curr),                 NULL
+UNION ALL
+SELECT 'Prev Month Count',       NULL, (SELECT prev_total_cnt FROM overall_prev)
+UNION ALL
+SELECT 'Adds',                   NULL, (SELECT adds_cnt FROM overall_bridge)
+UNION ALL
+SELECT 'Drops',                  NULL, (SELECT drops_cnt FROM overall_bridge)
+UNION ALL
+SELECT 'Current Month Count',    NULL, (SELECT curr_total_cnt FROM overall_curr);
+
+
+
+
+
+
+
+-- ============================================================
 -- Combined Output: Normalized POP (Prev & Curr) + Overall BRIDGE
 -- (UNION-safe: all branches have identical columns & types)
 -- ============================================================
