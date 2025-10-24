@@ -1,5 +1,309 @@
 -- ============================================================
 -- Combined Output: Normalized POP (Prev & Curr) + Overall BRIDGE
+-- (UNION-safe: all branches have identical columns & types)
+-- ============================================================
+WITH params AS (
+  SELECT DATE '2025-09-30' AS curr_eom,
+         ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
+),
+-- Base two-month pull (filters) + normalized key
+pop AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Name,
+      Contract_Source_System,
+      CIS_Customer_Number,
+      Facility_ID,
+      CASE
+        WHEN Account_Identifier IS NULL OR TRIM(Account_Identifier) = '' THEN '§NULL§'
+        ELSE TRIM(Account_Identifier)
+      END AS Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag,
+      PROD_HIER_LEVEL_5,
+      RBC_Code,
+      GL_ACCOUNT_CODE
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND End_of_Month_Date IN ((SELECT curr_eom FROM params),
+                              (SELECT prev_eom FROM params))
+),
+curr_raw AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+prev_raw AS (
+  SELECT *
+  FROM pop
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+
+-- Normalize to one row per account per month
+curr_norm AS (
+  SELECT
+    Account_Identifier,
+    MAX(Account_Key)             AS Account_Key,
+    MAX(Account_Name)            AS Account_Name,
+    MAX(CIS_Customer_Number)     AS CIS_Customer_Number,
+    MAX(Facility_ID)             AS Facility_ID,
+    MAX(Contract_Source_System)  AS Contract_Source_System,
+    MAX(Status_Code_Description) AS Status_Code_Description,
+    MAX(GL_ACCOUNT_HIER_LEVEL_4) AS GL_ACCOUNT_HIER_LEVEL_4,
+    SUM(Source_System_Balance)   AS Source_System_Balance,
+    SUM(GL_Balance)              AS GL_Balance,
+    MAX(Available_Balance)       AS Available_Balance,
+    MAX(Borrower_Risk_Rating)    AS Borrower_Risk_Rating,
+    MAX(PD_Grade)                AS PD_Grade,
+    MAX(Days_Past_Due)           AS Days_Past_Due,
+    MAX(Non_Accrual_Flag)        AS Non_Accrual_Flag,
+    MAX(PROD_HIER_LEVEL_5)       AS PROD_HIER_LEVEL_5,
+    MAX(RBC_Code)                AS RBC_Code,
+    MAX(GL_ACCOUNT_CODE)         AS GL_ACCOUNT_CODE
+  FROM curr_raw
+  GROUP BY Account_Identifier
+),
+prev_norm AS (
+  SELECT
+    Account_Identifier,
+    MAX(Account_Key)             AS Account_Key,
+    MAX(Account_Name)            AS Account_Name,
+    MAX(CIS_Customer_Number)     AS CIS_Customer_Number,
+    MAX(Facility_ID)             AS Facility_ID,
+    MAX(Contract_Source_System)  AS Contract_Source_System,
+    MAX(Status_Code_Description) AS Status_Code_Description,
+    MAX(GL_ACCOUNT_HIER_LEVEL_4) AS GL_ACCOUNT_HIER_LEVEL_4,
+    SUM(Source_System_Balance)   AS Source_System_Balance,
+    SUM(GL_Balance)              AS GL_Balance,
+    MAX(Available_Balance)       AS Available_Balance,
+    MAX(Borrower_Risk_Rating)    AS Borrower_Risk_Rating,
+    MAX(PD_Grade)                AS PD_Grade,
+    MAX(Days_Past_Due)           AS Days_Past_Due,
+    MAX(Non_Accrual_Flag)        AS Non_Accrual_Flag,
+    MAX(PROD_HIER_LEVEL_5)       AS PROD_HIER_LEVEL_5,
+    MAX(RBC_Code)                AS RBC_Code,
+    MAX(GL_ACCOUNT_CODE)         AS GL_ACCOUNT_CODE
+  FROM prev_raw
+  GROUP BY Account_Identifier
+),
+
+-- For the bridge (overall)
+overall_prev AS (
+  SELECT SUM(GL_Balance) AS prev_total_gl,
+         COUNT(DISTINCT Account_Identifier) AS prev_total_cnt
+  FROM prev_norm
+),
+overall_curr AS (
+  SELECT SUM(GL_Balance) AS curr_total_gl,
+         COUNT(DISTINCT Account_Identifier) AS curr_total_cnt
+  FROM curr_norm
+),
+bridge_parts AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+    COALESCE(p.GL_Balance, 0) AS Prev_GL_Balance,
+    COALESCE(c.GL_Balance, 0) AS Curr_GL_Balance
+  FROM curr_norm c
+  FULL OUTER JOIN prev_norm p
+    ON c.Account_Identifier = p.Account_Identifier
+),
+overall_bridge AS (
+  SELECT
+    (SELECT prev_total_gl  FROM overall_prev)            AS prev_total_gl,
+    (SELECT curr_total_gl  FROM overall_curr)            AS curr_total_gl,
+    COALESCE(SUM(CASE WHEN Prev_GL_Balance = 0 AND Curr_GL_Balance > 0 THEN Curr_GL_Balance END),0)                          AS adds_gl,
+    -COALESCE(SUM(CASE WHEN Curr_GL_Balance = 0 AND Prev_GL_Balance > 0 THEN Prev_GL_Balance END),0)                         AS drops_gl,
+    COALESCE(SUM(CASE WHEN Prev_GL_Balance > 0 AND Curr_GL_Balance > 0 AND Curr_GL_Balance <> Prev_GL_Balance
+                      THEN (Curr_GL_Balance - Prev_GL_Balance) END),0)                                                       AS pers_delta_gl,
+    COALESCE(SUM(CASE WHEN Prev_GL_Balance = 0 AND Curr_GL_Balance > 0 THEN 1 END),0)                                        AS adds_cnt,
+    -COALESCE(SUM(CASE WHEN Curr_GL_Balance = 0 AND Prev_GL_Balance > 0 THEN 1 END),0)                                       AS drops_cnt,
+    (SELECT prev_total_cnt FROM overall_prev) AS prev_cnt,
+    (SELECT curr_total_cnt FROM overall_curr) AS curr_cnt
+  FROM bridge_parts
+)
+
+-- ============================================================
+-- FINAL OUTPUT: POP rows + BRIDGE rows (same columns/types)
+-- ============================================================
+/* ---------- POP: PREV ---------- */
+SELECT
+  CAST('POP' AS VARCHAR(16))                            AS section,
+  CAST('PREV' AS VARCHAR(16))                           AS sub_section,
+  CAST(NULL AS VARCHAR(64))                             AS line_label,
+  (SELECT prev_eom FROM params)                         AS end_of_month_date,
+  pn.Account_Identifier,
+  pn.Account_Key,
+  pn.Account_Name,
+  pn.CIS_Customer_Number,
+  pn.Facility_ID,
+  pn.Contract_Source_System,
+  pn.Status_Code_Description,
+  pn.GL_ACCOUNT_HIER_LEVEL_4,
+  pn.PROD_HIER_LEVEL_5,
+  pn.RBC_Code,
+  pn.GL_ACCOUNT_CODE,
+  /* Bank_Code */
+  CASE
+    WHEN pn.Contract_Source_System IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN') THEN 'L-SVB'
+    WHEN pn.Contract_Source_System = 'ALL'
+         AND pn.GL_ACCOUNT_CODE IN ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+                                    '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+                                    '1100001','1142067','1042886','1043008') THEN 'L-SVB'
+    WHEN pn.Contract_Source_System IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO') THEN 'L-FCB'
+    WHEN pn.Contract_Source_System IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN',
+                                       'INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001',
+                                       'SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+                                       'STRAT1','STRAT1-EXCPTN') THEN 'L-CIT'
+    ELSE 'NULL-Need to Research'
+  END                                                   AS Bank_Code,
+  pn.Source_System_Balance                              AS Source_System_Balance,
+  pn.GL_Balance                                         AS GL_Balance,
+  pn.Available_Balance                                  AS Available_Balance,
+  pn.Borrower_Risk_Rating                                AS Borrower_Risk_Rating,
+  pn.PD_Grade                                           AS PD_Grade,
+  pn.Days_Past_Due                                      AS Days_Past_Due,
+  pn.Non_Accrual_Flag                                   AS Non_Accrual_Flag,
+  CAST(NULL AS NUMERIC(18,2))                           AS metric_value,
+  CAST(NULL AS BIGINT)                                  AS metric_count
+FROM prev_norm pn
+
+UNION ALL
+
+/* ---------- POP: CURR ---------- */
+SELECT
+  CAST('POP' AS VARCHAR(16))                            AS section,
+  CAST('CURR' AS VARCHAR(16))                           AS sub_section,
+  CAST(NULL AS VARCHAR(64))                             AS line_label,
+  (SELECT curr_eom FROM params)                         AS end_of_month_date,
+  cn.Account_Identifier,
+  cn.Account_Key,
+  cn.Account_Name,
+  cn.CIS_Customer_Number,
+  cn.Facility_ID,
+  cn.Contract_Source_System,
+  cn.Status_Code_Description,
+  cn.GL_ACCOUNT_HIER_LEVEL_4,
+  cn.PROD_HIER_LEVEL_5,
+  cn.RBC_Code,
+  cn.GL_ACCOUNT_CODE,
+  CASE
+    WHEN cn.Contract_Source_System IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN') THEN 'L-SVB'
+    WHEN cn.Contract_Source_System = 'ALL'
+         AND cn.GL_ACCOUNT_CODE IN ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+                                    '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+                                    '1100001','1142067','1042886','1043008') THEN 'L-SVB'
+    WHEN cn.Contract_Source_System IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO') THEN 'L-FCB'
+    WHEN cn.Contract_Source_System IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN',
+                                       'INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001',
+                                       'SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+                                       'STRAT1','STRAT1-EXCPTN') THEN 'L-CIT'
+    ELSE 'NULL-Need to Research'
+  END                                                   AS Bank_Code,
+  cn.Source_System_Balance                              AS Source_System_Balance,
+  cn.GL_Balance                                         AS GL_Balance,
+  cn.Available_Balance                                  AS Available_Balance,
+  cn.Borrower_Risk_Rating                                AS Borrower_Risk_Rating,
+  cn.PD_Grade                                           AS PD_Grade,
+  cn.Days_Past_Due                                      AS Days_Past_Due,
+  cn.Non_Accrual_Flag                                   AS Non_Accrual_Flag,
+  CAST(NULL AS NUMERIC(18,2))                           AS metric_value,
+  CAST(NULL AS BIGINT)                                  AS metric_count
+FROM curr_norm cn
+
+UNION ALL
+
+/* ---------- BRIDGE: BALANCE (5 rows) ---------- */
+SELECT
+  CAST('BRIDGE' AS VARCHAR(16))                         AS section,
+  CAST('BALANCE' AS VARCHAR(16))                        AS sub_section,
+  label                                                 AS line_label,
+  CAST(NULL AS DATE)                                    AS end_of_month_date,
+  CAST(NULL AS VARCHAR(64))                             AS Account_Identifier,
+  CAST(NULL AS VARCHAR(64))                             AS Account_Key,
+  CAST(NULL AS VARCHAR(256))                            AS Account_Name,
+  CAST(NULL AS VARCHAR(64))                             AS CIS_Customer_Number,
+  CAST(NULL AS VARCHAR(64))                             AS Facility_ID,
+  CAST(NULL AS VARCHAR(64))                             AS Contract_Source_System,
+  CAST(NULL AS VARCHAR(128))                            AS Status_Code_Description,
+  CAST(NULL AS VARCHAR(64))                             AS GL_ACCOUNT_HIER_LEVEL_4,
+  CAST(NULL AS VARCHAR(128))                            AS PROD_HIER_LEVEL_5,
+  CAST(NULL AS VARCHAR(64))                             AS RBC_Code,
+  CAST(NULL AS VARCHAR(64))                             AS GL_ACCOUNT_CODE,
+  CAST(NULL AS VARCHAR(20))                             AS Bank_Code,
+  CAST(NULL AS NUMERIC(18,2))                           AS Source_System_Balance,
+  CAST(NULL AS NUMERIC(18,2))                           AS GL_Balance,
+  CAST(NULL AS NUMERIC(18,2))                           AS Available_Balance,
+  CAST(NULL AS VARCHAR(64))                             AS Borrower_Risk_Rating,
+  CAST(NULL AS VARCHAR(64))                             AS PD_Grade,
+  CAST(NULL AS INTEGER)                                 AS Days_Past_Due,
+  CAST(NULL AS CHAR(1))                                 AS Non_Accrual_Flag,
+  val                                                  AS metric_value,
+  CAST(NULL AS BIGINT)                                  AS metric_count
+FROM (
+  SELECT 'Prev Month Balance'      AS label, (SELECT prev_total_gl  FROM overall_prev)   AS val
+  UNION ALL SELECT 'Adds',                              (SELECT adds_gl      FROM overall_bridge)
+  UNION ALL SELECT 'Drops',                             (SELECT drops_gl     FROM overall_bridge)
+  UNION ALL SELECT 'Persisting Bal Changes',            (SELECT pers_delta_gl FROM overall_bridge)
+  UNION ALL SELECT 'Current Month Balance',             (SELECT curr_total_gl FROM overall_curr)
+) b
+
+UNION ALL
+
+/* ---------- BRIDGE: COUNT (4 rows) ---------- */
+SELECT
+  CAST('BRIDGE' AS VARCHAR(16))                         AS section,
+  CAST('COUNT' AS VARCHAR(16))                          AS sub_section,
+  label                                                 AS line_label,
+  CAST(NULL AS DATE)                                    AS end_of_month_date,
+  CAST(NULL AS VARCHAR(64))                             AS Account_Identifier,
+  CAST(NULL AS VARCHAR(64))                             AS Account_Key,
+  CAST(NULL AS VARCHAR(256))                            AS Account_Name,
+  CAST(NULL AS VARCHAR(64))                             AS CIS_Customer_Number,
+  CAST(NULL AS VARCHAR(64))                             AS Facility_ID,
+  CAST(NULL AS VARCHAR(64))                             AS Contract_Source_System,
+  CAST(NULL AS VARCHAR(128))                            AS Status_Code_Description,
+  CAST(NULL AS VARCHAR(64))                             AS GL_ACCOUNT_HIER_LEVEL_4,
+  CAST(NULL AS VARCHAR(128))                            AS PROD_HIER_LEVEL_5,
+  CAST(NULL AS VARCHAR(64))                             AS RBC_Code,
+  CAST(NULL AS VARCHAR(64))                             AS GL_ACCOUNT_CODE,
+  CAST(NULL AS VARCHAR(20))                             AS Bank_Code,
+  CAST(NULL AS NUMERIC(18,2))                           AS Source_System_Balance,
+  CAST(NULL AS NUMERIC(18,2))                           AS GL_Balance,
+  CAST(NULL AS NUMERIC(18,2))                           AS Available_Balance,
+  CAST(NULL AS VARCHAR(64))                             AS Borrower_Risk_Rating,
+  CAST(NULL AS VARCHAR(64))                             AS PD_Grade,
+  CAST(NULL AS INTEGER)                                 AS Days_Past_Due,
+  CAST(NULL AS CHAR(1))                                 AS Non_Accrual_Flag,
+  CAST(NULL AS NUMERIC(18,2))                           AS metric_value,
+  cnt                                                   AS metric_count
+FROM (
+  SELECT 'Prev Month Count'       AS label, (SELECT prev_cnt FROM overall_bridge) AS cnt
+  UNION ALL SELECT 'Adds',                            (SELECT adds_cnt FROM overall_bridge)
+  UNION ALL SELECT 'Drops',                           (SELECT drops_cnt FROM overall_bridge)
+  UNION ALL SELECT 'Current Month Count',             (SELECT curr_cnt FROM overall_bridge)
+) c
+
+ORDER BY
+  section, sub_section, line_label, end_of_month_date, Account_Identifier;
+
+
+
+
+
+-- ============================================================
+-- Combined Output: Normalized POP (Prev & Curr) + Overall BRIDGE
 --   * POP rows include your original fields + Bank_Code
 --   * Bridge computed from the same normalized sets (ties exactly)
 --   * Normalizes Account_Identifier (trim + NULL bucket) so joins/aggregations align
