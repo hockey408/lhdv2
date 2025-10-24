@@ -1,3 +1,31 @@
+acct_month AS (
+  SELECT
+      month_end,
+      Account_Identifier,
+      RC_CODE AS rc_code,
+      RC_DESCRIPTION AS rc_description,
+      exposure
+  FROM (
+      SELECT
+          month_end,
+          Account_Identifier,
+          RC_CODE,
+          RC_DESCRIPTION,
+          exposure,
+          ROW_NUMBER() OVER (
+              PARTITION BY month_end, Account_Identifier
+              ORDER BY exposure DESC, RC_CODE
+          ) AS rn
+      FROM base
+  ) sub
+  WHERE rn = 1
+),
+
+
+
+
+
+
 [Code: 1100, SQL State: HY000]  ERROR:  Function 'MAX_BY(VARCHAR, FLOAT8)' does not exist
 	Unable to identify a function that satisfies the given argument types
 	You may need to add explicit typecasts
