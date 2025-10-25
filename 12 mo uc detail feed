@@ -1,3 +1,29 @@
+import pandas as pd
+
+# Pull the table from Excel (replace with your table name if different)
+raw = xl("RC_ML_Features2")
+
+# Convert to DataFrame if needed
+if not hasattr(raw, "columns"):
+    raw = pd.DataFrame(raw)
+
+# Promote first row to headers
+cols = raw.iloc[0].astype(str).tolist()
+df = raw.iloc[1:].reset_index(drop=True)
+df.columns = cols
+
+# Optional: convert numeric fields to numbers
+num_cols = ["SEVERITY_0_100", "PSI_CONTRIB_ABS", "Z_RESID", "Z_MOM_ABS", "Z_MOM_PCT"]
+for c in num_cols:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+df.head()
+
+
+
+
+
 =PY("
 import pandas as pd
 
