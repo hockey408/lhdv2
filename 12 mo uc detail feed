@@ -1,6 +1,119 @@
 import pandas as pd
 import numpy as np
 
+# ========= 1) Load table; auto-fix headers if needed =========
+raw = xl("RC_ML_Features2")
+df = pd.DataFrame(raw)
+
+# If Python saw generic 0..N column labels, promote first row to headers
+def looks_like_no_headers(cols):
+    try:
+        nums = [int(c) for c in cols]
+        return list(range(len(cols))) == nums
+    except Exception:
+        return False
+
+if looks_like_no_headers(df.columns):
+    cols = df.iloc[0].astype(str).tolist()
+    df = df.iloc[1:].reset_index(drop=True)
+    df.columns = cols
+
+# Standardize column name cases for robust lookup (but keep original df as-is)
+lc = {c: str(c).strip().lower() for c in df.columns}
+inv = {v: k for k, v in lc.items()}
+
+def colname(*alts):
+    for a in alts:
+        key = a.lower()
+        if key in inv: return inv[key]
+    return None
+
+# ========= 2) Parse date & coerce numeric fields (only if present) =========
+c_month   = colname("MONTH_END","monthend","as_of_date","eom")
+if c_month:
+    df[c_month] = pd.to_datetime(df[c_month], errors="coerce")
+
+num_candidates = [
+    "SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT",
+    "RMSE","EXP_SUM","DELTA_EXP","MOM_ABS","MOM_PCT_ABS","PSI_CONTRIB"
+]
+for nc in num_candidates:
+    cn = colname(nc)
+    if cn:
+        df[cn] = pd.to_numeric(df[cn], errors="coerce")
+
+# ========= 3) Build feature matrix (need ≥2 available) =========
+feat_wishlist = ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT"]
+feature_cols = [colname(x) for x in feat_wishlist]
+feature_cols = [c for c in feature_cols if c is not None]
+
+if len(feature_cols) < 2:
+    raise ValueError(f"Not enough feature columns. Need ≥2 from {feat_wishlist}. Found: {feature_cols}")
+
+X = df[feature_cols].astype(float).fillna(0.0)
+
+# ========= 4) Try sklearn KMeans; else robust fallback =========
+def robust_z(x: pd.Series) -> pd.Series:
+    med = x.median()
+    mad = (x - med).abs().median()
+    if mad is None or mad == 0:
+        std = x.std(ddof=0)
+        return (x - x.mean())/std if std and std != 0 else pd.Series(0.0, index=x.index)
+    return (x - med) / (1.4826 * mad)
+
+try:
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.cluster import KMeans
+
+    X_scaled = StandardScaler().fit_transform(X.values)
+    kmeans = KMeans(n_clusters=4, n_init=10, random_state=42)
+    labels = kmeans.fit_predict(X_scaled)
+    centers = kmeans.cluster_centers_
+    dists = np.sqrt(((X_scaled - centers[labels])**2).sum(axis=1))
+    anomaly = (pd.Series(dists).rank(pct=True) * 100).round(1)
+
+    df["Cluster_ID"] = labels
+    df["Anomaly_Score_0_100"] = anomaly
+
+except Exception:
+    # Fallback: robust z per feature, sum |z|, percentile → score; quartile bins → pseudo-clusters
+    Z = pd.DataFrame({c: robust_z(X[c]) for c in X.columns})
+    composite = Z.abs().sum(axis=1)
+    pct = composite.rank(pct=True)
+    df["Anomaly_Score_0_100"] = (pct * 100).round(1)
+    df["Cluster_ID"] = pd.qcut(pct, q=[0,.25,.5,.75,1.0], labels=[0,1,2,3]).astype(int)
+
+# ========= 5) Return one tidy table (avoid #CALC) =========
+c_rcdesc = colname("RC_DESCRIPTION","rc_desc","rc")
+c_rccode = colname("RC_CODE","rc_code")
+cols_out = [c for c in [
+    c_rccode, c_rcdesc, c_month,
+    colname("BEST_MODEL"),
+    colname("SEVERITY_0_100"),
+    colname("PSI_CONTRIB_ABS"),
+    colname("Z_RESID"),
+    colname("Z_MOM_ABS"),
+    colname("Z_MOM_PCT"),
+    colname("RMSE"),
+    "Cluster_ID", "Anomaly_Score_0_100"
+] if c is not None]
+
+# Sort latest month first (if we have dates), then anomaly desc
+if c_month:
+    out = df.sort_values([c_month, "Anomaly_Score_0_100"], ascending=[False, False])[cols_out]
+else:
+    out = df.sort_values("Anomaly_Score_0_100", ascending=False)[cols_out]
+
+out.head(50)
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+
 # ========= 1) Load from Excel table & assign headers robustly =========
 raw = xl("RC_ML_Features2")
 df = pd.DataFrame(raw)
