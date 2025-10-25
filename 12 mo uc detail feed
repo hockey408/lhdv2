@@ -1,5 +1,100 @@
 import pandas as pd
 import numpy as np
+
+# ========= 1) Load from Excel table & assign headers robustly =========
+raw = xl("RC_ML_Features2")
+df = pd.DataFrame(raw)
+
+expected_headers = [
+    "RC_CODE","RC_DESCRIPTION","MONTH_END","BEST_MODEL","FORECAST_SELECTED",
+    "ACTUAL","RESID","ABSRESID","MOM_ABS","MOM_PCT_ABS","Z_RESID","Z_MOM_ABS",
+    "Z_MOM_PCT","RMSE","PI_LO","PI_HI","SEVERITY_0_100","PERSISTENT_OUTLIER_3OF6",
+    "REASON_CODE","EXP_SUM","PREV_EXP_SUM","DELTA_EXP","PCT_SHARE","PREV_PCT",
+    "DELTA_PCT","PSI_CONTRIB","PSI_TOTAL","PSI_CONTRIB_PCT_OF_TOTAL","RC_PSI_CLASS",
+    "RC_PSI_ALERT_FLAG","PSI_CONTRIB_ABS"
+]
+df.columns = expected_headers[: len(df.columns)]
+
+# Parse dates if present
+if "MONTH_END" in df.columns:
+    df["MONTH_END"] = pd.to_datetime(df["MONTH_END"], errors="coerce")
+
+# Numeric coercion (only for columns that exist)
+num_cols_wanted = [
+    "SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT",
+    "RMSE","EXP_SUM","DELTA_EXP","MOM_ABS","MOM_PCT_ABS","PSI_CONTRIB"
+]
+for c in num_cols_wanted:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# ========= 2) Feature matrix (pick what exists; need ≥2) =========
+feature_cols = [c for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT"] if c in df.columns]
+if len(feature_cols) < 2:
+    raise ValueError(f"Not enough feature columns. Need ≥2 from "
+                     f"{['SEVERITY_0_100','PSI_CONTRIB_ABS','Z_RESID','Z_MOM_ABS','Z_MOM_PCT']}. Got: {feature_cols}")
+
+X = df[feature_cols].copy()
+
+# ========= 3) Try sklearn KMeans; else robust fallback =========
+def robust_z(x: pd.Series) -> pd.Series:
+    med = x.median()
+    mad = (x - med).abs().median()
+    # Avoid divide-by-zero: if MAD==0, fallback to std; if still 0, return 0s
+    if mad is None or mad == 0:
+        std = x.std(ddof=0)
+        return (x - x.mean())/std if std and std != 0 else pd.Series(0.0, index=x.index)
+    return (x - med) / (1.4826 * mad)
+
+try:
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.cluster import KMeans
+
+    X_scaled = StandardScaler().fit_transform(X.fillna(0.0).values)
+    kmeans = KMeans(n_clusters=4, n_init=10, random_state=42)
+    labels = kmeans.fit_predict(X_scaled)
+
+    centers = kmeans.cluster_centers_
+    dists = np.sqrt(((X_scaled - centers[labels])**2).sum(axis=1))
+    anomaly = pd.Series(dists).rank(pct=True)*100
+
+    df["Cluster_ID"] = labels
+    df["Anomaly_Score_0_100"] = anomaly.round(1)
+
+except Exception:
+    # --------- Fallback (no sklearn) ----------
+    # Robustly standardize each feature with MAD, then sum absolute z's
+    Z = pd.DataFrame({c: robust_z(X[c].fillna(X[c].median())) for c in feature_cols})
+    composite = Z.abs().sum(axis=1)
+    # Use quantiles to assign 4 "clusters" purely for segmentation purposes
+    # (not true clustering but keeps the UX similar)
+    q = composite.rank(pct=True)
+    df["Cluster_ID"] = pd.qcut(q, q=[0, .25, .5, .75, 1.0], labels=[0,1,2,3]).astype(int)
+    df["Anomaly_Score_0_100"] = (q*100).round(1)
+
+# ========= 4) Single output (avoid #CALC by returning ONE object) =========
+keep_cols = [c for c in [
+    "RC_CODE","RC_DESCRIPTION","MONTH_END","BEST_MODEL","SEVERITY_0_100",
+    "PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT","RMSE",
+    "Cluster_ID","Anomaly_Score_0_100"
+] if c in df.columns]
+
+# Sort latest month first (if MONTH_END exists), then by anomaly desc
+if "MONTH_END" in df.columns:
+    out = df.sort_values(["MONTH_END","Anomaly_Score_0_100"], ascending=[False, False])[keep_cols]
+else:
+    out = df.sort_values(["Anomaly_Score_0_100"], ascending=[False])[keep_cols]
+
+# Show top 50 rows (you can change this)
+out.head(50)
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 
