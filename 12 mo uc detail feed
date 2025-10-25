@@ -1,4 +1,56 @@
 import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+
+# === Step 1: Load and assign headers manually ===
+raw = xl("RC_ML_Features2")
+df = pd.DataFrame(raw)
+
+df.columns = [
+    "RC_CODE","RC_DESCRIPTION","MONTH_END","BEST_MODEL","FORECAST_SELECTED",
+    "ACTUAL","RESID","ABSRESID","MOM_ABS","MOM_PCT_ABS","Z_RESID","Z_MOM_ABS",
+    "Z_MOM_PCT","RMSE","PI_LO","PI_HI","SEVERITY_0_100","PERSISTENT_OUTLIER_3OF6",
+    "REASON_CODE","EXP_SUM","PREV_EXP_SUM","DELTA_EXP","PCT_SHARE","PREV_PCT",
+    "DELTA_PCT","PSI_CONTRIB","PSI_TOTAL","PSI_CONTRIB_PCT_OF_TOTAL","RC_PSI_CLASS",
+    "RC_PSI_ALERT_FLAG","PSI_CONTRIB_ABS"
+]
+
+# === Step 2: Convert key numeric columns ===
+num_cols = [
+    "SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT",
+    "RMSE","EXP_SUM","DELTA_EXP"
+]
+for c in num_cols:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+# === Step 3: Normalize features for clustering ===
+X = df[["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT"]]
+X_scaled = StandardScaler().fit_transform(X)
+
+# === Step 4: K-Means Clustering (RC similarity groups) ===
+kmeans = KMeans(n_clusters=4, n_init=10, random_state=42)
+df["Cluster_ID"] = kmeans.fit_predict(X_scaled)
+
+# === Step 5: Compute anomaly distance (distance to cluster centroid) ===
+centers = kmeans.cluster_centers_
+dists = np.sqrt(((X_scaled - centers[kmeans.labels_]) ** 2).sum(axis=1))
+df["Anomaly_Score_0_100"] = (pd.Series(dists).rank(pct=True) * 100).round(1)
+
+# === Step 6: Output the most anomalous RCs ===
+result = df[[
+    "RC_DESCRIPTION","MONTH_END","SEVERITY_0_100","PSI_CONTRIB_ABS",
+    "Z_RESID","Z_MOM_ABS","Z_MOM_PCT","Cluster_ID","Anomaly_Score_0_100"
+]].sort_values("Anomaly_Score_0_100", ascending=False)
+
+result.head(10)
+
+
+
+
+
+import pandas as pd
 
 # Pull the table from Excel (replace with your table name if different)
 raw = xl("RC_ML_Features2")
