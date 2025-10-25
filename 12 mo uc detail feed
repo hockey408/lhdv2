@@ -1,3 +1,169 @@
+import re, pandas as pd, numpy as np
+
+# ---------- Load & header-fix ----------
+raw = xl("RC_ML_Features2")
+df = pd.DataFrame(raw)
+
+# Promote first row to headers if Excel sent 0..N column labels
+def looks_like_no_headers(cols):
+    try:
+        nums = [int(c) for c in cols]
+        return list(range(len(cols))) == nums
+    except Exception:
+        return False
+
+if looks_like_no_headers(df.columns):
+    cols = df.iloc[0].astype(str).tolist()
+    df = df.iloc[1:].reset_index(drop=True)
+    df.columns = cols
+
+# ---------- Normalize column names (case/spacing/punctuation agnostic) ----------
+def slug(s):
+    s = str(s).strip().lower()
+    s = re.sub(r'[\s\-/]+', '_', s)           # spaces, hyphens -> underscores
+    s = re.sub(r'[^a-z0-9_]', '', s)          # drop other punctuation
+    s = re.sub(r'_+', '_', s).strip('_')      # collapse repeats
+    return s
+
+slug_map = {c: slug(c) for c in df.columns}
+inv_slug = {}
+for orig, sl in slug_map.items():
+    inv_slug.setdefault(sl, orig)  # first occurrence wins
+
+print("Detected columns (normalized):")
+print(sorted(slug_map.values()))
+
+# ---------- Flexible alias lookup ----------
+def find_col(*aliases):
+    for a in aliases:
+        a = slug(a)
+        if a in inv_slug:
+            return inv_slug[a]
+    # try contains-based fallback
+    for a in aliases:
+        a = slug(a)
+        candidates = [orig for orig, sl in slug_map.items() if a in sl]
+        if candidates:
+            return candidates[0]
+    return None
+
+# Common alternates you might have used in PBI
+c_rcdesc   = find_col("rc_description","rc_desc","rc")
+c_rccode   = find_col("rc_code","rc")
+c_month    = find_col("month_end","monthend","as_of_date","eom","date")
+c_bestmdl  = find_col("best_model","bestmodel")
+c_sev      = find_col("severity_0_100","severity_weighted_latest","composite_score","severity")
+c_psi_abs  = find_col("psi_contrib_abs","psi_abs","psi_contrib_abs_of_total")
+c_psi      = find_col("psi_contrib","psi")
+c_zresid   = find_col("z_resid","zresid")
+c_zmomabs  = find_col("z_mom_abs","zmomabs")
+c_zmompct  = find_col("z_mom_pct","zmompct","mom_pct_abs")
+c_rmse     = find_col("rmse")
+c_absresid = find_col("absresid","abs_resid")
+c_momabs   = find_col("mom_abs")
+c_mompct   = find_col("mom_pct_abs","mom_pct")
+
+# ---------- Build/repair key signals if originals are missing ----------
+# Coerce numerics when found
+for cn in [c_sev, c_psi_abs, c_psi, c_zresid, c_zmomabs, c_zmompct, c_rmse, c_absresid, c_momabs, c_mompct]:
+    if cn and cn in df.columns:
+        df[cn] = pd.to_numeric(df[cn], errors="coerce")
+
+# If PSI_ABS missing, derive from PSI_CONTRIB (absolute)
+if c_psi_abs is None and c_psi is not None:
+    c_psi_abs = "__psi_abs_derived__"
+    df[c_psi_abs] = df[c_psi].abs()
+
+# If severity missing, create a proxy from available anomalies
+if c_sev is None:
+    parts = []
+    if c_absresid: parts.append(df[c_absresid].abs())
+    if c_zresid:   parts.append(df[c_zresid].abs())
+    if c_zmomabs:  parts.append(df[c_zmomabs].abs())
+    if c_momabs:   parts.append(df[c_momabs].abs())
+    if parts:
+        sev_proxy = pd.concat(parts, axis=1).fillna(0).sum(axis=1)
+        # percentile 0..100
+        c_sev = "__severity_proxy__"
+        df[c_sev] = (sev_proxy.rank(pct=True) * 100).round(1)
+
+# If Z_MOM_PCT missing, try MOM_PCT
+if c_zmompct is None and c_mompct is not None:
+    c_zmompct = c_mompct  # use raw pct change if z not available
+
+# ---------- Build feature set from what's available ----------
+feature_candidates = [(c_sev, "severity"),
+                      (c_psi_abs, "psi_abs"),
+                      (c_zresid, "z_resid"),
+                      (c_zmomabs, "z_mom_abs"),
+                      (c_zmompct, "z_mom_pct")]
+
+chosen = [cn for cn, _ in feature_candidates if cn is not None]
+chosen = [cn for cn in chosen if cn in df.columns]
+
+print("\nChosen feature columns (original names):", chosen)
+
+if len(chosen) < 2:
+    raise ValueError(
+        "Not enough usable feature columns. "
+        "Please ensure at least two of these exist in the Excel table: "
+        "Severity (or proxy), PSI_CONTRIB_ABS (or PSI_CONTRIB), Z_RESID, Z_MOM_ABS, Z_MOM_PCT/MOM_PCT."
+    )
+
+X = df[chosen].astype(float).fillna(0.0)
+
+# ---------- Cluster & anomaly (with sklearn if available, robust fallback otherwise) ----------
+def robust_z(s: pd.Series) -> pd.Series:
+    med = s.median()
+    mad = (s - med).abs().median()
+    if not mad or mad == 0:
+        std = s.std(ddof=0)
+        return (s - s.mean())/std if std and std != 0 else pd.Series(0.0, index=s.index)
+    return (s - med) / (1.4826 * mad)
+
+try:
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.cluster import KMeans
+    Xs = StandardScaler().fit_transform(X.values)
+    kmeans = KMeans(n_clusters=4, n_init=10, random_state=42)
+    labels = kmeans.fit_predict(Xs)
+    centers = kmeans.cluster_centers_
+    dists = np.sqrt(((Xs - centers[labels])**2).sum(axis=1))
+    anomaly = (pd.Series(dists).rank(pct=True) * 100).round(1)
+    df["Cluster_ID"] = labels
+    df["Anomaly_Score_0_100"] = anomaly
+except Exception:
+    Z = pd.DataFrame({c: robust_z(X[c]) for c in X.columns})
+    comp = Z.abs().sum(axis=1)
+    pct  = comp.rank(pct=True)
+    df["Anomaly_Score_0_100"] = (pct * 100).round(1)
+    df["Cluster_ID"] = pd.qcut(pct, q=[0,.25,.5,.75,1.0], labels=[0,1,2,3]).astype(int)
+
+# ---------- Tidy output ----------
+if c_month and c_month in df.columns:
+    try:
+        df[c_month] = pd.to_datetime(df[c_month], errors="coerce")
+    except Exception:
+        pass
+
+cols_out = [c for c in [
+    c_rccode, c_rcdesc, c_month, c_bestmdl,
+    c_sev, c_psi_abs, c_zresid, c_zmomabs, c_zmompct, c_rmse,
+    "Cluster_ID", "Anomaly_Score_0_100"
+] if c and c in df.columns]
+
+if c_month and c_month in df.columns:
+    out = df.sort_values([c_month, "Anomaly_Score_0_100"], ascending=[False, False])[cols_out]
+else:
+    out = df.sort_values("Anomaly_Score_0_100", ascending=False)[cols_out]
+
+# Show the first 50 scored rows
+out.head(50)
+
+
+
+
+
 ValueError: Not enough feature columns. Need ≥2 from ['SEVERITY_0_100', 'PSI_CONTRIB_ABS', 'Z_RESID', 'Z_MOM_ABS', 'Z_MOM_PCT']. Found: []
 
 
