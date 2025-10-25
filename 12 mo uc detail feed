@@ -1,3 +1,25 @@
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+
+# Coerce numerics you need (adjust as needed)
+for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT"]:
+    if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
+
+X = df[[c for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT"] if c in df.columns]].fillna(0.0)
+X_scaled = StandardScaler().fit_transform(X)
+kmeans = KMeans(n_clusters=4, n_init=10, random_state=42).fit(X_scaled)
+
+df["Cluster_ID"] = kmeans.labels_
+centers = kmeans.cluster_centers_
+dists = ((X_scaled - centers[kmeans.labels_])**2).sum(axis=1)**0.5
+df["Anomaly_Score_0_100"] = (pd.Series(dists).rank(pct=True)*100).round(1)
+
+df.head(10)
+
+
+
+
+
 import pandas as pd
 import numpy as np
 
