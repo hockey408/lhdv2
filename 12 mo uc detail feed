@@ -1,3 +1,35 @@
+# Build a compact, PBI-friendly scored table (latest month only)
+df_scored = df.copy()
+
+# Try to detect MONTH_END column (already parsed earlier). If missing, skip filtering.
+month_col = None
+for c in ["MONTH_END","Month_End","month_end"]:
+    if c in df_scored.columns:
+        month_col = c; break
+
+if month_col:
+    lm = pd.to_datetime(df_scored[month_col], errors="coerce").max()
+    scored_latest = df_scored[pd.to_datetime(df_scored[month_col], errors="coerce") == lm].copy()
+else:
+    scored_latest = df_scored.copy()
+
+# Choose tidy columns (keep what exists)
+keep = [c for c in [
+    "RC_CODE","RC_DESCRIPTION", month_col,
+    "SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT","RMSE",
+    "Cluster_ID","Anomaly_Score_0_100"
+] if c and c in df_scored.columns]
+
+# Sort by anomaly desc
+scored_latest = scored_latest[keep].sort_values("Anomaly_Score_0_100", ascending=False)
+
+# Return for copy/paste into a new sheet (or turn into an Excel Table)
+scored_latest.head(300)   # adjust row count as you likep
+
+
+
+
+
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 
