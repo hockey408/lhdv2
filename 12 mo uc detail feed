@@ -1,3 +1,35 @@
+import pandas as pd
+import numpy as np
+
+# 1) Pull headers (1 row) and data (all rows) explicitly from the Excel Table
+hdr = xl("RC_ML_Features2[#Headers]")
+dat = xl("RC_ML_Features2[#Data]")
+
+# 2) Normalize both into Python objects
+# Header row → list of strings
+if hasattr(hdr, "values"):
+    hdr_list = [str(x) for x in list(np.array(hdr).ravel())]
+else:
+    # Fallback for DataFrame-like
+    hdr_list = [str(x) for x in hdr.iloc[0].tolist()]
+
+# Data → DataFrame
+if hasattr(dat, "columns"):
+    dat_df = pd.DataFrame(dat.values)  # strip any phantom headers
+else:
+    dat_df = pd.DataFrame(dat)
+
+# 3) Build the final DataFrame with **forced headers**
+df = pd.DataFrame(dat_df.values, columns=hdr_list)
+
+# (Optional) Quick check:
+df.head(3)
+df.columns.tolist()
+
+
+
+
+
 import re, pandas as pd, numpy as np
 
 # ---------- Load & header-fix ----------
