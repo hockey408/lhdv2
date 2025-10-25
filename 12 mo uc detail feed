@@ -1,3 +1,15 @@
+import pandas as pd
+
+# 👉 update the path/filename to where you saved it
+df = pd.read_csv(r"C:\YourPath\RC_ML_Features.csv")   # or: pd.read_excel(r"C:\YourPath\RC_ML_Features.xlsx")
+df.head(3)
+
+
+
+
+
+
+
 # Python in Excel: RC clustering + anomaly score from an Excel Table
 import pandas as pd
 import numpy as np
