@@ -3,6 +3,97 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 
+# ========= 1) Load from Excel table & assign headers robustly =========
+raw = xl("RC_ML_Features2")
+df = pd.DataFrame(raw)
+
+# Your expected headers (full superset).
+expected_headers = [
+    "RC_CODE","RC_DESCRIPTION","MONTH_END","BEST_MODEL","FORECAST_SELECTED",
+    "ACTUAL","RESID","ABSRESID","MOM_ABS","MOM_PCT_ABS","Z_RESID","Z_MOM_ABS",
+    "Z_MOM_PCT","RMSE","PI_LO","PI_HI","SEVERITY_0_100","PERSISTENT_OUTLIER_3OF6",
+    "REASON_CODE","EXP_SUM","PREV_EXP_SUM","DELTA_EXP","PCT_SHARE","PREV_PCT",
+    "DELTA_PCT","PSI_CONTRIB","PSI_TOTAL","PSI_CONTRIB_PCT_OF_TOTAL","RC_PSI_CLASS",
+    "RC_PSI_ALERT_FLAG","PSI_CONTRIB_ABS"
+]
+
+# Align header list to the actual number of columns coming from Excel
+df.columns = expected_headers[: len(df.columns)]
+
+# ========= 2) Clean types =========
+# Parse dates if present
+if "MONTH_END" in df.columns:
+    df["MONTH_END"] = pd.to_datetime(df["MONTH_END"], errors="coerce")
+
+# Coerce numeric fields that are useful for ML (only those that exist)
+num_candidates = [
+    "SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT",
+    "RMSE","EXP_SUM","DELTA_EXP","MOM_ABS","MOM_PCT_ABS","PSI_CONTRIB"
+]
+for c in num_candidates:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# ========= 3) Build feature matrix (only existing cols) =========
+feature_cols = [c for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT"] if c in df.columns]
+if len(feature_cols) < 2:
+    raise ValueError(f"Not enough feature columns found. Need ≥2 from {['SEVERITY_0_100','PSI_CONTRIB_ABS','Z_RESID','Z_MOM_ABS','Z_MOM_PCT']}. Got: {feature_cols}")
+
+X = df[feature_cols].fillna(0.0).astype(float)
+
+# ========= 4) Scale + KMeans cluster =========
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+k = 4  # tune if needed
+kmeans = KMeans(n_clusters=k, n_init=10, random_state=42)
+labels = kmeans.fit_predict(X_scaled)
+df["Cluster_ID"] = labels
+
+# ========= 5) Anomaly score (distance to assigned centroid) =========
+centers = kmeans.cluster_centers_
+dists = np.sqrt(((X_scaled - centers[labels])**2).sum(axis=1))
+df["Anomaly_Score_0_100"] = (pd.Series(dists).rank(pct=True) * 100).round(1)
+
+# ========= 6) Helpful views =========
+# Scored rows (keep key fields)
+keep_cols = [c for c in [
+    "RC_CODE","RC_DESCRIPTION","MONTH_END","BEST_MODEL","SEVERITY_0_100",
+    "PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT","RMSE",
+    "Cluster_ID","Anomaly_Score_0_100"
+] if c in df.columns]
+
+scored = df[keep_cols].sort_values(["MONTH_END","Anomaly_Score_0_100"], ascending=[True, False])
+
+# Cluster summary (how each cluster behaves on average)
+summary_cols = [c for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT","RMSE","Anomaly_Score_0_100"] if c in df.columns]
+cluster_summary = (
+    df.groupby("Cluster_ID")[summary_cols]
+      .mean(numeric_only=True)
+      .round(3)
+      .assign(Count=df.groupby("Cluster_ID").size().values)
+      .reset_index()
+      .sort_values("Cluster_ID")
+)
+
+# Return two outputs: (1) top anomalous recent rows, (2) cluster summary
+# If your sheet only renders one object, comment out one of the two.
+scored.head(50), cluster_summary
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+
 # === Step 1: Load and assign headers manually ===
 raw = xl("RC_ML_Features2")
 df = pd.DataFrame(raw)
