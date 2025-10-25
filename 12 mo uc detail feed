@@ -1,3 +1,29 @@
+=PY("
+import pandas as pd
+
+raw = xlargs[0]                      # the table (headers+data) as a 2D array/df
+# If raw is a numpy array, convert to DataFrame
+if not hasattr(raw, 'columns'):
+    raw = pd.DataFrame(raw)
+
+# First row is headers
+cols = raw.iloc[0].astype(str).tolist()
+df   = raw.iloc[1:].reset_index(drop=True)
+df.columns = cols
+
+# Make numeric columns numeric (ignore if missing)
+num_cols = ['SEVERITY_0_100','PSI_CONTRIB_ABS','Z_RESID','Z_MOM_ABS','Z_MOM_PCT']
+for c in num_cols:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+
+df
+", RC_ML_Features2[#All])
+
+
+
+
+
 import pandas as pd
 
 # 👉 update the path/filename to where you saved it
