@@ -1,3 +1,84 @@
+# Python in Excel: RC clustering + anomaly score from an Excel Table
+import pandas as pd
+import numpy as np
+
+# Excel table access
+from excel import xl
+
+# ---- Load ----
+df = xl("RC_ML_Features")  # <-- Excel Table name
+
+# ---- Normalize column names (robust to case/underscores) ----
+def norm(s): return str(s).strip().lower()
+df.columns = [norm(c) for c in df.columns]
+
+# ---- Required columns (adjust if your names differ) ----
+need = {
+    "rc_description": ["rc_description","rc_desc","rc"],
+    "month_end": ["month_end","monthend","as_of_date","eom"],
+    "severity": ["severity_0_100","composite_score","severity"],
+    "psi_abs": ["psi_contrib_abs","psi_abs","psi_contrib"],
+    "z_resid": ["z_resid","z_residual"],
+    "z_mom_abs": ["z_mom_abs","z_mom_abs_chg","zmomabs"],
+    "mom_pct": ["z_mom_pct","mom_pct_abs","mom_pct"]
+}
+
+def pick(colalts):
+    for a in colalts:
+        if a in df.columns: return a
+    return None
+
+colmap = {k: pick(v) for k,v in need.items()}
+missing = [k for k,v in colmap.items() if v is None]
+if missing:
+    raise ValueError(f"Missing columns for: {missing}. Found columns: {list(df.columns)}")
+
+# ---- Feature frame (fill NaNs with 0 for modeling) ----
+feat = pd.DataFrame({
+    "severity":   df[colmap["severity"]].astype(float),
+    "psi_abs":    df[colmap["psi_abs"]].astype(float),
+    "z_resid":    df[colmap["z_resid"]].astype(float),
+    "z_mom_abs":  df[colmap["z_mom_abs"]].astype(float),
+    "mom_pct":    df[colmap["mom_pct"]].astype(float)
+}).fillna(0.0)
+
+# ---- Scaling ----
+from sklearn.preprocessing import StandardScaler
+scaler = StandardScaler()
+X = scaler.fit_transform(feat.values)
+
+# ---- Clustering (KMeans) with a small k by default; tune if needed ----
+from sklearn.cluster import KMeans
+k = 4
+kmeans = KMeans(n_clusters=k, n_init=10, random_state=42)
+cluster_id = kmeans.fit_predict(X)
+
+# ---- Simple anomaly score (distance to cluster center; higher = more anomalous) ----
+# Distances to the assigned centroid in scaled space
+centers = kmeans.cluster_centers_
+dists = np.sqrt(((X - centers[cluster_id])**2).sum(axis=1))
+# Normalize 0..100 (robust scaling)
+p = pd.Series(dists).rank(pct=True)
+anomaly_score_0_100 = (p*100).round(1)
+
+# ---- Output result: per row add Cluster_ID and Anomaly_Score ----
+out = df.copy()
+out["cluster_id"] = cluster_id
+out["anomaly_score_0_100"] = anomaly_score_0_100
+
+# (optional) Latest-month only view (uncomment):
+# lm = pd.to_datetime(out[colmap["month_end"]]).max()
+# out = out[pd.to_datetime(out[colmap["month_end"]]) == lm]
+
+# Return to Excel grid
+out
+
+
+
+
+
+
+
 SELECT *
 FROM (
     SELECT * FROM snapshot
