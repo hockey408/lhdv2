@@ -1,3 +1,11 @@
+ValueError: Not enough feature columns. Need ≥2 from ['SEVERITY_0_100', 'PSI_CONTRIB_ABS', 'Z_RESID', 'Z_MOM_ABS', 'Z_MOM_PCT']. Found: []
+
+
+
+
+
+
+
 import pandas as pd
 import numpy as np
 
