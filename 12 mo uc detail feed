@@ -1,3 +1,21 @@
+Corr (ML vs Severity) =
+VAR t =
+    ADDCOLUMNS (
+        RC_ML_Scored_Latest,
+        "X", RC_ML_Scored_Latest[Anomaly_Score_0_100],
+        "Y", RELATED ( RC_Code_Model_Base[Severity_0_100] )
+    )
+VAR mx = AVERAGEX ( t, [X] )
+VAR my = AVERAGEX ( t, [Y] )
+VAR num = SUMX ( t, ([X]-mx)*([Y]-my) )
+VAR den = SQRT ( SUMX ( t, ([X]-mx)^2 ) * SUMX ( t, ([Y]-my)^2 ) )
+RETURN DIVIDE ( num, den )
+
+
+
+
+
+
 Anomaly Score (Latest) =
 VAR lm = [Latest Month]
 RETURN
