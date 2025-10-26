@@ -1,3 +1,57 @@
+import pandas as pd, numpy as np
+
+# --- Read headers + data explicitly from the Table ---
+hdr = xl("RC_ML_Features2[#Headers]")
+dat = xl("RC_ML_Features2[#Data]")
+
+hdr_list = [str(x) for x in np.array(hdr).ravel()]
+df = pd.DataFrame(dat if not hasattr(dat, "values") else dat.values, columns=hdr_list)
+
+# Types
+if "MONTH_END" in df.columns:
+    df["MONTH_END"] = pd.to_datetime(df["MONTH_END"], errors="coerce")
+
+num_cols = ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT","RMSE","EXP_SUM","DELTA_EXP","MOM_ABS","MOM_PCT_ABS","PSI_CONTRIB"]
+for c in num_cols:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# --- Minimal anomaly score without sklearn (robust fallback) ---
+def robust_z(s: pd.Series) -> pd.Series:
+    med = s.median()
+    mad = (s - med).abs().median()
+    if not mad or mad == 0:
+        std = s.std(ddof=0)
+        return (s - s.mean())/std if std and std != 0 else pd.Series(0.0, index=s.index)
+    return (s - med) / (1.4826 * mad)
+
+feat = [c for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT"] if c in df.columns]
+if len(feat) < 2:
+    # fallback to any two numeric columns
+    numcols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    feat = numcols[:2]
+
+Z = pd.DataFrame({c: robust_z(df[c].fillna(0)) for c in feat})
+comp = Z.abs().sum(axis=1)
+pct  = comp.rank(pct=True)
+df["Anomaly_Score_0_100"] = (pct*100).round(1)
+df["Cluster_ID"] = pd.qcut(pct, q=[0,.25,.5,.75,1.0], labels=[0,1,2,3]).astype(int)
+
+# Keep tidy scored view
+cols = [c for c in [
+    "RC_CODE","RC_DESCRIPTION","MONTH_END","BEST_MODEL","SEVERITY_0_100",
+    "PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT","RMSE",
+    "Cluster_ID","Anomaly_Score_0_100"
+] if c in df.columns]
+scored = df[cols].copy()
+
+# ---- RETURN a preview (ensures cell displays something) ----
+scored.sort_values(["MONTH_END","Anomaly_Score_0_100"], ascending=[False, False]).head(10)
+
+
+
+
+
 import pandas as pd
 
 # Expecting 'scored' from step 2; if not, replace with your table var
