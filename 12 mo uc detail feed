@@ -1,3 +1,47 @@
+import pandas as pd, numpy as np
+import matplotlib.pyplot as plt
+
+dfp = scored.copy()
+
+# Limit to latest month if available
+if "MONTH_END" in dfp.columns:
+    me = pd.to_datetime(dfp["MONTH_END"], errors="coerce")
+    if me.notna().any():
+        latest = me.max()
+        dfp = dfp[me == latest].copy()
+
+# Needed columns
+need = ["SEVERITY_0_100","PSI_CONTRIB_ABS","Cluster_ID"]
+missing = [c for c in need if c not in dfp.columns]
+
+if missing:
+    output = pd.DataFrame({"Info": [f"Missing columns for plot: {missing}"], "Found": [list(dfp.columns)]})
+else:
+    x = pd.to_numeric(dfp["SEVERITY_0_100"], errors="coerce")
+    y = pd.to_numeric(dfp["PSI_CONTRIB_ABS"], errors="coerce")
+    c = pd.to_numeric(dfp["Cluster_ID"], errors="coerce")
+
+    finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(c)
+    pts = pd.DataFrame({"x": x[finite], "y": y[finite], "c": c[finite]}).dropna().drop_duplicates()
+
+    if len(pts) < 3:
+        output = pd.DataFrame({"Info": [f"Not enough valid points ({len(pts)}) to plot."], 
+                               "ValidPoints": [len(pts)]})
+    else:
+        fig, ax = plt.subplots()
+        sc = ax.scatter(pts["x"], pts["y"], s=30, c=pts["c"], cmap="viridis")
+        ax.set_xlabel("Severity (0–100)")
+        ax.set_ylabel("PSI_Contrib_Abs")
+        ax.set_title("RCs by Severity vs PSI (colored by Cluster)")
+        fig.colorbar(sc, ax=ax, label="Cluster_ID")
+        fig.tight_layout()
+        fig
+
+
+
+
+
+
 import pandas as pd
 
 s2 = scored.copy()
