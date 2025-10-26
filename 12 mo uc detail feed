@@ -1,3 +1,133 @@
+import re, pandas as pd, numpy as np
+
+# ---- Pull headers & data explicitly from the Excel table ----
+hdr = xl("RC_ML_Features2[#Headers]")
+dat = xl("RC_ML_Features2[#Data]")
+
+# Header row -> list; Data -> DataFrame
+hdr_list = [str(x) for x in np.array(hdr).ravel()]
+df = pd.DataFrame(dat if not hasattr(dat, "values") else dat.values, columns=hdr_list)
+
+# Coerce date
+if "MONTH_END" in df.columns:
+    df["MONTH_END"] = pd.to_datetime(df["MONTH_END"], errors="coerce")
+
+# Coerce numerics we’ll use (ignore if missing)
+for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT","RMSE","EXP_SUM","DELTA_EXP","MOM_ABS","MOM_PCT_ABS","PSI_CONTRIB"]:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# Basic sanity peek
+df.head(5)
+
+
+import pandas as pd, numpy as np
+
+def robust_z(s: pd.Series) -> pd.Series:
+    med = s.median()
+    mad = (s - med).abs().median()
+    if not mad or mad == 0:
+        std = s.std(ddof=0)
+        return (s - s.mean())/std if std else pd.Series(0.0, index=s.index)
+    return (s - med) / (1.4826 * mad)
+
+# Feature set (use what exists)
+feat = [c for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT"] if c in df.columns]
+if len(feat) < 2:
+    # fallback: pick any two numeric columns
+    numcols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    feat = numcols[:2]
+
+X = df[feat].fillna(0.0).astype(float)
+
+# Try sklearn; else robust MAD-based composite
+try:
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.cluster import KMeans
+    Xs = StandardScaler().fit_transform(X.values)
+    km = KMeans(n_clusters=4, n_init=10, random_state=42)
+    labels = km.fit_predict(Xs)
+    centers = km.cluster_centers_
+    dists = np.sqrt(((Xs - centers[labels])**2).sum(axis=1))
+    score = (pd.Series(dists).rank(pct=True)*100).round(1)
+    df["Cluster_ID"] = labels
+    df["Anomaly_Score_0_100"] = score
+except Exception:
+    Z = pd.DataFrame({c: robust_z(X[c]) for c in X.columns})
+    comp = Z.abs().sum(axis=1)
+    pct = comp.rank(pct=True)
+    df["Anomaly_Score_0_100"] = (pct*100).round(1)
+    df["Cluster_ID"] = pd.qcut(pct, q=[0,.25,.5,.75,1.0], labels=[0,1,2,3]).astype(int)
+
+# Keep a clean scored view
+scored_cols = [c for c in [
+    "RC_CODE","RC_DESCRIPTION","MONTH_END","BEST_MODEL","SEVERITY_0_100",
+    "PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT","RMSE",
+    "Cluster_ID","Anomaly_Score_0_100"
+] if c in df.columns]
+scored = df[scored_cols].copy()
+
+# Show a few
+scored.sort_values(["MONTH_END","Anomaly_Score_0_100"], ascending=[False, False]).head(20)
+
+
+sc = scored.copy()
+lm = sc["MONTH_END"].max() if "MONTH_END" in sc.columns else None
+if lm is not None:
+    sc = sc[sc["MONTH_END"] == lm].copy()
+
+latest_anomalies = sc.sort_values("Anomaly_Score_0_100", ascending=False).reset_index(drop=True)
+latest_anomalies.head(100)
+
+
+summ_cols = [c for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT","Anomaly_Score_0_100"] if c in scored.columns]
+cluster_summary = (scored.groupby("Cluster_ID")[summ_cols]
+                   .mean(numeric_only=True).round(3)
+                   .assign(Count=scored.groupby("Cluster_ID").size()))
+cluster_summary.reset_index()
+
+
+if "MONTH_END" in scored.columns:
+    # last 2 months present in data
+    last2 = sorted(scored["MONTH_END"].dropna().unique())[-2:]
+    mig = (scored[scored["MONTH_END"].isin(last2)]
+           .pivot_table(index=["RC_DESCRIPTION"],
+                        columns="MONTH_END",
+                        values="Cluster_ID",
+                        aggfunc="last")
+           .reset_index())
+    # name columns nicer
+    if len(last2)==2:
+        mig.columns = ["RC_DESCRIPTION", f"Cluster_{last2[0].date()}", f"Cluster_{last2[1].date()}"]
+    mig.head(50)
+else:
+    pd.DataFrame({"Info":["MONTH_END not available"]})
+
+
+import matplotlib.pyplot as plt
+
+if all(c in scored.columns for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Cluster_ID"]):
+    x = scored["SEVERITY_0_100"].astype(float)
+    y = scored["PSI_CONTRIB_ABS"].astype(float)
+    c = scored["Cluster_ID"].astype(int)
+
+    plt.figure()
+    plt.scatter(x, y, s=30, c=c)  # Excel will assign default colors
+    plt.xlabel("Severity (0–100)")
+    plt.ylabel("PSI_Contrib_Abs")
+    plt.title("RCs by Severity vs PSI (colored by Cluster)")
+    plt.tight_layout()
+else:
+    pd.DataFrame({"Info":["Need SEVERITY_0_100, PSI_CONTRIB_ABS, Cluster_ID"]})
+
+
+
+
+
+
+
+
+
 # Build a compact, PBI-friendly scored table (latest month only)
 df_scored = df.copy()
 
