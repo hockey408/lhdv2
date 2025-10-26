@@ -1,3 +1,21 @@
+High-Anomaly RCs (Latest) =
+VAR lm =
+    CALCULATE ( MAX ( 'Date'[MonthEnd] ), ALL ( 'Date' ) )
+VAR threshold = 80
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( RC_ML_Scored_Latest[RC_DESCRIPTION] ),
+    FILTER (
+        RC_ML_Scored_Latest,
+        RC_ML_Scored_Latest[MONTH_END] = lm &&
+        RC_ML_Scored_Latest[Anomaly_Score_0_100] >= threshold
+    )
+)
+
+
+
+
+
 Dim_RC =
 DISTINCT (
     UNION (
