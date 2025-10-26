@@ -1,3 +1,42 @@
+Date =
+VAR MinDate =
+    MINX (
+        UNION (
+            SELECTCOLUMNS ( RC_Code_Model_Base, "d", RC_Code_Model_Base[MONTH_END] ),
+            SELECTCOLUMNS ( RC_ML_Scored_Latest, "d", RC_ML_Scored_Latest[MONTH_END] )
+        ),
+        [d]
+    )
+VAR MaxDate =
+    MAXX (
+        UNION (
+            SELECTCOLUMNS ( RC_Code_Model_Base, "d", RC_Code_Model_Base[MONTH_END] ),
+            SELECTCOLUMNS ( RC_ML_Scored_Latest, "d", RC_ML_Scored_Latest[MONTH_END] )
+        ),
+        [d]
+    )
+RETURN
+ADDCOLUMNS (
+    CALENDAR ( MinDate, MaxDate ),
+    "Year",            YEAR ( [Date] ),
+    "MonthNum",        MONTH ( [Date] ),
+    "Month",           FORMAT ( [Date], "MMMM" ),
+    "MonthShort",      FORMAT ( [Date], "MMM" ),
+    "YearMonth",       FORMAT ( [Date], "YYYY-MM" ),
+    "Quarter",         "Q" & FORMAT ( [Date], "Q" ),
+    "YearQuarter",     FORMAT ( [Date], "YYYY" ) & "-Q" & FORMAT ( [Date], "Q" ),
+    "MonthStart",      DATE ( YEAR ( [Date] ), MONTH ( [Date] ), 1 ),
+    "MonthEnd",        EOMONTH ( [Date], 0 ),
+    "IsMonthEnd",      IF ( [Date] = EOMONTH ( [Date], 0 ), 1, 0 ),
+    // Relative index vs current month (0 = current month, -1 = prior, etc.)
+    "RelMonthIndex",   DATEDIFF ( EOMONTH ( [Date], 0 ), EOMONTH ( TODAY (), 0 ), MONTH )
+)
+
+
+
+
+
+
 import pandas as pd, numpy as np
 import matplotlib.pyplot as plt
 
