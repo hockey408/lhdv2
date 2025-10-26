@@ -1,3 +1,161 @@
+import pandas as pd, numpy as np
+
+# Pull headers & data explicitly from the Excel Table
+hdr = xl("RC_ML_Features2[#Headers]")
+dat = xl("RC_ML_Features2[#Data]")
+
+# Build DataFrame with forced headers
+hdr_list = [str(x) for x in np.array(hdr).ravel()]
+df = pd.DataFrame(dat if not hasattr(dat, "values") else dat.values, columns=hdr_list)
+
+# Types
+if "MONTH_END" in df.columns:
+    df["MONTH_END"] = pd.to_datetime(df["MONTH_END"], errors="coerce")
+
+for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT",
+          "RMSE","EXP_SUM","DELTA_EXP","MOM_ABS","MOM_PCT_ABS","PSI_CONTRIB"]:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# Preview (ensures a visible output)
+df.head(10)
+
+
+import pandas as pd, numpy as np
+
+# Expect df from cell A
+def robust_z(s: pd.Series) -> pd.Series:
+    med = s.median()
+    mad = (s - med).abs().median()
+    if not mad or mad == 0:
+        std = s.std(ddof=0)
+        return (s - s.mean())/std if std and std != 0 else pd.Series(0.0, index=s.index)
+    return (s - med) / (1.4826 * mad)
+
+# Pick features (use what exists; need at least two numeric columns)
+feat = [c for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT"] if c in df.columns]
+if len(feat) < 2:
+    numcols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    feat = numcols[:2]
+
+# Fallback (no sklearn dependency): MAD-based composite → percentile → score
+Z = pd.DataFrame({c: robust_z(df[c].fillna(0)) for c in feat})
+comp = Z.abs().sum(axis=1)
+pct  = comp.rank(pct=True)
+df["Anomaly_Score_0_100"] = (pct*100).round(1)
+df["Cluster_ID"] = pd.qcut(pct, q=[0,.25,.5,.75,1.0], labels=[0,1,2,3]).astype(int)
+
+# Keep tidy scored view
+scored_cols = [c for c in [
+    "RC_CODE","RC_DESCRIPTION","MONTH_END","BEST_MODEL","SEVERITY_0_100",
+    "PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT","RMSE",
+    "Cluster_ID","Anomaly_Score_0_100"
+] if c in df.columns]
+scored = df[scored_cols].copy()
+
+# Return a preview
+scored.sort_values(["MONTH_END","Anomaly_Score_0_100"], ascending=[False, False]).head(20)
+
+
+import pandas as pd
+
+s = scored.copy()
+if "MONTH_END" in s.columns:
+    lm = pd.to_datetime(s["MONTH_END"], errors="coerce").max()
+    latest = s[pd.to_datetime(s["MONTH_END"], errors="coerce") == lm].copy()
+else:
+    latest = s.copy()
+
+latest = latest.sort_values("Anomaly_Score_0_100", ascending=False).reset_index(drop=True)
+latest.head(100)
+
+
+import pandas as pd
+
+cols = [c for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT","Anomaly_Score_0_100"] if c in scored.columns]
+cluster_summary = (
+    scored.groupby("Cluster_ID")[cols]
+          .mean(numeric_only=True)
+          .round(3)
+          .assign(Count=scored.groupby("Cluster_ID").size())
+          .reset_index()
+          .sort_values("Cluster_ID")
+)
+cluster_summary
+
+
+
+import pandas as pd
+
+s2 = scored.copy()
+if "MONTH_END" not in s2.columns:
+    pd.DataFrame({"Info":["MONTH_END column not found in 'scored'."], "Columns_Found":[list(s2.columns)]})
+else:
+    s2["__ME"] = pd.to_datetime(s2["MONTH_END"], errors="coerce")
+    months = sorted(s2["__ME"].dropna().unique())
+    if len(months) < 2:
+        pd.DataFrame({
+            "Info": ["Need at least 2 distinct MONTH_END values to show migration."],
+            "Months_Available": [[str(x) for x in months]]
+        })
+    else:
+        last2 = months[-2:]
+        mig = (s2[s2["__ME"].isin(last2)]
+               .pivot_table(index="RC_DESCRIPTION", columns="__ME", values="Cluster_ID", aggfunc="last"))
+        mig.columns = [f"Cluster_{pd.to_datetime(c).date()}" for c in mig.columns]
+        mig.reset_index().sort_values("RC_DESCRIPTION")
+
+
+import pandas as pd, numpy as np
+import matplotlib.pyplot as plt
+
+dfp = scored.copy()
+
+# Focus on latest month for clarity (comment this block to plot all months)
+if "MONTH_END" in dfp.columns:
+    me = pd.to_datetime(dfp["MONTH_END"], errors="coerce")
+    if me.notna().any():
+        latest = me.max()
+        dfp = dfp[me == latest].copy()
+
+need = ["SEVERITY_0_100","PSI_CONTRIB_ABS","Cluster_ID"]
+missing = [c for c in need if c not in dfp.columns]
+if missing:
+    pd.DataFrame({"Info":[f"Missing columns for plot: {missing}"], "Found":[list(dfp.columns)]})
+else:
+    x = pd.to_numeric(dfp["SEVERITY_0_100"], errors="coerce")
+    y = pd.to_numeric(dfp["PSI_CONTRIB_ABS"],  errors="coerce")
+    c = pd.to_numeric(dfp["Cluster_ID"],       errors="coerce")
+
+    finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(c)
+    pts = pd.DataFrame({"x": x[finite], "y": y[finite], "c": c[finite]}).dropna().drop_duplicates()
+
+    if len(pts) < 2:
+        pd.DataFrame({"Info":["Not enough valid points to plot after cleaning."], "ValidPoints":[int(len(pts))]})
+    else:
+        fig, ax = plt.subplots()
+        ax.scatter(pts["x"], pts["y"], s=30, c=pts["c"])
+        ax.set_xlabel("Severity (0–100)")
+        ax.set_ylabel("PSI_Contrib_Abs")
+        ax.set_title("RCs by Severity vs PSI (colored by Cluster)")
+
+        def pad(vmin, vmax, pad_ratio=0.05):
+            if pd.isna(vmin) or pd.isna(vmax) or vmin == vmax:
+                return vmin, vmax
+            span = vmax - vmin
+            return vmin - span*pad_ratio, vmax + span*pad_ratio
+
+        ax.set_xlim(*pad(pts["x"].min(), pts["x"].max()))
+        ax.set_ylim(*pad(pts["y"].min(), pts["y"].max()))
+        fig.tight_layout()
+        fig  # return the figure so Excel renders it
+
+
+
+
+
+
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
