@@ -1,4 +1,68 @@
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ----- 1) Start from 'scored' and focus on the latest month (toggle this off if you want all months) -----
+dfp = scored.copy()
+
+if "MONTH_END" in dfp.columns:
+    me = pd.to_datetime(dfp["MONTH_END"], errors="coerce")
+    if me.notna().any():
+        latest = me.max()
+        dfp = dfp[me == latest].copy()
+
+# ----- 2) Ensure required columns exist -----
+need = ["SEVERITY_0_100", "PSI_CONTRIB_ABS", "Cluster_ID"]
+missing = [c for c in need if c not in dfp.columns]
+if missing:
+    pd.DataFrame({"Info":[f"Missing columns for plot: {missing}"], "Found":[list(dfp.columns)]})
+else:
+    # ----- 3) Coerce to numeric and drop non-finite -----
+    x = pd.to_numeric(dfp["SEVERITY_0_100"], errors="coerce")
+    y = pd.to_numeric(dfp["PSI_CONTRIB_ABS"],  errors="coerce")
+    c = pd.to_numeric(dfp["Cluster_ID"],       errors="coerce")
+
+    finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(c)
+    x, y, c = x[finite], y[finite], c[finite]
+
+    # Optional: drop exact duplicates so a single point doesn’t hide overlaps
+    pts = pd.DataFrame({"x": x, "y": y, "c": c}).dropna().drop_duplicates()
+
+    if len(pts) < 2:
+        # Return a small diagnostic instead of 'None'
+        pd.DataFrame({
+            "Info": ["Not enough valid points to plot after cleaning."],
+            "ValidPoints": [int(len(pts))],
+            "Hint": ["Check that SEVERITY_0_100 and PSI_CONTRIB_ABS are numeric for the latest month."]
+        })
+    else:
+        # ----- 4) Create one figure and return it as the last expression -----
+        fig, ax = plt.subplots()   # one plot only (Python in Excel best practice)
+        ax.scatter(pts["x"], pts["y"], s=30, c=pts["c"])
+        ax.set_xlabel("Severity (0–100)")
+        ax.set_ylabel("PSI_Contrib_Abs")
+        ax.set_title("RCs by Severity vs PSI (colored by Cluster)")
+
+        # Improve readability and avoid autoscale edge-clipping
+        def pad(vmin, vmax, pad_ratio=0.05):
+            if pd.isna(vmin) or pd.isna(vmax) or vmin == vmax:
+                return vmin, vmax
+            span = vmax - vmin
+            return vmin - span*pad_ratio, vmax + span*pad_ratio
+
+        xmin, xmax = pts["x"].min(), pts["x"].max()
+        ymin, ymax = pts["y"].min(), pts["y"].max()
+        ax.set_xlim(*pad(xmin, xmax))
+        ax.set_ylim(*pad(ymin, ymax))
+
+        fig.tight_layout()
+        fig  # ← IMPORTANT: return the figure object (no plt.show()) 
+
+
+
+
+
+import pandas as pd
 import matplotlib.pyplot as plt
 
 # ---- choose data to plot (latest month is usually clearest) ----
