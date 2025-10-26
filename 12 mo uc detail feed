@@ -1,4 +1,44 @@
 import pandas as pd
+import matplotlib.pyplot as plt
+
+# ---- choose data to plot (latest month is usually clearest) ----
+dfp = scored.copy()
+if "MONTH_END" in dfp.columns:
+    me = pd.to_datetime(dfp["MONTH_END"], errors="coerce")
+    if me.notna().any():
+        latest = me.max()
+        dfp = dfp[me == latest].copy()
+
+# ---- verify required columns exist and have numeric data ----
+need = ["SEVERITY_0_100", "PSI_CONTRIB_ABS", "Cluster_ID"]
+missing = [c for c in need if c not in dfp.columns]
+if missing:
+    pd.DataFrame({"Info":[f"Missing columns: {missing}"], "Found":[list(dfp.columns)]})
+else:
+    x = pd.to_numeric(dfp["SEVERITY_0_100"], errors="coerce")
+    y = pd.to_numeric(dfp["PSI_CONTRIB_ABS"],  errors="coerce")
+    c = pd.to_numeric(dfp["Cluster_ID"],       errors="coerce")
+
+    mask = x.notna() & y.notna() & c.notna()
+    x, y, c = x[mask], y[mask], c[mask]
+
+    if len(x) < 2:
+        pd.DataFrame({"Info":["Not enough valid points to plot"], "Count":[int(len(x))]})
+    else:
+        fig, ax = plt.subplots()              # <- create a figure
+        ax.scatter(x, y, s=30, c=c)           # <- matplotlib only, single plot
+        ax.set_xlabel("Severity (0–100)")
+        ax.set_ylabel("PSI_Contrib_Abs")
+        ax.set_title("RCs by Severity vs PSI (colored by Cluster)")
+        fig.tight_layout()
+
+        fig  # <-- IMPORTANT: return the figure object as the LAST expression
+
+
+
+
+
+import pandas as pd
 
 if "MONTH_END" in scored.columns:
     lm = pd.to_datetime(scored["MONTH_END"], errors="coerce").max()
