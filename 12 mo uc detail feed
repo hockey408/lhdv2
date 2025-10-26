@@ -1,3 +1,12 @@
+Anomaly Score (Avg by Month) =
+CALCULATE (
+    AVERAGE ( RC_ML_Scored_Hist[Anomaly_Score_0_100] )
+)
+
+
+
+
+
 Corr (ML vs Severity) =
 VAR t =
     ADDCOLUMNS (
