@@ -1,3 +1,34 @@
+import pandas as pd
+
+s2 = scored.copy()
+
+# Validate structure
+if "MONTH_END" not in s2.columns:
+    output = pd.DataFrame({"Info": ["MONTH_END column not found."], "Columns_Found": [list(s2.columns)]})
+else:
+    s2["__ME"] = pd.to_datetime(s2["MONTH_END"], errors="coerce")
+    months = sorted(s2["__ME"].dropna().unique())
+
+    if len(months) < 2:
+        output = pd.DataFrame({
+            "Info": ["Need ≥2 distinct MONTH_END values to show migration."],
+            "Months_Available": [[str(x) for x in months]]
+        })
+    else:
+        last2 = months[-2:]
+        mig = (s2[s2["__ME"].isin(last2)]
+               .pivot_table(index="RC_DESCRIPTION", columns="__ME", values="Cluster_ID", aggfunc="last"))
+        mig.columns = [f"Cluster_{pd.to_datetime(c).date()}" for c in mig.columns]
+        mig = mig.reset_index().sort_values("RC_DESCRIPTION")
+        output = mig
+
+output
+
+
+
+
+
+
 import pandas as pd, numpy as np
 
 # Pull headers & data explicitly from the Excel Table
