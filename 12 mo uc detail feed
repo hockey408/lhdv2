@@ -1,3 +1,191 @@
+WITH params AS (
+  SELECT DATE '2025-09-30' AS curr_eom,
+         ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
+),
+pop AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Name,
+      Contract_Source_System,
+      CIS_Customer_Number,
+      Facility_ID,
+      CASE WHEN Account_Identifier IS NULL OR TRIM(Account_Identifier)='' THEN '§NULL§' ELSE TRIM(Account_Identifier) END AS Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag,
+      PROD_HIER_LEVEL_5,
+      RBC_Code,
+      GL_ACCOUNT_CODE
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND End_of_Month_Date IN ((SELECT prev_eom FROM params),(SELECT curr_eom FROM params))
+),
+prev_norm AS (
+  SELECT
+    Account_Identifier,
+    MAX(Account_Key)             AS Prev_Account_Key,
+    MAX(Account_Name)            AS Prev_Account_Name,
+    MAX(CIS_Customer_Number)     AS Prev_CIS_Customer_Number,
+    MAX(Facility_ID)             AS Prev_Facility_ID,
+    MAX(Contract_Source_System)  AS Prev_Contract_Source_System,
+    MAX(Status_Code_Description) AS Prev_Status_Code_Description,
+    MAX(GL_ACCOUNT_HIER_LEVEL_4) AS Prev_GL_ACCOUNT_HIER_LEVEL_4,
+    SUM(Source_System_Balance)   AS Prev_Source_System_Balance,
+    SUM(GL_Balance)              AS Prev_GL_Balance,
+    MAX(Available_Balance)       AS Prev_Available_Balance,
+    MAX(Borrower_Risk_Rating)    AS Prev_Borrower_Risk_Rating,
+    MAX(PD_Grade)                AS Prev_PD_Grade,
+    MAX(Days_Past_Due)           AS Prev_Days_Past_Due,
+    MAX(Non_Accrual_Flag)        AS Prev_Non_Accrual_Flag,
+    MAX(PROD_HIER_LEVEL_5)       AS Prev_PROD_HIER_LEVEL_5,
+    MAX(RBC_Code)                AS Prev_RBC_Code,
+    MAX(GL_ACCOUNT_CODE)         AS Prev_GL_ACCOUNT_CODE
+  FROM pop
+  WHERE End_of_Month_Date=(SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag='Y'
+    AND Source_System_Balance>0
+  GROUP BY Account_Identifier
+),
+curr_norm AS (
+  SELECT
+    Account_Identifier,
+    MAX(Account_Key)             AS Account_Key,
+    MAX(Account_Name)            AS Account_Name,
+    MAX(CIS_Customer_Number)     AS CIS_Customer_Number,
+    MAX(Facility_ID)             AS Facility_ID,
+    MAX(Contract_Source_System)  AS Contract_Source_System,
+    MAX(Status_Code_Description) AS Status_Code_Description,
+    MAX(GL_ACCOUNT_HIER_LEVEL_4) AS GL_ACCOUNT_HIER_LEVEL_4,
+    SUM(Source_System_Balance)   AS Source_System_Balance,
+    SUM(GL_Balance)              AS GL_Balance,
+    MAX(Available_Balance)       AS Available_Balance,
+    MAX(Borrower_Risk_Rating)    AS Borrower_Risk_Rating,
+    MAX(PD_Grade)                AS PD_Grade,
+    MAX(Days_Past_Due)           AS Days_Past_Due,
+    MAX(Non_Accrual_Flag)        AS Non_Accrual_Flag,
+    MAX(PROD_HIER_LEVEL_5)       AS PROD_HIER_LEVEL_5,
+    MAX(RBC_Code)                AS RBC_Code,
+    MAX(GL_ACCOUNT_CODE)         AS GL_ACCOUNT_CODE
+  FROM pop
+  WHERE End_of_Month_Date=(SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag='Y'
+    AND Source_System_Balance>0
+  GROUP BY Account_Identifier
+),
+joined AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+
+    /* current fields (explicit, no c.*) */
+    c.Account_Key,
+    c.Account_Name,
+    c.CIS_Customer_Number,
+    c.Facility_ID,
+    c.Contract_Source_System,
+    c.Status_Code_Description,
+    c.GL_ACCOUNT_HIER_LEVEL_4,
+    c.Source_System_Balance,
+    c.GL_Balance,
+    c.Available_Balance,
+    c.Borrower_Risk_Rating,
+    c.PD_Grade,
+    c.Days_Past_Due,
+    c.Non_Accrual_Flag,
+    c.PROD_HIER_LEVEL_5,
+    c.RBC_Code,
+    c.GL_ACCOUNT_CODE,
+
+    /* prev snapshot fields */
+    p.Prev_Source_System_Balance,
+    p.Prev_GL_Balance,
+    p.Prev_Account_Key,
+    p.Prev_Account_Name,
+    p.Prev_CIS_Customer_Number,
+    p.Prev_Facility_ID,
+    p.Prev_Contract_Source_System,
+    p.Prev_Status_Code_Description,
+    p.Prev_GL_ACCOUNT_HIER_LEVEL_4,
+    p.Prev_Available_Balance,
+    p.Prev_Borrower_Risk_Rating,
+    p.Prev_PD_Grade,
+    p.Prev_Days_Past_Due,
+    p.Prev_Non_Accrual_Flag,
+    p.Prev_PROD_HIER_LEVEL_5,
+    p.Prev_RBC_Code,
+    p.Prev_GL_ACCOUNT_CODE
+  FROM curr_norm c
+  FULL OUTER JOIN prev_norm p
+    ON c.Account_Identifier = p.Account_Identifier
+)
+SELECT
+  (SELECT curr_eom FROM params) AS End_of_Month_Date,
+
+  /* classification on Source_System_Balance */
+  CASE
+    WHEN COALESCE(Prev_Source_System_Balance,0)=0 AND COALESCE(Source_System_Balance,0)>0 THEN 'ADD'
+    WHEN COALESCE(Source_System_Balance,0)=0 AND COALESCE(Prev_Source_System_Balance,0)>0 THEN 'DROP'
+    WHEN COALESCE(Source_System_Balance,0)<>COALESCE(Prev_Source_System_Balance,0)         THEN 'BAL_CHANGE'
+    ELSE 'NO_CHANGE'
+  END AS Change_Type,
+
+  /* Bank_Code from current (fallback to prev if current is null) */
+  CASE
+    WHEN COALESCE(Contract_Source_System, Prev_Contract_Source_System) IN
+         ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN') THEN 'L-SVB'
+    WHEN COALESCE(Contract_Source_System, Prev_Contract_Source_System) = 'ALL'
+         AND COALESCE(GL_ACCOUNT_CODE, Prev_GL_ACCOUNT_CODE) IN
+             ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+              '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+              '1100001','1142067','1042886','1043008') THEN 'L-SVB'
+    WHEN COALESCE(Contract_Source_System, Prev_Contract_Source_System) IN
+         ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO') THEN 'L-FCB'
+    WHEN COALESCE(Contract_Source_System, Prev_Contract_Source_System) IN
+         ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN',
+          'INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001',
+          'SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+          'STRAT1','STRAT1-EXCPTN') THEN 'L-CIT'
+    ELSE 'NULL-Need to Research'
+  END AS Bank_Code,
+
+  /* detail fields (current snapshot) */
+  Account_Name,
+  Contract_Source_System,
+  CIS_Customer_Number,
+  Facility_ID,
+  Account_Identifier,
+  Account_Key,
+  Status_Code_Description,
+  GL_ACCOUNT_HIER_LEVEL_4,
+  Source_System_Balance,
+  GL_Balance,
+  Available_Balance,
+  Borrower_Risk_Rating,
+  PD_Grade,
+  Days_Past_Due,
+  Non_Accrual_Flag,
+  PROD_HIER_LEVEL_5,
+  RBC_Code,
+  GL_ACCOUNT_CODE,
+
+  /* helpful exposure deltas */
+  COALESCE(Prev_Source_System_Balance,0) AS Prev_Source_System_Balance,
+  COALESCE(Source_System_Balance,0)      AS Curr_Source_System_Balance,
+  COALESCE(Source_System_Balance,0) - COALESCE(Prev_Source_System_Balance,0) AS Exposure_Delta
+
+FROM joined
+ORDER BY Change_Type, Bank_Code, Account_Identifier;
+
+
+
+
+
 Anomaly Score (Avg by Month) =
 CALCULATE (
     AVERAGE ( RC_ML_Scored_Hist[Anomaly_Score_0_100] )
