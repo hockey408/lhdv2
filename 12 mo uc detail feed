@@ -1,3 +1,14 @@
+Dim_RC =
+DISTINCT (
+    UNION (
+        SELECTCOLUMNS ( RC_Code_Model_Base,  "RC_DESCRIPTION", RC_Code_Model_Base[RC_DESCRIPTION] ),
+        SELECTCOLUMNS ( RC_ML_Scored_Latest, "RC_DESCRIPTION", RC_ML_Scored_Latest[RC_DESCRIPTION] )
+    )
+)
+
+
+
+
 Date =
 VAR MinDate =
     MINX (
