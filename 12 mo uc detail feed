@@ -1,3 +1,15 @@
+Anomaly Score (Latest) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    AVERAGE ( RC_ML_Scored_Latest[Anomaly_Score_0_100] ),
+    RC_ML_Scored_Latest[MONTH_END] = lm
+)
+
+
+
+
+
 High-Anomaly RCs (Latest) =
 VAR lm =
     CALCULATE ( MAX ( 'Date'[MonthEnd] ), ALL ( 'Date' ) )
