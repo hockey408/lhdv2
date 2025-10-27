@@ -1,3 +1,24 @@
+=LET(
+  prod, UPPER(TRIM([@PROD_HIER_LEVEL_5])),
+  bank, UPPER(TRIM([@BANK_CODE])),
+  bal,  N([@SOURCE_SYSTEM_BALANCE]),
+  css,  UPPER(TRIM([@CONTRACT_SOURCE_SYSTEM])),
+  rbc,  UPPER(TRIM([@RBC_CODE])),
+  IFS(
+    AND(prod="BUSINESS RE TERM LOANS", bank="L-CIT", bal>500000), "Samya",
+    AND(OR(prod="BUSINESS NON-RE TERM LOANS", prod="BUSINESS COMMITMENT DRAW"), bank="L-CIT", bal>250000), "Casey",
+    css="INFL10", "Daniel",
+    bank="L-SVB", "Eleanor",
+    rbc="R", "Autochange",
+    bank="L-FCB", "Connor",
+    TRUE, "NOT REVIEWED"
+  )
+)
+
+
+
+
+
 Client Pain Point
 Breslin Analytics Solution
 Time wasted on manual Excel reporting
