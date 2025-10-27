@@ -1,3 +1,18 @@
+Latest Month =
+CALCULATE ( MAX ( 'Date'[MonthEnd] ), ALL ( 'Date' ) )
+
+Exposure (Latest by RC) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE ( SUM ( RC_PSI_ByDescription[EXP_SUM] ), 'Date'[MonthEnd] = lm )
+
+-- Your existing flag:
+-- Monitorable Flag (Measure)  // already in your model
+
+
+
+
+
 WITH params AS (
   SELECT DATE '2025-09-30' AS curr_eom,
          ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
