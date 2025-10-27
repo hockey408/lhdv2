@@ -1,3 +1,18 @@
+-- 1) PSI (Abs) at latest month for the current RC in context
+PSI Contrib Abs (Latest) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    ABS ( AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ) ),
+    TREATAS ( ROW ( "d", lm ), RC_PSI_ByDescription[MONTH_END] ),
+    -- If you renamed RC_DESC -> RC_DESCRIPTION in PQ, swap the last TREATAS mapping accordingly.
+    TREATAS ( VALUES ( Dim_RC[RC_DESCRIPTION] ), RC_PSI_ByDescription[RC_DESC] )
+)
+
+
+
+
+
 PSI Contrib Abs (Latest) =
 VAR lm = [Latest Month]
 RETURN
