@@ -1,3 +1,32 @@
+=IF([@END_OF_MONTH_DATE]=$B$2,"CURR",IF([@END_OF_MONTH_DATE]=$B$1,"PREV",""))
+
+=LET(
+  id, [@ACCOUNT_IDENTIFIER],
+  XLOOKUP(
+    id,
+    FILTER(Pop[ACCOUNT_IDENTIFIER],Pop[END_OF_MONTH_DATE]=$B$1),
+    FILTER(Pop[RBC_CODE],         Pop[END_OF_MONTH_DATE]=$B$1),
+    ""
+  )
+)
+
+=IF(OR(UPPER(TRIM([@RBC_CODE]))="R", UPPER(TRIM([@Prev_RBC]))="R"), "Y", "N")
+
+=LET(
+  id, [@ACCOUNT_IDENTIFIER],
+  XLOOKUP(
+    id,
+    FILTER(Pop[ACCOUNT_IDENTIFIER],Pop[END_OF_MONTH_DATE]=$B$2),
+    FILTER(Pop[SOURCE_SYSTEM_BALANCE],Pop[END_OF_MONTH_DATE]=$B$2),
+    ""
+  )
+)
+
+
+
+
+
+
 =LET(
   prod, UPPER(TRIM([@PROD_HIER_LEVEL_5])),
   bank, UPPER(TRIM([@BANK_CODE])),
