@@ -1,3 +1,27 @@
+-- 2) Percentile across RCs (compute PSI per RC inside ADDCOLUMNS)
+PSI Contrib Abs Pctl (Latest) =
+VAR lm = [Latest Month]
+VAR rcTable = VALUES ( Dim_RC[RC_DESCRIPTION] )
+VAR t =
+    ADDCOLUMNS (
+        rcTable,
+        "v",
+            VAR rc = [RC_DESCRIPTION]
+            RETURN
+                CALCULATE (
+                    ABS ( AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ) ),
+                    TREATAS ( ROW ( "d", lm ), RC_PSI_ByDescription[MONTH_END] ),
+                    TREATAS ( { rc }, RC_PSI_ByDescription[RC_DESC] )  -- or RC_PSI_ByDescription[RC_DESCRIPTION]
+                )
+    )
+VAR r = RANKX ( t, [v], , DESC, DENSE )
+VAR n = COUNTROWS ( t )
+RETURN IF ( n <= 1, BLANK(), DIVIDE ( r - 1, n - 1 ) )
+
+
+
+
+
 -- 1) PSI (Abs) at latest month for the current RC in context
 PSI Contrib Abs (Latest) =
 VAR lm = [Latest Month]
