@@ -1,3 +1,179 @@
+import pandas as pd, numpy as np
+
+# ===================== CONFIG =====================
+TABLE_NAME = "RC_ML_Features2"   # Excel Table name that holds your merged features
+DATE_COL_CANDIDATES = ["MONTH_END", "Month_End", "month_end"]
+RC_COL_CANDIDATES   = ["RC_DESCRIPTION","RC_DESC","rc_description","rc_desc"]
+
+# Features to use (will auto-shrink to what's present)
+FEATURES_PREF = ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT"]
+
+# Optional weights (set all to 1.0 for equal weighting)
+FEATURE_WEIGHTS = {
+    "SEVERITY_0_100": 1.5,
+    "PSI_CONTRIB_ABS": 1.0,
+    "Z_RESID": 1.2,
+    "Z_MOM_ABS": 1.0,
+    "Z_MOM_PCT": 0.8
+}
+
+# Columns you'd like in the final scored output (kept if present)
+KEEP_COLS = [
+    "RC_CODE","RC_DESCRIPTION","MONTH_END","BEST_MODEL","RMSE",
+    "SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT",
+]
+
+# ============== HELPERS (robust z, IO, safe ops) ==============
+def get_table_df(name: str) -> pd.DataFrame:
+    hdr = xl(f"{name}[#Headers]")
+    dat = xl(f"{name}[#Data]")
+    hdr_list = [str(x) for x in np.array(hdr).ravel()]
+    arr = dat.values if hasattr(dat, "values") else np.array(dat)
+    return pd.DataFrame(arr, columns=hdr_list)
+
+def find_first_col(df: pd.DataFrame, cands) -> str:
+    for c in cands:
+        if c in df.columns:
+            return c
+    raise ValueError(f"Could not find any of columns: {cands}. Got: {list(df.columns)}")
+
+def robust_z(s: pd.Series) -> pd.Series:
+    # robust z using median & MAD; fall back to std if MAD==0
+    s = pd.to_numeric(s, errors="coerce")
+    med = s.median()
+    s2 = s.fillna(med)
+    mad = (s2 - med).abs().median()
+    if not mad or mad == 0:
+        std = s2.std(ddof=0)
+        return (s2 - s2.mean())/std if std and std != 0 else pd.Series(0.0, index=s.index)
+    return (s2 - med) / (1.4826 * mad)
+
+def monthwise_percentile(values: pd.Series, grp: pd.Series) -> pd.Series:
+    # percentile rank within each month (group)
+    return values.groupby(grp).rank(pct=True)
+
+def safe_qcut_quartiles(s: pd.Series) -> pd.Series:
+    # Return quartile labels 0..3; if too few rows, assign zeros
+    s = pd.to_numeric(s, errors="coerce")
+    n = s.notna().sum()
+    if n < 4 or s.nunique(dropna=True) < 2:
+        return pd.Series([0]*len(s), index=s.index).astype(int)
+    # duplicates='drop' to avoid bin-edge issues when many ties
+    try:
+        return pd.qcut(s, q=[0,.25,.5,.75,1.0], labels=[0,1,2,3], duplicates="drop").astype(int)
+    except Exception:
+        # if qcut fails due to duplicates, fallback to rank-based bins
+        r = s.rank(pct=True)
+        return pd.cut(r, bins=[0,.25,.5,.75,1.0], labels=[0,1,2,3], include_lowest=True).astype(int)
+
+# ===================== LOAD & CLEAN =====================
+df = get_table_df(TABLE_NAME)
+
+# Identify key columns
+DATE_COL = find_first_col(df, DATE_COL_CANDIDATES)
+RC_COL   = find_first_col(df, RC_COL_CANDIDATES)
+
+# Coerce types
+df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
+
+# Ensure numeric types for preferred features (if present)
+for c in FEATURES_PREF:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+# Ensure KEEP_COLS compatibility (some may be missing)
+keep_cols_present = [c for c in KEEP_COLS if c in df.columns]
+# Make sure standard names exist in output even if variants were present
+if "RC_DESCRIPTION" not in keep_cols_present and RC_COL in df.columns:
+    df["RC_DESCRIPTION"] = df[RC_COL]
+    if "RC_DESCRIPTION" not in keep_cols_present:
+        keep_cols_present = ["RC_DESCRIPTION"] + keep_cols_present
+if "MONTH_END" not in keep_cols_present and DATE_COL in df.columns:
+    df["MONTH_END"] = df[DATE_COL].dt.date  # keep date part for display
+    keep_cols_present = ["MONTH_END"] + keep_cols_present
+
+# ===================== FEATURE SELECTION =====================
+features = [c for c in FEATURES_PREF if c in df.columns]
+if len(features) < 2:
+    # fallback: take first two numeric columns in df
+    numcols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    features = numcols[:2]
+    if len(features) < 2:
+        raise ValueError("Not enough numeric columns found to compute an anomaly score.")
+
+# ===================== ROBUST Z & COMPOSITE =====================
+# Robust Z with median imputation baked in
+Z = pd.DataFrame({c: robust_z(df[c]) for c in features})
+
+# Weighted L1 distance from robust center
+weights = {c: FEATURE_WEIGHTS.get(c, 1.0) for c in features}
+comp = sum(weights[c] * Z[c].abs() for c in features)
+
+# ===================== MONTH-WISE PERCENTILES & CLUSTERS =====================
+me_series = df[DATE_COL].dt.to_period("M")  # group by calendar month
+pct = monthwise_percentile(comp, me_series)  # 0..1 within each month
+
+# Anomaly score 0..100 within each month
+df["Anomaly_Score_0_100"] = (pct * 100).round(1)
+
+# Per-month quartiles 0..3
+# Do it groupwise so each month has its own quartile cut
+clusters = []
+for m, idx in me_series.groupby(me_series).groups.items():
+    s = pct.loc[idx]
+    clusters.append(pd.Series(safe_qcut_quartiles(s), index=idx))
+df["Cluster_ID"] = pd.concat(clusters).sort_index().astype(int)
+
+# ===================== OUTPUT TABLES =====================
+scored_cols = list(dict.fromkeys(keep_cols_present + ["Cluster_ID","Anomaly_Score_0_100"]))
+scored_full = df[scored_cols].copy()
+
+# Latest month subset
+if df[DATE_COL].notna().any():
+    latest_me = df[DATE_COL].max()
+    scored_latest = scored_full[df[DATE_COL] == latest_me].copy()
+else:
+    scored_latest = scored_full.copy()
+
+# Cluster summary (per month, per cluster)
+num_cols_for_summary = [c for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT","Anomaly_Score_0_100"] if c in scored_full.columns]
+cluster_summary = (
+    df.assign(__ME=df[DATE_COL].dt.to_period("M"))
+      .groupby(["__ME","Cluster_ID"])[num_cols_for_summary]
+      .mean(numeric_only=True)
+      .round(3)
+      .assign(Count=df.assign(__ME=df[DATE_COL].dt.to_period("M")).groupby(["__ME","Cluster_ID"]).size())
+      .reset_index()
+)
+cluster_summary["MONTH_END"] = cluster_summary["__ME"].dt.to_timestamp("M").dt.date
+cluster_summary = cluster_summary.drop(columns="__ME")
+
+# Migration (last 2 months only)
+if df[DATE_COL].notna().any():
+    months_sorted = sorted(df[DATE_COL].dt.to_period("M").dropna().unique())
+    if len(months_sorted) >= 2:
+        last2 = months_sorted[-2:]
+        t2 = df[df[DATE_COL].dt.to_period("M").isin(last2)][[RC_COL, DATE_COL, "Cluster_ID"]].copy()
+        t2["__ME"] = t2[DATE_COL].dt.to_period("M")
+        mig = t2.pivot_table(index=RC_COL, columns="__ME", values="Cluster_ID", aggfunc="last")
+        # Rename columns as readable dates
+        mig.columns = [f"Cluster_{pd.Period(c, freq='M').to_timestamp('M').date()}" for c in mig.columns]
+        migration_last2 = mig.reset_index().rename(columns={RC_COL: "RC_DESCRIPTION"})
+    else:
+        migration_last2 = pd.DataFrame({"Info": ["Need at least 2 months for migration."], "MonthsFound": [list(map(str, months_sorted))]})
+else:
+    migration_last2 = pd.DataFrame({"Info": ["No valid dates found in data."]})
+
+# ===================== WHAT TO DISPLAY =====================
+# By default, show the full scored dataset (all months).
+# Change the last line to: cluster_summary / scored_latest / migration_last2 if you want those instead.
+scored_full.sort_values(["MONTH_END","Anomaly_Score_0_100"], ascending=[True, False])
+
+
+
+
+
+
 # After computing `comp`
 pct = (comp.groupby(df["MONTH_END"])
            .rank(pct=True))  # percentile within each month
