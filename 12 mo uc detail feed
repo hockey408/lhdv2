@@ -1,3 +1,14 @@
+_DEBUG PSI =
+SUMMARIZECOLUMNS (
+    RC_PSI_ByDescription[RC_DESCRIPTION],
+    RC_PSI_ByDescription[MONTH_END],
+    "PSI_CONTRIB", AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] )
+)
+
+
+
+
+
 PSI Contrib Abs (Latest) =
 VAR lm = [Latest Month]
 VAR thisRC = SELECTEDVALUE ( Dim_RC[RC_DESCRIPTION] )
