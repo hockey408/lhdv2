@@ -1,5 +1,83 @@
 import pandas as pd, numpy as np
 
+TABLE_NAME = "RC_ML_Features"  # exact Excel Table name
+
+def load_excel_table(table: str) -> pd.DataFrame:
+    # Try canonical structured refs
+    try:
+        hdr = xl(f"{table}[#Headers]")
+        dat = xl(f"{table}[#Data]")
+    except Exception as e:
+        # Fallback: try [#All] and infer headers from the first row
+        try:
+            allrng = xl(f"{table}[#All]")
+            arr = np.array(allrng)
+            if arr.ndim == 1:
+                arr = arr.reshape(1, -1)
+            hdr_list = [str(x) for x in arr[0, :]]
+            body = arr[1:, :]
+            return pd.DataFrame(body, columns=hdr_list)
+        except Exception as e2:
+            return pd.DataFrame({"ERROR":[f"Failed to read table '{table}' via xl()."], 
+                                 "Detail":[str(e)], "Fallback":[str(e2)]})
+
+    # Normalize to arrays
+    hdr_list = [str(x) for x in np.array(hdr).ravel()]
+    arr = dat.values if hasattr(dat, "values") else np.array(dat)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+
+    # Repair common header/data width mismatches
+    if arr.shape[1] != len(hdr_list):
+        # If [#Headers] came back with 1 col (sometimes happens), try [#All]
+        try:
+            allrng = xl(f"{table}[#All]")
+            arr2 = np.array(allrng)
+            if arr2.ndim == 1:
+                arr2 = arr2.reshape(1, -1)
+            hdr_list2 = [str(x) for x in arr2[0, :]]
+            body2 = arr2[1:, :]
+            return pd.DataFrame(body2, columns=hdr_list2)
+        except:
+            return pd.DataFrame({"ERROR":[f"Header/Data columns mismatch for '{table}'."],
+                                 "Headers_Count":[len(hdr_list)], "Data_Cols":[arr.shape[1]]})
+
+    # Build DF
+    df_ = pd.DataFrame(arr, columns=hdr_list)
+
+    # Clean up header issues (empty/dup names)
+    if any(h=="" for h in hdr_list):
+        df_.columns = [f"col_{i}" if (h is None or h=="") else str(h) for i,h in enumerate(df_.columns)]
+    if len(set(df_.columns)) != len(df_.columns):
+        # de-duplicate columns with suffixes
+        counts = {}
+        newcols = []
+        for c in df_.columns:
+            counts[c] = counts.get(c, 0) + 1
+            new = c if counts[c]==1 else f"{c}_{counts[c]}"
+            newcols.append(new)
+        df_.columns = newcols
+
+    return df_
+
+# ---- Use existing df if already created upstream; else load from Excel
+try:
+    df  # exists already
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        raise NameError("df exists but is empty; reloading.")
+except NameError:
+    df = load_excel_table(TABLE_NAME)
+
+# Quick sanity printouts
+print("Columns detected:", list(df.columns)[:20])
+print("Shape:", df.shape)
+
+
+
+
+
+import pandas as pd, numpy as np
+
 # ===================== CONFIG =====================
 TABLE_NAME = "RC_ML_Features2"   # Excel Table name that holds your merged features
 DATE_COL_CANDIDATES = ["MONTH_END", "Month_End", "month_end"]
