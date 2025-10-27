@@ -1,3 +1,40 @@
+PSI Contrib Rank (Latest) =
+VAR lm = [Latest Month]
+VAR t =
+    ADDCOLUMNS (
+        VALUES ( Dim_RC[RC_DESCRIPTION] ),
+        "__psi",
+            CALCULATE (
+                ABS ( AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ) ),
+                KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = lm )
+            )
+    )
+RETURN
+RANKX ( t, [__psi], , DESC, DENSE )
+
+
+PSI Contrib Pctl (Latest) =
+VAR lm = [Latest Month]
+VAR t =
+    ADDCOLUMNS (
+        VALUES ( Dim_RC[RC_DESCRIPTION] ),
+        "__psi",
+            CALCULATE (
+                ABS ( AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ) ),
+                KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = lm )
+            )
+    )
+VAR r = RANKX ( t, [__psi], , DESC, DENSE )
+VAR n = COUNTROWS ( t )
+RETURN IF ( n <= 1, BLANK(), DIVIDE ( r - 1, n - 1 ) )
+
+
+
+
+
+
+
+
 PSI Contrib Abs (Latest) =
 VAR lm = [Latest Month]
 RETURN
