@@ -1,3 +1,23 @@
+ML Anomaly Pctl (Latest) =
+VAR lm = [Latest Month]
+VAR t  =
+    ADDCOLUMNS (
+        VALUES ( Dim_RC[RC_DESCRIPTION] ),
+        "v",
+            CALCULATE (
+                AVERAGE ( RC_ML_Scored[Anomaly_Score_0_100] ),
+                KEEPFILTERS ( RC_ML_Scored[MONTH_END] = lm )
+            )
+    )
+VAR r = RANKX ( t, [v], , DESC, DENSE )
+VAR n = COUNTROWS ( t )
+RETURN IF ( n <= 1, BLANK (), DIVIDE ( r - 1, n - 1 ) )
+
+
+
+
+
+
 -- Raw (abs) PSI for the current RC at latest month
 PSI Contrib Abs (Latest) =
 VAR lm = [Latest Month]
