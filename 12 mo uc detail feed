@@ -1,3 +1,53 @@
+Severity Weighted Pctl (Latest) =
+VAR lm   = [Latest Month (Model)]
+VAR curr =
+    CALCULATE(
+        AVERAGE( RC_Code_Model_Base[Severity_0_100] ),
+        KEEPFILTERS( RC_Code_Model_Base[MONTH_END] = lm )
+    )
+VAR t =
+    SUMMARIZE(
+        ALL( Dim_RC[RC_DESCRIPTION] ),
+        Dim_RC[RC_DESCRIPTION],
+        "val",
+            CALCULATE(
+                AVERAGE( RC_Code_Model_Base[Severity_0_100] ),
+                KEEPFILTERS( RC_Code_Model_Base[MONTH_END] = lm )
+            )
+    )
+VAR n = COUNTROWS( t )
+VAR rk = COUNTROWS( FILTER( t, [val] >= curr ) )
+RETURN IF( n <= 1 || ISBLANK(curr), BLANK(), DIVIDE( rk - 1, n - 1 ) )
+
+PSI Contrib Abs Pctl (Latest) =
+VAR lm   = [Latest Month (PSI)]
+VAR curr =
+    CALCULATE(
+        ABS( AVERAGE( RC_PSI_ByDescription[PSI_CONTRIB] ) ),
+        KEEPFILTERS( RC_PSI_ByDescription[MONTH_END] = lm )
+    )
+VAR t =
+    SUMMARIZE(
+        ALL( Dim_RC[RC_DESCRIPTION] ),
+        Dim_RC[RC_DESCRIPTION],
+        "val",
+            CALCULATE(
+                ABS( AVERAGE( RC_PSI_ByDescription[PSI_CONTRIB] ) ),
+                KEEPFILTERS( RC_PSI_ByDescription[MONTH_END] = lm )
+            )
+    )
+VAR n = COUNTROWS( t )
+VAR rk = COUNTROWS( FILTER( t, [val] >= curr ) )
+RETURN IF( n <= 1 || ISBLANK(curr), BLANK(), DIVIDE( rk - 1, n - 1 ) )
+
+
+
+
+
+
+
+
+
 Latest Month (ML) =
 CALCULATE( MAX( RC_ML_Scored[MONTH_END] ), ALL( RC_ML_Scored ) )
 
