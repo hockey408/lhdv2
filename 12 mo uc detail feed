@@ -1,3 +1,42 @@
+Latest Month (ML) =
+CALCULATE( MAX( RC_ML_Scored[MONTH_END] ), ALL( RC_ML_Scored ) )
+
+Latest Month (Model) =
+CALCULATE( MAX( RC_Code_Model_Base[MONTH_END] ), ALL( RC_Code_Model_Base ) )
+
+Latest Month (PSI) =
+CALCULATE( MAX( RC_PSI_ByDescription[MONTH_END] ), ALL( RC_PSI_ByDescription ) )
+
+ML Anomaly Pctl (Latest) =
+VAR lm   = [Latest Month (ML)]
+VAR curr =
+    CALCULATE(
+        AVERAGE( RC_ML_Scored[Anomaly_Score_0_100] ),
+        KEEPFILTERS( RC_ML_Scored[MONTH_END] = lm )
+    )
+VAR t =
+    SUMMARIZE(
+        ALL( Dim_RC[RC_DESCRIPTION] ),
+        Dim_RC[RC_DESCRIPTION],
+        "val",
+            CALCULATE(
+                AVERAGE( RC_ML_Scored[Anomaly_Score_0_100] ),
+                KEEPFILTERS( RC_ML_Scored[MONTH_END] = lm )
+            )
+    )
+VAR n = COUNTROWS( t )
+VAR rk = COUNTROWS( FILTER( t, [val] >= curr ) )
+RETURN IF( n <= 1 || ISBLANK(curr), BLANK(), DIVIDE( rk - 1, n - 1 ) )
+
+
+
+
+
+
+
+
+
+
 -- Q2: MoM Bridge by Bank_Code (Source_System_Balance) — FIXED ORDER BY
 WITH params AS (
   SELECT DATE '2025-09-30' AS curr_eom,
