@@ -1,3 +1,36 @@
+PSI Contrib Abs (Latest) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    ABS ( AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ) ),
+    TREATAS ( ROW ( "d", lm ), RC_PSI_ByDescription[MONTH_END] ),
+    TREATAS ( VALUES ( Dim_RC[RC_DESCRIPTION] ), RC_PSI_ByDescription[RC_DESC] )
+)
+
+
+PSI Contrib Abs Pctl (Latest) =
+VAR t =
+    ADDCOLUMNS (
+        VALUES ( Dim_RC[RC_DESCRIPTION] ),
+        "v", [PSI Contrib Abs (Latest)]
+    )
+VAR r = RANKX ( t, [v], , DESC, DENSE )
+VAR n = COUNTROWS ( t )
+RETURN IF ( n <= 1, BLANK(), DIVIDE ( r - 1, n - 1 ) )
+
+Triage Score 0-100 (Latest) =
+VAR elig = [Is Triage Eligible]
+VAR ml   = [ML Anomaly Pctl (Latest)]
+VAR sev  = [Severity Weighted Pctl (Latest)]
+VAR psi  = [PSI Contrib Abs Pctl (Latest)]
+VAR score01 = 0.45 * ml + 0.35 * sev + 0.20 * psi
+RETURN IF ( elig <> 1, BLANK(), ROUND ( 100 * score01, 1 ) )
+
+
+
+
+
+
 PSI Abs (Latest, Bound) =
 VAR lm = [Latest Month]
 RETURN
