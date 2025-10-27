@@ -1,3 +1,39 @@
+=IFERROR(
+  SUMIFS(Pop[SOURCE_SYSTEM_BALANCE],
+         Pop[END_OF_MONTH_DATE], CurrEOM,
+         Pop[Prev_SSB], 0,
+         Pop[AutoChangeFlag], "N"),
+  0
+)
+
+=IFERROR(
+ -SUMIFS(Pop[SOURCE_SYSTEM_BALANCE],
+         Pop[END_OF_MONTH_DATE], PrevEOM,
+         Pop[Curr_SSB], 0,
+         Pop[AutoChangeFlag], "N"),
+ 0
+)
+
+=IFERROR(
+  SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE], CurrEOM, Pop[AutoChangeFlag], "Y")
+ -SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE], PrevEOM,  Pop[AutoChangeFlag], "Y"),
+ 0
+)
+
+=IFERROR(
+  SUMIFS(Pop[Exposure_Delta],
+         Pop[END_OF_MONTH_DATE], CurrEOM,
+         Pop[Prev_SSB], ">0",
+         Pop[Exposure_Delta], "<>0",
+         Pop[AutoChangeFlag], "N"),
+ 0
+)
+
+=SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE], CurrEOM)
+
+
+
+
 =IF(
   COUNTIFS(
     Pop[END_OF_MONTH_DATE], $B$1,
