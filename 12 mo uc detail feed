@@ -1,3 +1,31 @@
+=SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[MonthFlag], "PREV")
+
+=SUMIFS(Pop[SOURCE_SYSTEM_BALANCE],
+       Pop[MonthFlag], "CURR",
+       Pop[MoM_Status], "Downgrade IN",
+       Pop[AutoChangeFlag], "N")
+
+=-SUMIFS(Pop[SOURCE_SYSTEM_BALANCE],
+        Pop[MonthFlag], "PREV",
+        Pop[Curr_SSB], 0,
+        Pop[AutoChangeFlag], "N")
+
+= SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[MonthFlag], "CURR", Pop[RBC_CODE], "R")
+ -SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[MonthFlag], "PREV", Pop[RBC_CODE], "R")
+
+=SUMIFS(Pop[Exposure_Delta],
+       Pop[MonthFlag], "CURR",
+       Pop[MoM_Status], "Persisting Bal Change",
+       Pop[AutoChangeFlag], "N")
+
+=SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[MonthFlag], "CURR")
+
+
+
+
+
+
+
 =SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE], PrevEOM, Pop[Normalized_ID], [@Normalized_ID])
 
 =SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE], CurrEOM, Pop[Normalized_ID], [@Normalized_ID])
