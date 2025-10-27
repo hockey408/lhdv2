@@ -4,6 +4,95 @@
   bal,  N([@SOURCE_SYSTEM_BALANCE]),
   css,  UPPER(TRIM([@CONTRACT_SOURCE_SYSTEM])),
   rbc,  UPPER(TRIM([@RBC_CODE])),
+
+  isSamyaProd, prod="BUSINESS RE TERM LOANS",
+  isCaseyProd, OR(prod="BUSINESS NON-RE TERM LOANS", prod="BUSINESS COMMITMENT DRAW"),
+  isLCIT,      bank="L-CIT",
+
+  IFS(
+    /* Samya ≥ 500k */
+    AND(isSamyaProd, isLCIT, bal>=500000), "Samya",
+    /* Casey ≥ 250k */
+    AND(isCaseyProd, isLCIT, bal>=250000), "Casey",
+
+    /* Samya under-threshold (meets criteria but <500k) */
+    AND(isSamyaProd, isLCIT, bal<500000),  "Under $500k; Not Reviewed",
+
+    /* Casey under-threshold (meets criteria but <250k) */
+    AND(isCaseyProd, isLCIT, bal<250000),  "Under $250k; Not Reviewed",
+
+    /* Remaining buckets in stated precedence */
+    css="INFL10", "Daniel",
+    bank="L-SVB", "Eleanor",
+    rbc="R",      "Autochange",
+    bank="L-FCB", "Connor",
+    TRUE,         "NOT REVIEWED"
+  )
+)
+
+
+=LET(
+  id,  [@ACCOUNT_IDENTIFIER],
+  prev, XLOOKUP(
+          id,
+          FILTER(Pop[ACCOUNT_IDENTIFIER], Pop[END_OF_MONTH_DATE]=$B$1),
+          FILTER(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE]=$B$1),
+          ""
+        ),
+  N(prev)
+)
+
+
+=LET(
+  id,  [@ACCOUNT_IDENTIFIER],
+  XLOOKUP(
+    id,
+    FILTER(Pop[ACCOUNT_IDENTIFIER], Pop[END_OF_MONTH_DATE]=$B$1),
+    FILTER(Pop[NON_ACCRUAL_FLAG],  Pop[END_OF_MONTH_DATE]=$B$1),
+    ""
+  )
+)
+
+=LET(
+  rowDate, [@END_OF_MONTH_DATE],
+  currBal, N([@SOURCE_SYSTEM_BALANCE]),
+  currFlag, UPPER(TRIM([@NON_ACCRUAL_FLAG])),
+  prevBal,  N([@Prev_SSB]),
+  prevFlag, UPPER(TRIM([@Prev_NA_Flag])),
+
+  /* Does this account appear in current month at all (from a prev row)? */
+  currBalFromPrev, XLOOKUP(
+                      [@ACCOUNT_IDENTIFIER],
+                      FILTER(Pop[ACCOUNT_IDENTIFIER], Pop[END_OF_MONTH_DATE]=$B$2),
+                      FILTER(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE]=$B$2),
+                      ""
+                    ),
+
+  IF(
+    rowDate=$B$2,
+      /* We’re on a CURRENT-MONTH row */
+      IF(AND(prevFlag<>"Y", currFlag="Y"), "Downgrade IN",
+      IF(AND(prevFlag="Y",  currFlag="Y", currBal<>prevBal), "Persisting Bal Change",
+      IF(AND(prevFlag="Y",  currFlag="Y", currBal=prevBal),  "Persisting No Bal Change",
+         "" ))),
+    /* Else: we’re on a PREV-MONTH row — only show EXITs here */
+    IF(AND(rowDate=$B$1, currBalFromPrev=""), "EXIT", "")
+  )
+)
+
+
+
+
+
+
+
+
+=LET(
+  prod, UPPER(TRIM([@PROD_HIER_LEVEL_5])),
+  bank, UPPER(TRIM([@BANK_CODE])),
+  bal,  N([@SOURCE_SYSTEM_BALANCE]),
+  css,  UPPER(TRIM([@CONTRACT_SOURCE_SYSTEM])),
+  rbc,  UPPER(TRIM([@RBC_CODE])),
   IFS(
     AND(prod="BUSINESS RE TERM LOANS", bank="L-CIT", bal>500000), "Samya",
     AND(OR(prod="BUSINESS NON-RE TERM LOANS", prod="BUSINESS COMMITMENT DRAW"), bank="L-CIT", bal>250000), "Casey",
