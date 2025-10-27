@@ -1,3 +1,15 @@
+PSI Contrib Abs (Latest) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    ABS ( AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ) ),
+    KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = lm )
+)
+
+
+
+
+
 PSI Contrib Rank (Latest) =
 VAR lm      = [Latest Month]
 VAR rcTable = VALUES ( Dim_RC[RC_DESCRIPTION] )
