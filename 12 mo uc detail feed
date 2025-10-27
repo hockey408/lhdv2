@@ -1,3 +1,42 @@
+import pandas as pd, numpy as np
+
+# Expect df from cell A
+def robust_z(s: pd.Series) -> pd.Series:
+    med = s.median()
+    mad = (s - med).abs().median()
+    if not mad or mad == 0:
+        std = s.std(ddof=0)
+        return (s - s.mean())/std if std and std != 0 else pd.Series(0.0, index=s.index)
+    return (s - med) / (1.4826 * mad)
+
+# Pick features (use what exists; need at least two numeric columns)
+feat = [c for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT"] if c in df.columns]
+if len(feat) < 2:
+    numcols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    feat = numcols[:2]
+
+# Fallback (no sklearn dependency): MAD-based composite → percentile → score
+Z = pd.DataFrame({c: robust_z(df[c].fillna(0)) for c in feat})
+comp = Z.abs().sum(axis=1)
+pct  = comp.rank(pct=True)
+df["Anomaly_Score_0_100"] = (pct*100).round(1)
+df["Cluster_ID"] = pd.qcut(pct, q=[0,.25,.5,.75,1.0], labels=[0,1,2,3]).astype(int)
+
+# Keep tidy scored view
+scored_cols = [c for c in [
+    "RC_CODE","RC_DESCRIPTION","MONTH_END","BEST_MODEL","SEVERITY_0_100",
+    "PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT","RMSE",
+    "Cluster_ID","Anomaly_Score_0_100"
+] if c in df.columns]
+scored = df[scored_cols].copy()
+
+# Return a preview
+scored.sort_values(["MONTH_END","Anomaly_Score_0_100"], ascending=[False, False])
+
+
+
+
+
 Latest Month =
 CALCULATE ( MAX ( 'Date'[MonthEnd] ), ALL ( 'Date' ) )
 
