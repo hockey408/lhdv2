@@ -3,6 +3,36 @@
        Pop[Prev_SSB], 0,
        Pop[Curr_RBC_Flag], "N")
 
+=-SUMIFS(Pop[SOURCE_SYSTEM_BALANCE],
+        Pop[END_OF_MONTH_DATE], PrevEOM,
+        Pop[Curr_SSB], 0,
+        Pop[Prev_RBC_Flag], "N")
+
+= SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE], CurrEOM, Pop[Curr_RBC_Flag], "Y")
+ -SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE], PrevEOM, Pop[Prev_RBC_Flag], "Y")
+
+=SUMIFS(Pop[Exposure_Delta],
+       Pop[END_OF_MONTH_DATE], CurrEOM,
+       Pop[Prev_SSB], ">0",
+       Pop[Exposure_Delta], "<>0",
+       Pop[Curr_RBC_Flag], "N")
+
+=SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE], CurrEOM)
+
+
+
+
+
+
+
+
+
+
+=SUMIFS(Pop[SOURCE_SYSTEM_BALANCE],
+       Pop[END_OF_MONTH_DATE], CurrEOM,
+       Pop[Prev_SSB], 0,
+       Pop[Curr_RBC_Flag], "N")
+
 
 
 
