@@ -1,3 +1,75 @@
+PSI Contrib % of Total (Latest) =
+VAR lm = [Latest Month]
+VAR rc_val =
+    CALCULATE (
+        AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ),
+        KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = lm ),
+        KEEPFILTERS ( RC_PSI_ByDescription[RC_DESCRIPTION] = SELECTEDVALUE ( Dim_RC[RC_DESCRIPTION] ) )
+    )
+VAR tot_val =
+    CALCULATE (
+        SUM ( RC_PSI_ByDescription[PSI_CONTRIB] ),
+        KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = lm )
+    )
+RETURN DIVIDE ( rc_val, tot_val )
+
+PSI Contrib (bps, Latest) =
+VAR lm = [Latest Month]
+VAR v =
+    CALCULATE (
+        AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ),
+        KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = lm ),
+        KEEPFILTERS ( RC_PSI_ByDescription[RC_DESCRIPTION] = SELECTEDVALUE ( Dim_RC[RC_DESCRIPTION] ) )
+    )
+RETURN v * 10000   -- 1 PSI unit = 10,000 bps for display only
+
+
+PSI Contrib Rank (Latest) =
+VAR lm = [Latest Month]
+VAR t =
+    ADDCOLUMNS (
+        VALUES ( Dim_RC[RC_DESCRIPTION] ),
+        "psi",
+            CALCULATE (
+                AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ),
+                KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = lm ),
+                KEEPFILTERS ( RC_PSI_ByDescription[RC_DESCRIPTION] = Dim_RC[RC_DESCRIPTION] )
+            )
+    )
+RETURN RANKX ( t, [psi], , DESC, DENSE )
+
+PSI Contrib Pctl (Latest) =
+VAR lm = [Latest Month]
+VAR t =
+    ADDCOLUMNS (
+        VALUES ( Dim_RC[RC_DESCRIPTION] ),
+        "psi",
+            CALCULATE (
+                AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ),
+                KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = lm ),
+                KEEPFILTERS ( RC_PSI_ByDescription[RC_DESCRIPTION] = Dim_RC[RC_DESCRIPTION] )
+            )
+    )
+VAR r = RANKX ( t, [psi], , DESC, DENSE )
+VAR n = COUNTROWS ( t )
+RETURN IF ( n <= 1, BLANK(), DIVIDE ( r - 1, n - 1 ) )
+
+
+Triage Score 0-100 (Latest) =
+VAR elig = [Is Triage Eligible]
+VAR ml   = [ML Anomaly Pctl (Latest)]
+VAR sev  = [Severity Weighted Pctl (Latest)]
+VAR psi  = [PSI Contrib Pctl (Latest)]
+VAR score01 = 0.45*ml + 0.35*sev + 0.20*psi
+RETURN IF ( elig <> 1, BLANK(), ROUND ( 100 * score01, 1 ) )
+
+
+
+
+
+
+
+
 _DEBUG PSI =
 SUMMARIZECOLUMNS (
     RC_PSI_ByDescription[RC_DESCRIPTION],
