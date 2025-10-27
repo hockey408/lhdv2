@@ -1,3 +1,91 @@
+PSI Abs (Latest, Bound) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    MAX ( RC_PSI_ByDescription[PSI_CONTRIB_ABS] ),
+    TREATAS ( ROW ( "d", lm ), RC_PSI_ByDescription[MONTH_END] ),
+    TREATAS ( VALUES ( Dim_RC[RC_DESCRIPTION] ), RC_PSI_ByDescription[RC_DESCRIPTION] )
+)
+
+Exposure (Latest by RC) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    SUM ( RC_PSI_ByDescription[EXP_SUM] ),
+    TREATAS ( ROW ( "d", lm ), RC_PSI_ByDescription[MONTH_END] ),
+    TREATAS ( VALUES ( Dim_RC[RC_DESCRIPTION] ), RC_PSI_ByDescription[RC_DESCRIPTION] )
+)
+
+
+Is Triage Eligible =
+VAR ok_mon = IF ( [Monitorable Flag (Measure)] = 1, 1, 0 )
+VAR ok_flo = IF ( [Exposure (Latest by RC)] >= 1000000, 1, 0 )
+RETURN IF ( ok_mon = 1 && ok_flo = 1, 1, 0 )
+
+
+-- ML anomaly from RC_ML_Scored
+ML Anomaly (Latest, Bound) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    AVERAGE ( RC_ML_Scored[Anomaly_Score_0_100] ),
+    TREATAS ( ROW ( "d", lm ), RC_ML_Scored[MONTH_END] ),
+    TREATAS ( VALUES ( Dim_RC[RC_DESCRIPTION] ), RC_ML_Scored[RC_DESCRIPTION] )
+)
+
+-- Severity from RC_Code_Model_Base
+Severity (Weighted, Latest, Bound) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    AVERAGE ( RC_Code_Model_Base[Severity_0_100] ),
+    TREATAS ( ROW ( "d", lm ), RC_Code_Model_Base[MONTH_END] ),
+    TREATAS ( VALUES ( Dim_RC[RC_DESCRIPTION] ), RC_Code_Model_Base[RC_DESCRIPTION] )
+)
+
+
+ML Anomaly Pctl (Latest) =
+VAR t = ADDCOLUMNS ( VALUES ( Dim_RC[RC_DESCRIPTION] ), "v", [ML Anomaly (Latest, Bound)] )
+VAR r = RANKX ( t, [v], , DESC, DENSE )
+VAR n = COUNTROWS ( t )
+RETURN IF ( n <= 1, BLANK(), DIVIDE ( r - 1, n - 1 ) )
+
+Severity Weighted Pctl (Latest) =
+VAR t = ADDCOLUMNS ( VALUES ( Dim_RC[RC_DESCRIPTION] ), "v", [Severity (Weighted, Latest, Bound)] )
+VAR r = RANKX ( t, [v], , DESC, DENSE )
+VAR n = COUNTROWS ( t )
+RETURN IF ( n <= 1, BLANK(), DIVIDE ( r - 1, n - 1 ) )
+
+PSI Abs Pctl (Latest) =
+VAR t = ADDCOLUMNS ( VALUES ( Dim_RC[RC_DESCRIPTION] ), "v", [PSI Abs (Latest, Bound)] )
+VAR r = RANKX ( t, [v], , DESC, DENSE )
+VAR n = COUNTROWS ( t )
+RETURN IF ( n <= 1, BLANK(), DIVIDE ( r - 1, n - 1 ) )
+
+
+Triage Score 0-100 (Latest) =
+VAR elig = [Is Triage Eligible]
+VAR ml   = [ML Anomaly Pctl (Latest)]
+VAR sev  = [Severity Weighted Pctl (Latest)]
+VAR psi  = [PSI Abs Pctl (Latest)]
+VAR score01 = 0.45 * ml + 0.35 * sev + 0.20 * psi
+RETURN IF ( elig <> 1, BLANK(), ROUND ( 100 * score01, 1 ) )
+
+Triage Rank (Latest) =
+RANKX (
+    ALLSELECTED ( Dim_RC[RC_DESCRIPTION] ),
+    [Triage Score 0-100 (Latest)],
+    ,
+    DESC,
+    DENSE
+)
+
+
+
+
+
+
+
 import pandas as pd, numpy as np
 
 def robust_z(s: pd.Series) -> pd.Series:
