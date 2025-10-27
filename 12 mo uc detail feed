@@ -1,3 +1,46 @@
+PSI Contrib Rank (Latest) =
+VAR lm      = [Latest Month]
+VAR rcTable = VALUES ( Dim_RC[RC_DESCRIPTION] )
+VAR t =
+    ADDCOLUMNS (
+        rcTable,
+        "psi",
+            VAR rc = [RC_DESCRIPTION]
+            RETURN
+                CALCULATE (
+                    AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ),
+                    KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = lm ),
+                    TREATAS ( ROW ( "rc", rc ), RC_PSI_ByDescription[RC_DESCRIPTION] )
+                )
+    )
+RETURN
+RANKX ( t, [psi], , DESC, DENSE )
+
+
+
+PSI Contrib Pctl (Latest) =
+VAR lm      = [Latest Month]
+VAR rcTable = VALUES ( Dim_RC[RC_DESCRIPTION] )
+VAR t =
+    ADDCOLUMNS (
+        rcTable,
+        "psi",
+            VAR rc = [RC_DESCRIPTION]
+            RETURN
+                CALCULATE (
+                    AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ),
+                    KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = lm ),
+                    TREATAS ( ROW ( "rc", rc ), RC_PSI_ByDescription[RC_DESCRIPTION] )
+                )
+    )
+VAR r = RANKX ( t, [psi], , DESC, DENSE )
+VAR n = COUNTROWS ( t )
+RETURN IF ( n <= 1, BLANK(), DIVIDE ( r - 1, n - 1 ) )
+
+
+
+
+
 PSI Contrib % of Total (Latest) =
 VAR lm = [Latest Month]
 VAR rc_val =
