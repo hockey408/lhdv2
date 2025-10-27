@@ -1,3 +1,67 @@
+-- ======================= RC Exposure Flow (Adds/Drops/Transfers) ========================
+-- Compares current vs prior month exposures by RC per Account_Identifier.
+-- Detects: New, Closed, Transfer In/Out, and Balance Change.
+-- ========================================================================================
+
+WITH base AS (
+  SELECT
+    Account_Identifier,
+    RC_CODE,
+    RC_DESCRIPTION,
+    CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+    SOURCE_SYSTEM_BALANCE::FLOAT8   AS exposure
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+),
+
+lagged AS (
+  SELECT
+    b.Account_Identifier,
+    b.RC_CODE AS curr_rc,
+    b.RC_DESCRIPTION AS curr_rc_desc,
+    b.month_end,
+    b.exposure AS curr_exp,
+    LAG(b.RC_CODE)        OVER (PARTITION BY b.Account_Identifier ORDER BY b.month_end) AS prev_rc,
+    LAG(b.RC_DESCRIPTION) OVER (PARTITION BY b.Account_Identifier ORDER BY b.month_end) AS prev_rc_desc,
+    LAG(b.exposure)       OVER (PARTITION BY b.Account_Identifier ORDER BY b.month_end) AS prev_exp,
+    LAG(b.month_end)      OVER (PARTITION BY b.Account_Identifier ORDER BY b.month_end) AS prev_me
+  FROM base b
+),
+
+movements AS (
+  SELECT
+    month_end,
+    curr_rc_desc AS rc_description,
+    CASE
+      WHEN prev_rc IS NULL AND curr_rc IS NOT NULL THEN 'New Account'
+      WHEN prev_rc IS NOT NULL AND curr_rc IS NULL THEN 'Closed Account'
+      WHEN prev_rc <> curr_rc AND prev_rc IS NOT NULL AND curr_rc IS NOT NULL THEN
+           CASE WHEN curr_rc_desc <> prev_rc_desc THEN 'Transfer In' ELSE 'Transfer Out' END
+      ELSE 'Balance Change'
+    END AS movement_type,
+    SUM(COALESCE(curr_exp,0) - COALESCE(prev_exp,0)) AS exposure_change,
+    COUNT(DISTINCT Account_Identifier) AS account_count
+  FROM lagged
+  WHERE prev_me = ADD_MONTHS(month_end, -1)
+  GROUP BY month_end, curr_rc_desc,
+           CASE
+             WHEN prev_rc IS NULL AND curr_rc IS NOT NULL THEN 'New Account'
+             WHEN prev_rc IS NOT NULL AND curr_rc IS NULL THEN 'Closed Account'
+             WHEN prev_rc <> curr_rc AND prev_rc IS NOT NULL AND curr_rc IS NOT NULL THEN
+                  CASE WHEN curr_rc_desc <> prev_rc_desc THEN 'Transfer In' ELSE 'Transfer Out' END
+             ELSE 'Balance Change'
+           END
+)
+
+SELECT * FROM movements
+ORDER BY month_end DESC, rc_description, movement_type;
+
+
+
+
+
+
+
 =IFERROR(
   SUMIFS(Pop[SOURCE_SYSTEM_BALANCE],
          Pop[END_OF_MONTH_DATE], CurrEOM,
