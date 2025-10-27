@@ -1,3 +1,27 @@
+=IF(UPPER(TRIM([@RBC_CODE]))="R","Y","N")
+
+Item
+Amount (formula)
+Prev Month Non-Accrual Bal
+=SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[MonthFlag],"PREV")
+Downgrade IN (ex-Auto)
+=SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[MonthFlag],"CURR", Pop[MoM_Status],"Downgrade IN", Pop[AutoChangeFlag],"N")
+Exits (ex-Auto)
+=-SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[MonthFlag],"PREV", Pop[Curr_SSB],"", Pop[AutoChangeFlag],"N")
+Autochange (net)
+=SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[MonthFlag],"CURR", Pop[RBC_CODE],"R") - SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[MonthFlag],"PREV", Pop[RBC_CODE],"R")
+Persisting Bal Change (ex-Auto)
+=SUMIFS(Pop[Exposure_Delta], Pop[MonthFlag],"CURR", Pop[MoM_Status],"Persisting Bal Change", Pop[AutoChangeFlag],"N")
+Persisting No Change
+=0
+Current Month Bal
+=SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[MonthFlag],"CURR")
+
+
+
+
+
+
 =IF([@END_OF_MONTH_DATE]=$B$2,"CURR",IF([@END_OF_MONTH_DATE]=$B$1,"PREV",""))
 
 =LET(
