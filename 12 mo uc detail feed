@@ -1,3 +1,12 @@
+=SUMIFS(Pop[SOURCE_SYSTEM_BALANCE],
+       Pop[END_OF_MONTH_DATE], CurrEOM,
+       Pop[Prev_SSB], 0,
+       Pop[Curr_RBC_Flag], "N")
+
+
+
+
+
 =SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[MonthFlag], "PREV")
 
 =SUMIFS(Pop[SOURCE_SYSTEM_BALANCE],
