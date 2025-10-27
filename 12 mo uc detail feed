@@ -1,5 +1,61 @@
 import pandas as pd, numpy as np
 
+def robust_z(s: pd.Series) -> pd.Series:
+    s = pd.to_numeric(s, errors="coerce")
+    med = s.median()
+    s2 = s.fillna(med)
+    mad = (s2 - med).abs().median()
+    if not mad or mad == 0:
+        std = s2.std(ddof=0)
+        return (s2 - s2.mean())/std if std and std != 0 else pd.Series(0.0, index=s.index)
+    return (s2 - med) / (1.4826 * mad)
+
+# --- Feature selection ---
+features = [c for c in ["SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT"] if c in df.columns]
+if len(features) < 2:
+    numcols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    features = numcols[:2]
+
+df["MONTH_END"] = pd.to_datetime(df["MONTH_END"], errors="coerce")
+
+# --- Standardize via robust Z and weighted composite ---
+Z = pd.DataFrame({c: robust_z(df[c]) for c in features})
+weights = {"SEVERITY_0_100":1.5,"PSI_CONTRIB_ABS":1.0,"Z_RESID":1.2,"Z_MOM_ABS":1.0,"Z_MOM_PCT":0.8}
+comp = sum(weights.get(c,1.0)*Z[c].abs() for c in features)
+
+grp = df["MONTH_END"].dt.to_period("M")
+pct = comp.groupby(grp).rank(pct=True)
+df["Anomaly_Score_0_100"] = (pct*100).round(1)
+
+# --- Cluster by anomaly quartile ---
+def q4(s):
+    s = pd.to_numeric(s, errors="coerce")
+    if s.notna().sum() < 4: return pd.Series([0]*len(s), index=s.index)
+    try:
+        return pd.qcut(s, q=[0,.25,.5,.75,1.0], labels=[0,1,2,3]).astype(int)
+    except Exception:
+        r = s.rank(pct=True)
+        return pd.cut(r, bins=[0,.25,.5,.75,1.0], labels=[0,1,2,3], include_lowest=True).astype(int)
+
+clusters = []
+for m, idx in grp.groupby(grp).groups.items():
+    clusters.append(q4(pct.loc[idx]))
+df["Cluster_ID"] = pd.concat(clusters).sort_index().astype(int)
+
+# --- Final tidy output ---
+keep = [c for c in ["RC_CODE","RC_DESCRIPTION","MONTH_END","BEST_MODEL","RMSE",
+                    "SEVERITY_0_100","PSI_CONTRIB_ABS","Z_RESID","Z_MOM_ABS","Z_MOM_PCT",
+                    "Cluster_ID","Anomaly_Score_0_100"] if c in df.columns]
+scored_full = df[keep].sort_values(["MONTH_END","Anomaly_Score_0_100"], ascending=[True,False])
+
+scored_full
+
+
+
+
+
+import pandas as pd, numpy as np
+
 TABLE_NAME = "RC_ML_Features"  # exact Excel Table name
 
 def load_excel_table(table: str) -> pd.DataFrame:
