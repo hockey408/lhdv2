@@ -1,3 +1,21 @@
+# After computing `comp`
+pct = (comp.groupby(df["MONTH_END"])
+           .rank(pct=True))  # percentile within each month
+df["Anomaly_Score_0_100"] = (pct*100).round(1)
+df["Cluster_ID"] = (pct.groupby(df["MONTH_END"])
+                      .transform(lambda s: pd.qcut(s, q=[0,.25,.5,.75,1.0], labels=[0,1,2,3]))
+                      .astype(int))
+
+
+Z = pd.DataFrame({c: robust_z(df[c].fillna(df[c].median())) for c in feat})
+
+
+weights = {"SEVERITY_0_100": 1.5, "PSI_CONTRIB_ABS": 1.0, "Z_RESID": 1.2, "Z_MOM_ABS": 1.0, "Z_MOM_PCT": 0.8}
+comp = sum(weights.get(c,1.0) * Z[c].abs() for c in feat)
+
+
+
+
 import pandas as pd, numpy as np
 
 # Expect df from cell A
