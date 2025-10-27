@@ -1,3 +1,27 @@
+=SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE], PrevEOM, Pop[Normalized_ID], [@Normalized_ID])
+
+=SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE], CurrEOM, Pop[Normalized_ID], [@Normalized_ID])
+
+=IF([@MonthFlag]="CURR", [@SOURCE_SYSTEM_BALANCE]-[@Prev_SSB], 0)
+
+=IF(
+   OR(
+      COUNTIFS(Pop[END_OF_MONTH_DATE],PrevEOM, Pop[Normalized_ID],[@Normalized_ID], Pop[RBC_CODE],"R")>0,
+      COUNTIFS(Pop[END_OF_MONTH_DATE],CurrEOM, Pop[Normalized_ID],[@Normalized_ID], Pop[RBC_CODE],"R")>0
+   ),
+   "Y","N"
+)
+
+=IF([@MonthFlag]<>"CURR","",
+   IF([@Prev_SSB]=0,"Downgrade IN",
+   IF([@Exposure_Delta]<>0,"Persisting Bal Change","Persisting No Bal Change")))
+
+
+
+
+
+
+
 =SUM(--(FREQUENCY(MATCH(IF(Pop[END_OF_MONTH_DATE]=PrevEOM,Pop[ACCOUNT_IDENTIFIER]),IF(Pop[END_OF_MONTH_DATE]=PrevEOM,Pop[ACCOUNT_IDENTIFIER]),0),ROW(Pop[ACCOUNT_IDENTIFIER])-ROW(FIRSTCELL)+1)>0))
 
 
