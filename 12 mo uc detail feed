@@ -1,3 +1,10 @@
+=SUM(--(FREQUENCY(MATCH(IF(Pop[END_OF_MONTH_DATE]=PrevEOM,Pop[ACCOUNT_IDENTIFIER]),IF(Pop[END_OF_MONTH_DATE]=PrevEOM,Pop[ACCOUNT_IDENTIFIER]),0),ROW(Pop[ACCOUNT_IDENTIFIER])-ROW(FIRSTCELL)+1)>0))
+
+
+
+
+
+
 -- ======================= RC Exposure Flow (Adds/Drops/Transfers) ========================
 -- Compares current vs prior month exposures by RC per Account_Identifier.
 -- Detects: New, Closed, Transfer In/Out, and Balance Change.
