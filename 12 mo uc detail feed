@@ -1,3 +1,118 @@
+-- Q2: MoM Bridge by Bank_Code (Source_System_Balance) — FIXED ORDER BY
+WITH params AS (
+  SELECT DATE '2025-09-30' AS curr_eom,
+         ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
+),
+pop AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Name,
+      Contract_Source_System,
+      CIS_Customer_Number,
+      Facility_ID,
+      CASE WHEN Account_Identifier IS NULL OR TRIM(Account_Identifier)='' THEN '§NULL§' ELSE TRIM(Account_Identifier) END AS Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag,
+      PROD_HIER_LEVEL_5,
+      RBC_Code,
+      GL_ACCOUNT_CODE
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND End_of_Month_Date IN ((SELECT prev_eom FROM params),(SELECT curr_eom FROM params))
+),
+prev_norm AS (
+  SELECT
+    Account_Identifier,
+    MAX(Contract_Source_System) AS Contract_Source_System,
+    MAX(GL_ACCOUNT_CODE)        AS GL_ACCOUNT_CODE,
+    SUM(Source_System_Balance)  AS Prev_Bal
+  FROM pop
+  WHERE End_of_Month_Date=(SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag='Y'
+    AND Source_System_Balance>0
+  GROUP BY Account_Identifier
+),
+curr_norm AS (
+  SELECT
+    Account_Identifier,
+    MAX(Contract_Source_System) AS Contract_Source_System,
+    MAX(GL_ACCOUNT_CODE)        AS GL_ACCOUNT_CODE,
+    SUM(Source_System_Balance)  AS Curr_Bal
+  FROM pop
+  WHERE End_of_Month_Date=(SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag='Y'
+    AND Source_System_Balance>0
+  GROUP BY Account_Identifier
+),
+joined AS (
+  SELECT
+    COALESCE(c.Account_Identifier,p.Account_Identifier) AS Account_Identifier,
+    COALESCE(c.Contract_Source_System,p.Contract_Source_System) AS Contract_Source_System,
+    COALESCE(c.GL_ACCOUNT_CODE,p.GL_ACCOUNT_CODE)       AS GL_ACCOUNT_CODE,
+    COALESCE(p.Prev_Bal,0) AS Prev_Bal,
+    COALESCE(c.Curr_Bal,0) AS Curr_Bal
+  FROM curr_norm c
+  FULL OUTER JOIN prev_norm p
+    ON c.Account_Identifier=p.Account_Identifier
+),
+with_bank AS (
+  SELECT
+    j.*,
+    CASE
+      WHEN Contract_Source_System IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN') THEN 'L-SVB'
+      WHEN Contract_Source_System='ALL'
+           AND GL_ACCOUNT_CODE IN ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+                                   '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+                                   '1100001','1142067','1042886','1043008') THEN 'L-SVB'
+      WHEN Contract_Source_System IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO') THEN 'L-FCB'
+      WHEN Contract_Source_System IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN',
+                                      'INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001',
+                                      'SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+                                      'STRAT1','STRAT1-EXCPTN') THEN 'L-CIT'
+      ELSE 'NULL-Need to Research'
+    END AS Bank_Code
+  FROM joined j
+),
+totals AS (
+  SELECT
+    Bank_Code,
+    SUM(CASE WHEN Prev_Bal>0 THEN Prev_Bal END)                 AS prev_total_bal,
+    SUM(CASE WHEN Curr_Bal>0 THEN Curr_Bal END)                 AS curr_total_bal,
+    COUNT(CASE WHEN Prev_Bal>0 THEN 1 END)                      AS prev_total_cnt,
+    COUNT(CASE WHEN Curr_Bal>0 THEN 1 END)                      AS curr_total_cnt,
+    COALESCE(SUM(CASE WHEN Prev_Bal=0 AND Curr_Bal>0 THEN Curr_Bal END),0)                    AS adds_bal,
+    -COALESCE(SUM(CASE WHEN Curr_Bal=0 AND Prev_Bal>0 THEN Prev_Bal END),0)                   AS drops_bal,
+    COALESCE(SUM(CASE WHEN Prev_Bal>0 AND Curr_Bal>0 THEN (Curr_Bal-Prev_Bal) END),0)         AS pers_delta_bal,
+    COALESCE(SUM(CASE WHEN Prev_Bal=0 AND Curr_Bal>0 THEN 1 END),0)                           AS adds_cnt,
+    -COALESCE(SUM(CASE WHEN Curr_Bal=0 AND Prev_Bal>0 THEN 1 END),0)                          AS drops_cnt
+  FROM with_bank
+  GROUP BY Bank_Code
+)
+SELECT Bank_Code, line, balance_val, count_val
+FROM (
+  SELECT Bank_Code, 'Prev Month Balance' AS line, prev_total_bal AS balance_val, NULL::BIGINT AS count_val, 0 AS seq FROM totals
+  UNION ALL SELECT Bank_Code, 'Adds',                    adds_bal,               NULL,         1 FROM totals
+  UNION ALL SELECT Bank_Code, 'Drops',                   drops_bal,              NULL,         2 FROM totals
+  UNION ALL SELECT Bank_Code, 'Persisting Bal Changes',  pers_delta_bal,         NULL,         3 FROM totals
+  UNION ALL SELECT Bank_Code, 'Current Month Balance',   curr_total_bal,         NULL,         4 FROM totals
+  UNION ALL SELECT Bank_Code, 'Prev Month Count',        NULL::NUMERIC(18,2),    prev_total_cnt, 10 FROM totals
+  UNION ALL SELECT Bank_Code, 'Adds',                    NULL,                   adds_cnt,       11 FROM totals
+  UNION ALL SELECT Bank_Code, 'Drops',                   NULL,                   drops_cnt,      12 FROM totals
+  UNION ALL SELECT Bank_Code, 'Current Month Count',     NULL,                   curr_total_cnt, 13 FROM totals
+) u
+ORDER BY Bank_Code, seq;
+
+
+
+
 ML Anomaly Pctl (Latest) =
 VAR lm = [Latest Month]
 VAR r  =
