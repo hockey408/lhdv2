@@ -1,3 +1,18 @@
+Is Triage Eligible = IF( [Monitorable Flag (Measure)] = 1 && [Exposure (Latest by RC)] >= 1000000, 1, 0 )
+
+Triage Score 0-100 (Latest) =
+VAR elig = [Is Triage Eligible]
+VAR ml   = [ML Anomaly Pctl (Latest)]
+VAR sev  = [Severity Weighted Pctl (Latest)]
+VAR psi  = [PSI Contrib Abs Pctl (Latest)]
+VAR score01 = 0.45*ml + 0.35*sev + 0.20*psi
+RETURN IF( elig <> 1, BLANK(), ROUND( 100*score01, 1 ) )
+
+
+
+
+
+
 Severity Weighted Pctl (Latest) =
 VAR lm   = [Latest Month (Model)]
 VAR curr =
