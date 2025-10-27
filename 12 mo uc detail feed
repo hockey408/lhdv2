@@ -1,3 +1,50 @@
+-- Raw (abs) PSI for the current RC at latest month
+PSI Contrib Abs (Latest) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    ABS ( AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ) ),
+    KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = lm )
+)
+
+
+-- Rank across RCs (no temp column)
+PSI Contrib Rank (Latest) =
+VAR lm = [Latest Month]
+RETURN
+RANKX (
+    VALUES ( Dim_RC[RC_DESCRIPTION] ),
+    CALCULATE (
+        ABS ( AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ) ),
+        KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = lm )
+    ),
+    ,
+    DESC,
+    DENSE
+)
+
+
+-- Percentile 0..1 across RCs
+PSI Contrib Pctl (Latest) =
+VAR lm = [Latest Month]
+VAR r =
+    RANKX (
+        VALUES ( Dim_RC[RC_DESCRIPTION] ),
+        CALCULATE (
+            ABS ( AVERAGE ( RC_PSI_ByDescription[PSI_CONTRIB] ) ),
+            KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = lm )
+        ),
+        ,
+        DESC,
+        DENSE
+    )
+VAR n = COUNTROWS ( VALUES ( Dim_RC[RC_DESCRIPTION] ) )
+RETURN IF ( n <= 1, BLANK(), DIVIDE ( r - 1, n - 1 ) )
+
+
+
+
+
 PSI Contrib Rank (Latest) =
 VAR lm = [Latest Month]
 VAR t =
