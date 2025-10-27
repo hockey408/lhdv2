@@ -1,3 +1,16 @@
+=IF(
+  COUNTIFS(
+    Pop[END_OF_MONTH_DATE], $B$1,
+    Pop[Normalized_ID], [@Normalized_ID],
+    Pop[NON_ACCRUAL_FLAG], "Y"
+  ) > 0,
+  "Y",
+  ""
+)
+
+
+
+
 =SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE], $B$1, Pop[Normalized_ID], [@Normalized_ID])
 
 =SUMIFS(Pop[SOURCE_SYSTEM_BALANCE], Pop[END_OF_MONTH_DATE], $B$2, Pop[Normalized_ID], [@Normalized_ID])
