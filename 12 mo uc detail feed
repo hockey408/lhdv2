@@ -1,3 +1,30 @@
+Waterfall Amount (Sel, Total Aware) =
+VAR step = SELECTEDVALUE ( 'Waterfall Steps'[Step] )
+VAR prevBal = [Exposure Prev (Sel)]
+VAR newAcc  = [Δ New (Sel)]
+VAR closed  = [Δ Closed (Sel)]
+VAR xin     = [Δ Xfer In (Sel)]
+VAR xout    = [Δ Xfer Out (Sel)]
+VAR balchg  = [Δ Balance Change (Sel)]
+VAR currBal = [Exposure Curr (Sel)]
+RETURN
+SWITCH (
+    TRUE(),
+    step = "Previous Balance", prevBal,
+    step = "New Accounts",     newAcc,
+    step = "Closed Accounts",  closed,
+    step = "Transfers In",     xin,
+    step = "Transfers Out",    xout,
+    step = "Balance Change",   balchg,
+    step = "Current Balance",  currBal - (
+        prevBal + newAcc + closed + xin + xout + balchg
+    ),   -- ✅ this forces Power BI to treat it as a total reset
+    BLANK()
+)
+
+
+
+
 Waterfall Steps =
 DATATABLE(
     "Step", STRING, "IsTotal", BOOLEAN,
