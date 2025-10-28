@@ -1,3 +1,99 @@
+Selected Month :=
+SELECTEDVALUE( Dim_Date[MonthEnd], CALCULATE( MAX(Dim_Date[MonthEnd]), ALL(Dim_Date) ) )
+
+Prior Month :=
+EOMONTH( [Selected Month], -1 )
+
+Exposure Prev (Sel) :=
+CALCULATE( SUM( RC_Code_Model_Base[Actual] ),
+          RC_Code_Model_Base[MONTH_END] = [Prior Month] )
+
+Exposure Curr (Sel) :=
+CALCULATE( SUM( RC_Code_Model_Base[Actual] ),
+          RC_Code_Model_Base[MONTH_END] = [Selected Month] )
+
+Δ New (Sel) :=
+COALESCE(
+  CALCULATE( SUM(RC_Exposure_Flow[Exposure_Change]),
+             RC_Exposure_Flow[Month_End] = [Selected Month],
+             RC_Exposure_Flow[Movement_Type] = "New Account"), 0 )
+
+Δ Closed (Sel) :=
+COALESCE(
+  CALCULATE( SUM(RC_Exposure_Flow[Exposure_Change]),
+             RC_Exposure_Flow[Month_End] = [Selected Month],
+             RC_Exposure_Flow[Movement_Type] = "Closed Account"), 0 )
+
+Δ Xfer In (Sel) :=
+COALESCE(
+  CALCULATE( SUM(RC_Exposure_Flow[Exposure_Change]),
+             RC_Exposure_Flow[Month_End] = [Selected Month],
+             RC_Exposure_Flow[Movement_Type] = "Transfer In"), 0 )
+
+Δ Xfer Out (Sel) :=
+COALESCE(
+  CALCULATE( SUM(RC_Exposure_Flow[Exposure_Change]),
+             RC_Exposure_Flow[Month_End] = [Selected Month],
+             RC_Exposure_Flow[Movement_Type] = "Transfer Out"), 0 )
+
+Δ Balance Change (Sel) :=
+COALESCE(
+  CALCULATE( SUM(RC_Exposure_Flow[Exposure_Change]),
+             RC_Exposure_Flow[Month_End] = [Selected Month],
+             RC_Exposure_Flow[Movement_Type] = "Balance Change"), 0 )
+
+Waterfall Amount (Sel, TotalAware) :=
+VAR step   = SELECTEDVALUE( 'Waterfall Steps'[Step] )
+VAR prev   = [Exposure Prev (Sel)]
+VAR newA   = [Δ New (Sel)]
+VAR closed = [Δ Closed (Sel)]
+VAR xin    = [Δ Xfer In (Sel)]
+VAR xout   = [Δ Xfer Out (Sel)]
+VAR bal    = [Δ Balance Change (Sel)]
+VAR curr   = [Exposure Curr (Sel)]
+RETURN
+SWITCH(
+  TRUE(),
+  step = "Previous Balance", prev,
+  step = "New Accounts",     newA,
+  step = "Closed Accounts",  closed,
+  step = "Transfers In",     xin,
+  step = "Transfers Out",    xout,
+  step = "Balance Change",   bal,
+  step = "Current Balance",  curr - (prev + newA + closed + xin + xout + bal),
+  BLANK()
+)
+
+Recon Check :=
+VAR prev = [Exposure Prev (Sel)]
+VAR curr = [Exposure Curr (Sel)]
+VAR mid  = [Δ New (Sel)] + [Δ Closed (Sel)] + [Δ Xfer In (Sel)] + [Δ Xfer Out (Sel)] + [Δ Balance Change (Sel)]
+RETURN curr - (prev + mid)
+
+Accounts for Selected Step (Sel) :=
+VAR lm   = [Selected Month]
+VAR step = SELECTEDVALUE( 'Waterfall Steps'[Step] )
+VAR mt =
+    SWITCH( step,
+        "New Accounts",    "New Account",
+        "Closed Accounts", "Closed Account",
+        "Transfers In",    "Transfer In",
+        "Transfers Out",   "Transfer Out",
+        "Balance Change",  "Balance Change",
+        BLANK()
+    )
+RETURN
+IF(
+  NOT ISBLANK(mt),
+  CALCULATE( SUM( RC_Exposure_Flow[Account_Count] ),
+             RC_Exposure_Flow[Month_End] = lm,
+             RC_Exposure_Flow[Movement_Type] = mt )
+)
+
+
+
+
+
 Waterfall Steps =
 DATATABLE(
   "Step", STRING, "StepOrder", INTEGER,
