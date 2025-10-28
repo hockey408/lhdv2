@@ -1,3 +1,57 @@
+Δ New (Sel) :=
+COALESCE(
+  CALCULATE(
+    SUM( RC_Exposure_Flow[Exposure_Change] ),
+    RC_Exposure_Flow[Month_End] = [Selected Month],
+    RC_Exposure_Flow[Movement_Type] = "New Account"
+  ),
+  0
+)
+
+Δ Closed (Sel) :=
+COALESCE(
+  CALCULATE(
+    SUM( RC_Exposure_Flow[Exposure_Change] ),
+    RC_Exposure_Flow[Month_End] = [Selected Month],
+    RC_Exposure_Flow[Movement_Type] = "Closed Account"
+  ),
+  0
+)
+
+Δ Xfer In (Sel) :=
+COALESCE(
+  CALCULATE(
+    SUM( RC_Exposure_Flow[Exposure_Change] ),
+    RC_Exposure_Flow[Month_End] = [Selected Month],
+    RC_Exposure_Flow[Movement_Type] = "Transfer In"
+  ),
+  0
+)
+
+Δ Xfer Out (Sel) :=
+COALESCE(
+  CALCULATE(
+    SUM( RC_Exposure_Flow[Exposure_Change] ),
+    RC_Exposure_Flow[Month_End] = [Selected Month],
+    RC_Exposure_Flow[Movement_Type] = "Transfer Out"
+  ),
+  0
+)
+
+Δ Balance Change (Sel) :=
+COALESCE(
+  CALCULATE(
+    SUM( RC_Exposure_Flow[Exposure_Change] ),
+    RC_Exposure_Flow[Month_End] = [Selected Month],
+    RC_Exposure_Flow[Movement_Type] = "Balance Change"
+  ),
+  0
+)
+
+
+
+
+
 -- Month helpers
 Selected Month :=
 SELECTEDVALUE(
