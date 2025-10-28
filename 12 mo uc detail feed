@@ -1,3 +1,190 @@
+-- ================= RC Exposure Flow: Rolling MoM (Adds/Closes/Transfers/Balance) =================
+-- Emits rows per Current_Month × RC_DESCRIPTION × Movement_Type with Exposure_Change and Account_Count.
+-- Movement_Type: Previous Balance, New Account, Closed Account, Transfer In, Transfer Out, Balance Change, Current Balance
+-- ================================================================================================
+
+WITH params AS (
+  SELECT
+    ADD_MONTHS(CURRENT_DATE, -13)::DATE AS min_me  -- rolling window anchor (13 months covers 12 flows)
+),
+
+base AS (
+  SELECT
+    Account_Identifier,
+    RC_CODE,
+    RC_DESCRIPTION,
+    CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+    SOURCE_SYSTEM_BALANCE::FLOAT8   AS exposure
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, params p
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND END_OF_MONTH_DATE >= p.min_me
+),
+
+-- Pair each month with its previous month (only where both exist in base to keep set tight)
+months AS (
+  SELECT DISTINCT b.month_end AS curr_me,
+         ADD_MONTHS(b.month_end, -1)::DATE AS prev_me
+  FROM base b
+),
+
+curr AS (
+  SELECT m.curr_me, b.Account_Identifier, b.RC_CODE, b.RC_DESCRIPTION, b.exposure
+  FROM months m
+  JOIN base   b ON b.month_end = m.curr_me
+),
+prev AS (
+  SELECT m.curr_me, b.Account_Identifier, b.RC_CODE, b.RC_DESCRIPTION, b.exposure
+  FROM months m
+  JOIN base   b ON b.month_end = m.prev_me
+),
+
+-- Full outer by Account within each curr_me so we see adds/drops and transfers
+pc AS (
+  SELECT
+    COALESCE(c.curr_me, p.curr_me)                        AS curr_me,
+    COALESCE(c.Account_Identifier, p.Account_Identifier)  AS Account_Identifier,
+
+    -- current snapshot
+    c.RC_CODE        AS curr_rc,
+    c.RC_DESCRIPTION AS curr_desc,
+    c.exposure       AS curr_exp,
+
+    -- previous snapshot (same account, previous month)
+    p.RC_CODE        AS prev_rc,
+    p.RC_DESCRIPTION AS prev_desc,
+    p.exposure       AS prev_exp
+  FROM curr c
+  FULL OUTER JOIN prev p
+    ON p.curr_me = c.curr_me
+   AND p.Account_Identifier = c.Account_Identifier
+),
+
+-- 1) Previous Balance (per previous RC)
+prev_bal AS (
+  SELECT
+    curr_me AS month_end,
+    prev_desc AS rc_description,
+    'Previous Balance'::VARCHAR(32) AS movement_type,
+    SUM(COALESCE(prev_exp,0))       AS exposure_change,
+    COUNT(DISTINCT Account_Identifier) AS account_count
+  FROM pc
+  WHERE prev_desc IS NOT NULL
+  GROUP BY curr_me, prev_desc
+),
+
+-- 2) New (exists now, not before) → attribute to current RC
+new_acct AS (
+  SELECT
+    curr_me AS month_end,
+    curr_desc AS rc_description,
+    'New Account'::VARCHAR(32) AS movement_type,
+    SUM(COALESCE(curr_exp,0))  AS exposure_change,
+    COUNT(DISTINCT Account_Identifier) AS account_count
+  FROM pc
+  WHERE prev_desc IS NULL AND curr_desc IS NOT NULL
+  GROUP BY curr_me, curr_desc
+),
+
+-- 3) Closed (existed before, gone now) → attribute to previous RC (negative)
+closed_acct AS (
+  SELECT
+    curr_me AS month_end,
+    prev_desc AS rc_description,
+    'Closed Account'::VARCHAR(32) AS movement_type,
+    SUM(-COALESCE(prev_exp,0))    AS exposure_change,
+    COUNT(DISTINCT Account_Identifier) AS account_count
+  FROM pc
+  WHERE prev_desc IS NOT NULL AND curr_desc IS NULL
+  GROUP BY curr_me, prev_desc
+),
+
+-- 4) Transfers: prev_rc <> curr_rc → two sides
+xfer_out AS (
+  SELECT
+    curr_me AS month_end,
+    prev_desc AS rc_description,
+    'Transfer Out'::VARCHAR(32) AS movement_type,
+    SUM(-COALESCE(prev_exp,0))  AS exposure_change,
+    COUNT(DISTINCT Account_Identifier) AS account_count
+  FROM pc
+  WHERE prev_desc IS NOT NULL AND curr_desc IS NOT NULL AND prev_rc <> curr_rc
+  GROUP BY curr_me, prev_desc
+),
+xfer_in AS (
+  SELECT
+    curr_me AS month_end,
+    curr_desc AS rc_description,
+    'Transfer In'::VARCHAR(32) AS movement_type,
+    SUM(COALESCE(curr_exp,0))  AS exposure_change,
+    COUNT(DISTINCT Account_Identifier) AS account_count
+  FROM pc
+  WHERE prev_desc IS NOT NULL AND curr_desc IS NOT NULL AND prev_rc <> curr_rc
+  GROUP BY curr_me, curr_desc
+),
+
+-- 5) Balance change for persisters (same RC both months)
+bal_chg AS (
+  SELECT
+    curr_me AS month_end,
+    curr_desc AS rc_description,
+    'Balance Change'::VARCHAR(32) AS movement_type,
+    SUM(COALESCE(curr_exp,0) - COALESCE(prev_exp,0)) AS exposure_change,
+    COUNT(DISTINCT Account_Identifier) AS account_count
+  FROM pc
+  WHERE prev_desc IS NOT NULL AND curr_desc IS NOT NULL AND prev_rc = curr_rc
+  GROUP BY curr_me, curr_desc
+),
+
+-- 6) Current Balance (per current RC)
+curr_bal AS (
+  SELECT
+    curr_me AS month_end,
+    curr_desc AS rc_description,
+    'Current Balance'::VARCHAR(32) AS movement_type,
+    SUM(COALESCE(curr_exp,0)) AS exposure_change,
+    COUNT(DISTINCT Account_Identifier) AS account_count
+  FROM pc
+  WHERE curr_desc IS NOT NULL
+  GROUP BY curr_me, curr_desc
+),
+
+unioned AS (
+  SELECT * FROM prev_bal
+  UNION ALL SELECT * FROM new_acct
+  UNION ALL SELECT * FROM closed_acct
+  UNION ALL SELECT * FROM xfer_in
+  UNION ALL SELECT * FROM xfer_out
+  UNION ALL SELECT * FROM bal_chg
+  UNION ALL SELECT * FROM curr_bal
+)
+
+SELECT
+  month_end,
+  rc_description,
+  movement_type,
+  exposure_change,
+  account_count
+FROM unioned
+ORDER BY month_end DESC,
+         rc_description,
+         CASE movement_type
+           WHEN 'Previous Balance' THEN 1
+           WHEN 'New Account'      THEN 2
+           WHEN 'Closed Account'   THEN 3
+           WHEN 'Transfer In'      THEN 4
+           WHEN 'Transfer Out'     THEN 5
+           WHEN 'Balance Change'   THEN 6
+           WHEN 'Current Balance'  THEN 7
+           ELSE 99
+         END;
+
+
+
+
+
+
+
+
 Waterfall Amount (Sel, Total Aware) =
 VAR step = SELECTEDVALUE ( 'Waterfall Steps'[Step] )
 VAR prevBal = [Exposure Prev (Sel)]
