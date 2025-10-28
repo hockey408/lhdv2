@@ -1,3 +1,14 @@
+= Table.Distinct(
+    Table.SelectColumns(Source, {"MonthEnd"})
+)
+
+= Table.AddColumn(Source, "MonthEnd", each Date.EndOfMonth([Date]))
+
+
+
+
+
+
 Date Duplicates =
 COUNTROWS(
     FILTER(
