@@ -1,3 +1,66 @@
+WF Base Offset :=
+VAR step = SELECTEDVALUE( 'Waterfall Steps'[Step] )
+VAR prev   = [Exposure Prev (Total, Common)]
+VAR dNew   = [Δ New (Total, Common)]
+VAR dClose = [Δ Closed (Total, Common)]
+VAR dBal   = [Δ Balance Change (Total, Common)]
+RETURN
+SWITCH(
+  TRUE(),
+  step = "Previous Balance", 0,
+  step = "New Accounts",     prev,
+  step = "Closed Accounts",  prev + dNew,
+  step = "Balance Change",   prev + dNew + dClose,
+  step = "Current Balance",  0,
+  BLANK()
+)
+
+WF Up :=
+VAR step = SELECTEDVALUE( 'Waterfall Steps'[Step] )
+VAR dNew   = [Δ New (Total, Common)]
+VAR dClose = [Δ Closed (Total, Common)]
+VAR dBal   = [Δ Balance Change (Total, Common)]
+RETURN
+SWITCH(
+  TRUE(),
+  step = "New Accounts",     MAX( dNew, 0 ),
+  step = "Closed Accounts",  MAX( dClose, 0 ),
+  step = "Balance Change",   MAX( dBal, 0 ),
+  0
+)
+
+WF Down :=
+VAR step = SELECTEDVALUE( 'Waterfall Steps'[Step] )
+VAR dNew   = [Δ New (Total, Common)]
+VAR dClose = [Δ Closed (Total, Common)]
+VAR dBal   = [Δ Balance Change (Total, Common)]
+RETURN
+SWITCH(
+  TRUE(),
+  step = "New Accounts",     MIN( dNew, 0 ),
+  step = "Closed Accounts",  MIN( dClose, 0 ),
+  step = "Balance Change",   MIN( dBal, 0 ),
+  0
+)
+
+WF Total Bar :=
+VAR step = SELECTEDVALUE( 'Waterfall Steps'[Step] )
+VAR prev = [Exposure Prev (Total, Common)]
+VAR curr = [Exposure Curr (Total, Common)]
+RETURN
+SWITCH(
+  TRUE(),
+  step = "Previous Balance", prev,
+  step = "Current Balance",  curr,
+  0
+)
+
+
+
+
+
+
+
 Latest Month (Common) :=
 VAR m1 =
     CALCULATE ( MAX ( RC_Code_Model_Base[MONTH_END] ), ALL ( RC_Code_Model_Base ) )
