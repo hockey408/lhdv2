@@ -1,4 +1,58 @@
 Δ New (Sel) :=
+VAR lm = [Selected Month]
+RETURN
+CALCULATE(
+    SUM( RC_Exposure_Flow[Exposure_Change] ),
+    REMOVEFILTERS( Dim_Date ),
+    TREATAS( { lm }, RC_Exposure_Flow[Month_End] ),
+    KEEPFILTERS( RC_Exposure_Flow[Movement_Type] = "New Account" )
+)
+
+Δ Closed (Sel) :=
+VAR lm = [Selected Month]
+RETURN
+CALCULATE(
+    SUM( RC_Exposure_Flow[Exposure_Change] ),
+    REMOVEFILTERS( Dim_Date ),
+    TREATAS( { lm }, RC_Exposure_Flow[Month_End] ),
+    KEEPFILTERS( RC_Exposure_Flow[Movement_Type] = "Closed Account" )
+)
+
+Δ Xfer In (Sel) :=
+VAR lm = [Selected Month]
+RETURN
+CALCULATE(
+    SUM( RC_Exposure_Flow[Exposure_Change] ),
+    REMOVEFILTERS( Dim_Date ),
+    TREATAS( { lm }, RC_Exposure_Flow[Month_End] ),
+    KEEPFILTERS( RC_Exposure_Flow[Movement_Type] = "Transfer In" )
+)
+
+Δ Xfer Out (Sel) :=
+VAR lm = [Selected Month]
+RETURN
+CALCULATE(
+    SUM( RC_Exposure_Flow[Exposure_Change] ),
+    REMOVEFILTERS( Dim_Date ),
+    TREATAS( { lm }, RC_Exposure_Flow[Month_End] ),
+    KEEPFILTERS( RC_Exposure_Flow[Movement_Type] = "Transfer Out" )
+)
+
+Δ Balance Change (Sel) :=
+VAR lm = [Selected Month]
+RETURN
+CALCULATE(
+    SUM( RC_Exposure_Flow[Exposure_Change] ),
+    REMOVEFILTERS( Dim_Date ),
+    TREATAS( { lm }, RC_Exposure_Flow[Month_End] ),
+    KEEPFILTERS( RC_Exposure_Flow[Movement_Type] = "Balance Change" )
+)
+
+
+
+
+
+Δ New (Sel) :=
 COALESCE(
   CALCULATE(
     SUM( RC_Exposure_Flow[Exposure_Change] ),
