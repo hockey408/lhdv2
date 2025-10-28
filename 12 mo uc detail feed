@@ -1,3 +1,98 @@
+Selected Month =
+SELECTEDVALUE ( 'Date'[MonthEnd], CALCULATE ( MAX ( 'Date'[MonthEnd] ), ALL ( 'Date' ) ) )
+
+Exposure Prev (Sel) =
+VAR pm = EOMONTH ( [Selected Month], -1 )
+RETURN
+CALCULATE ( SUM ( RC_Code_Model_Base[Actual] ), RC_Code_Model_Base[MONTH_END] = pm )
+
+Exposure Curr (Sel) =
+VAR lm = [Selected Month]
+RETURN
+CALCULATE ( SUM ( RC_Code_Model_Base[Actual] ), RC_Code_Model_Base[MONTH_END] = lm )
+
+Δ New (Sel) =
+VAR lm = [Selected Month]
+RETURN COALESCE (
+    CALCULATE (
+        SUM ( RC_Exposure_Flow[Exposure_Change] ),
+        RC_Exposure_Flow[MONTH_END] = lm,
+        RC_Exposure_Flow[Movement_Type] = "New Account"
+    ), 0
+)
+
+Δ Closed (Sel) =
+VAR lm = [Selected Month]
+RETURN COALESCE (
+    CALCULATE (
+        SUM ( RC_Exposure_Flow[Exposure_Change] ),
+        RC_Exposure_Flow[MONTH_END] = lm,
+        RC_Exposure_Flow[Movement_Type] = "Closed Account"
+    ), 0
+)
+
+Δ Xfer In (Sel) =
+VAR lm = [Selected Month]
+RETURN COALESCE (
+    CALCULATE (
+        SUM ( RC_Exposure_Flow[Exposure_Change] ),
+        RC_Exposure_Flow[MONTH_END] = lm,
+        RC_Exposure_Flow[Movement_Type] = "Transfer In"
+    ), 0
+)
+
+Δ Xfer Out (Sel) =
+VAR lm = [Selected Month]
+RETURN COALESCE (
+    CALCULATE (
+        SUM ( RC_Exposure_Flow[Exposure_Change] ),
+        RC_Exposure_Flow[MONTH_END] = lm,
+        RC_Exposure_Flow[Movement_Type] = "Transfer Out"
+    ), 0
+)
+
+Δ Balance Change (Sel) =
+VAR lm = [Selected Month]
+RETURN COALESCE (
+    CALCULATE (
+        SUM ( RC_Exposure_Flow[Exposure_Change] ),
+        RC_Exposure_Flow[MONTH_END] = lm,
+        RC_Exposure_Flow[Movement_Type] = "Balance Change"
+    ), 0
+)
+
+Waterfall Steps =
+DATATABLE(
+    "Step", STRING,
+    {
+        {"Previous Balance"},
+        {"New Accounts"},
+        {"Closed Accounts"},
+        {"Transfers In"},
+        {"Transfers Out"},
+        {"Balance Change"}
+        -- no "Current Balance" here
+    }
+)
+
+Waterfall Amount (Sel) =
+SWITCH (
+    SELECTEDVALUE ( 'Waterfall Steps'[Step] ),
+    "Previous Balance", [Exposure Prev (Sel)],
+    "New Accounts",     [Δ New (Sel)],
+    "Closed Accounts",  [Δ Closed (Sel)],
+    "Transfers In",     [Δ Xfer In (Sel)],
+    "Transfers Out",    [Δ Xfer Out (Sel)],
+    "Balance Change",   [Δ Balance Change (Sel)],
+    0
+)
+
+
+
+
+
+
+
 Waterfall Steps =
 DATATABLE(
     "Step", STRING,
