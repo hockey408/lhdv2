@@ -1,3 +1,15 @@
+Date Duplicates =
+COUNTROWS(
+    FILTER(
+        SUMMARIZE('Dim_Date', 'Dim_Date'[MonthEnd]),
+        CALCULATE(COUNTROWS('Dim_Date')) > 1
+    )
+)
+
+
+
+
+
 Portfolio PSI (Latest) =
 VAR lm = CALCULATE( MAX( 'Date'[MonthEnd] ) )
 RETURN
