@@ -1,3 +1,29 @@
+let
+    // Define start and end dates dynamically from your model data
+    StartDate = #date(2020, 1, 31),
+    EndDate = Date.EndOfMonth(DateTime.Date(DateTime.LocalNow())),
+    // Generate list of all month ends
+    MonthEnds = List.Dates(
+        StartDate,
+        Duration.Days(EndDate - StartDate) / 30 + 2,
+        #duration(31,0,0,0)
+    ),
+    // Convert to table and ensure each is true month-end
+    MonthEndTable = Table.FromList(
+        List.Transform(MonthEnds, each Date.EndOfMonth(_)),
+        Splitter.SplitByNothing(),
+        {"MonthEnd"}
+    ),
+    // Remove duplicates and sort ascending
+    CleanTable = Table.Distinct(MonthEndTable),
+    Sorted = Table.Sort(CleanTable, {{"MonthEnd", Order.Ascending}})
+in
+    Sorted
+
+
+
+
+
 = Table.Distinct(
     Table.SelectColumns(Source, {"MonthEnd"})
 )
