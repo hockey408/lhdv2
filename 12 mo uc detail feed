@@ -1,3 +1,118 @@
+Latest Month (Common) :=
+VAR m1 =
+    CALCULATE ( MAX ( RC_Code_Model_Base[MONTH_END] ), ALL ( RC_Code_Model_Base ) )
+VAR m2 =
+    CALCULATE ( MAX ( RC_Exposure_Flow[Month_End] ), ALL ( RC_Exposure_Flow ) )
+RETURN
+MIN ( m1, m2 )
+
+
+Exposure Prev (Total, Common) :=
+VAR pm = [Prior Month (Common)]
+RETURN
+IF (
+    ISBLANK ( pm ),
+    BLANK (),
+    CALCULATE (
+        SUM ( RC_Code_Model_Base[Actual] ),
+        REMOVEFILTERS ( Dim_Date ),
+        TREATAS ( { pm }, RC_Code_Model_Base[MONTH_END] )
+    )
+)
+
+Exposure Curr (Total, Common) :=
+VAR lm = [Latest Month (Common)]
+RETURN
+IF (
+    ISBLANK ( lm ),
+    BLANK (),
+    CALCULATE (
+        SUM ( RC_Code_Model_Base[Actual] ),
+        REMOVEFILTERS ( Dim_Date ),
+        TREATAS ( { lm }, RC_Code_Model_Base[MONTH_END] )
+    )
+)
+
+
+Δ New (Total, Common) :=
+VAR lm = [Latest Month (Common)]
+RETURN
+CALCULATE (
+    SUM ( RC_Exposure_Flow[Exposure_Change] ),
+    REMOVEFILTERS ( Dim_Date ),
+    TREATAS ( { lm }, RC_Exposure_Flow[Month_End] ),
+    KEEPFILTERS ( RC_Exposure_Flow[Movement_Type] = "New Account" )
+)
+
+Δ Closed (Total, Common) :=
+VAR lm = [Latest Month (Common)]
+RETURN
+CALCULATE (
+    SUM ( RC_Exposure_Flow[Exposure_Change] ),
+    REMOVEFILTERS ( Dim_Date ),
+    TREATAS ( { lm }, RC_Exposure_Flow[Month_End] ),
+    KEEPFILTERS ( RC_Exposure_Flow[Movement_Type] = "Closed Account" )
+)
+
+Δ Xfer In (Total, Common) :=
+VAR lm = [Latest Month (Common)]
+RETURN
+CALCULATE (
+    SUM ( RC_Exposure_Flow[Exposure_Change] ),
+    REMOVEFILTERS ( Dim_Date ),
+    TREATAS ( { lm }, RC_Exposure_Flow[Month_End] ),
+    KEEPFILTERS ( RC_Exposure_Flow[Movement_Type] = "Transfer In" )
+)
+
+Δ Xfer Out (Total, Common) :=
+VAR lm = [Latest Month (Common)]
+RETURN
+CALCULATE (
+    SUM ( RC_Exposure_Flow[Exposure_Change] ),
+    REMOVEFILTERS ( Dim_Date ),
+    TREATAS ( { lm }, RC_Exposure_Flow[Month_End] ),
+    KEEPFILTERS ( RC_Exposure_Flow[Movement_Type] = "Transfer Out" )
+)
+
+Δ Balance Change (Total, Common) :=
+VAR lm = [Latest Month (Common)]
+RETURN
+CALCULATE (
+    SUM ( RC_Exposure_Flow[Exposure_Change] ),
+    REMOVEFILTERS ( Dim_Date ),
+    TREATAS ( { lm }, RC_Exposure_Flow[Month_End] ),
+    KEEPFILTERS ( RC_Exposure_Flow[Movement_Type] = "Balance Change" )
+)
+
+
+Waterfall Amount (MoM Total, Common) :=
+VAR step   = SELECTEDVALUE ( 'Waterfall Steps'[Step] )
+VAR prev   = [Exposure Prev (Total, Common)]
+VAR newA   = [Δ New (Total, Common)]
+VAR closed = [Δ Closed (Total, Common)]
+VAR xin    = [Δ Xfer In (Total, Common)]
+VAR xout   = [Δ Xfer Out (Total, Common)]
+VAR bal    = [Δ Balance Change (Total, Common)]
+VAR curr   = [Exposure Curr (Total, Common)]
+RETURN
+SWITCH (
+    TRUE (),
+    step = "Previous Balance", prev,
+    step = "New Accounts",     newA,
+    step = "Closed Accounts",  closed,
+    step = "Transfers In",     xin,
+    step = "Transfers Out",    xout,
+    step = "Balance Change",   bal,
+    step = "Current Balance",
+        curr - ( prev + newA + closed + xin + xout + bal ),
+    BLANK ()
+)
+
+
+
+
+
+
 Waterfall Amount (Sel, TotalAware) :=
 VAR step   = SELECTEDVALUE( 'Waterfall Steps'[Step] )
 VAR prev   = [Exposure Prev (Sel)]
