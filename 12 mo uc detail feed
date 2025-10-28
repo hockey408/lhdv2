@@ -1,5 +1,22 @@
 Waterfall Steps =
 DATATABLE(
+  "Step", STRING, "StepOrder", INTEGER,
+  {
+    {"Previous Balance", 1},
+    {"New Accounts",     2},
+    {"Closed Accounts",  3},
+    {"Transfers In",     4},
+    {"Transfers Out",    5},
+    {"Balance Change",   6},
+    {"Current Balance",  7}
+  }
+)
+
+
+
+
+Waterfall Steps =
+DATATABLE(
     "Step", STRING,
     {
         {"Previous Balance"},
