@@ -1,3 +1,68 @@
+-- Month helpers
+Selected Month :=
+SELECTEDVALUE(
+    Dim_Date[MonthEnd],
+    CALCULATE( MAX( Dim_Date[MonthEnd] ), ALL(Dim_Date) )
+)
+
+Prior Month :=
+EOMONTH( [Selected Month], -1 )
+
+-- Start/End exposure (robust TREATAS pattern)
+Exposure Prev (Sel) :=
+VAR pm = [Prior Month]
+RETURN
+IF (
+    ISBLANK(pm),
+    BLANK(),
+    CALCULATE(
+        SUM ( RC_Code_Model_Base[Actual] ),
+        REMOVEFILTERS ( Dim_Date ),                     -- don’t double-filter via relationship
+        TREATAS ( { pm }, RC_Code_Model_Base[MONTH_END] )
+    )
+)
+
+Exposure Curr (Sel) :=
+VAR lm = [Selected Month]
+RETURN
+IF (
+    ISBLANK(lm),
+    BLANK(),
+    CALCULATE(
+        SUM ( RC_Code_Model_Base[Actual] ),
+        REMOVEFILTERS ( Dim_Date ),
+        TREATAS ( { lm }, RC_Code_Model_Base[MONTH_END] )
+    )
+)
+
+
+Waterfall Amount (Sel, TotalAware) :=
+VAR step   = SELECTEDVALUE( 'Waterfall Steps'[Step] )
+VAR prev   = [Exposure Prev (Sel)]
+VAR newA   = [Δ New (Sel)]
+VAR closed = [Δ Closed (Sel)]
+VAR xin    = [Δ Xfer In (Sel)]
+VAR xout   = [Δ Xfer Out (Sel)]
+VAR bal    = [Δ Balance Change (Sel)]
+VAR curr   = [Exposure Curr (Sel)]
+RETURN
+SWITCH(
+  TRUE(),
+  step = "Previous Balance", prev,
+  step = "New Accounts",     newA,
+  step = "Closed Accounts",  closed,
+  step = "Transfers In",     xin,
+  step = "Transfers Out",    xout,
+  step = "Balance Change",   bal,
+  step = "Current Balance",  curr - (prev + newA + closed + xin + xout + bal),
+  BLANK()
+)
+
+
+
+
+
+
 Selected Month :=
 SELECTEDVALUE( Dim_Date[MonthEnd], CALCULATE( MAX(Dim_Date[MonthEnd]), ALL(Dim_Date) ) )
 
