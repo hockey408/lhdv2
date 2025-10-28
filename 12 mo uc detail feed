@@ -1,3 +1,134 @@
+Waterfall Steps =
+DATATABLE(
+    "Step", STRING,
+    {
+        {"Previous Balance"},
+        {"New Accounts"},
+        {"Closed Accounts"},
+        {"Transfers In"},
+        {"Transfers Out"},
+        {"Balance Change"},
+        {"Current Balance"}
+    }
+)
+
+
+Waterfall Step Order =
+SWITCH(
+    TRUE(),
+    'Waterfall Steps'[Step] = "Previous Balance", 1,
+    'Waterfall Steps'[Step] = "New Accounts",     2,
+    'Waterfall Steps'[Step] = "Closed Accounts",  3,
+    'Waterfall Steps'[Step] = "Transfers In",     4,
+    'Waterfall Steps'[Step] = "Transfers Out",    5,
+    'Waterfall Steps'[Step] = "Balance Change",   6,
+    'Waterfall Steps'[Step] = "Current Balance",  7,
+    99
+)
+
+Selected Month :=
+SELECTEDVALUE(
+    Dim_Date[MonthEnd],
+    CALCULATE( MAX( Dim_Date[MonthEnd] ), ALL( Dim_Date ) )
+)
+
+Prior Month :=
+EOMONTH( [Selected Month], -1 )
+
+Exposure Prev (Sel) :=
+CALCULATE(
+    SUM( RC_Code_Model_Base[Actual] ),
+    RC_Code_Model_Base[MONTH_END] = [Prior Month]
+)
+
+Exposure Curr (Sel) :=
+CALCULATE(
+    SUM( RC_Code_Model_Base[Actual] ),
+    RC_Code_Model_Base[MONTH_END] = [Selected Month]
+)
+
+Δ New (Sel) :=
+COALESCE(
+    CALCULATE(
+        SUM( RC_Exposure_Flow[Exposure_Change] ),
+        RC_Exposure_Flow[Month_End] = [Selected Month],
+        RC_Exposure_Flow[Movement_Type] = "New Account"
+    ),
+    0
+)
+
+Δ Closed (Sel) :=
+COALESCE(
+    CALCULATE(
+        SUM( RC_Exposure_Flow[Exposure_Change] ),
+        RC_Exposure_Flow[Month_End] = [Selected Month],
+        RC_Exposure_Flow[Movement_Type] = "Closed Account"
+    ),
+    0
+)
+
+Δ Xfer In (Sel) :=
+COALESCE(
+    CALCULATE(
+        SUM( RC_Exposure_Flow[Exposure_Change] ),
+        RC_Exposure_Flow[Month_End] = [Selected Month],
+        RC_Exposure_Flow[Movement_Type] = "Transfer In"
+    ),
+    0
+)
+
+Δ Xfer Out (Sel) :=
+COALESCE(
+    CALCULATE(
+        SUM( RC_Exposure_Flow[Exposure_Change] ),
+        RC_Exposure_Flow[Month_End] = [Selected Month],
+        RC_Exposure_Flow[Movement_Type] = "Transfer Out"
+    ),
+    0
+)
+
+Δ Balance Change (Sel) :=
+COALESCE(
+    CALCULATE(
+        SUM( RC_Exposure_Flow[Exposure_Change] ),
+        RC_Exposure_Flow[Month_End] = [Selected Month],
+        RC_Exposure_Flow[Movement_Type] = "Balance Change"
+    ),
+    0
+)
+
+
+Waterfall Amount (Sel, TotalAware) :=
+VAR step   = SELECTEDVALUE( 'Waterfall Steps'[Step] )
+VAR prev   = [Exposure Prev (Sel)]
+VAR newA   = [Δ New (Sel)]
+VAR closed = [Δ Closed (Sel)]
+VAR xin    = [Δ Xfer In (Sel)]
+VAR xout   = [Δ Xfer Out (Sel)]
+VAR bal    = [Δ Balance Change (Sel)]
+VAR curr   = [Exposure Curr (Sel)]
+RETURN
+SWITCH(
+  TRUE(),
+  step = "Previous Balance", prev,
+  step = "New Accounts",     newA,
+  step = "Closed Accounts",  closed,
+  step = "Transfers In",     xin,
+  step = "Transfers Out",    xout,
+  step = "Balance Change",   bal,
+  step = "Current Balance",  curr - (prev + newA + closed + xin + xout + bal),
+  BLANK()
+)
+
+
+
+
+
+
+
+
+
+
 let
     // Define start and end dates dynamically from your model data
     StartDate = #date(2020, 1, 31),
