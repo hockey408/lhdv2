@@ -1,3 +1,20 @@
+Waterfall Steps =
+DATATABLE(
+    "Step", STRING, "IsTotal", BOOLEAN,
+    {
+        {"Previous Balance", TRUE()},
+        {"New Accounts", FALSE()},
+        {"Closed Accounts", FALSE()},
+        {"Transfers In", FALSE()},
+        {"Transfers Out", FALSE()},
+        {"Balance Change", FALSE()},
+        {"Current Balance", TRUE()}
+    }
+)
+
+
+
+
 Selected Month =
 SELECTEDVALUE ( 'Date'[MonthEnd], CALCULATE ( MAX ( 'Date'[MonthEnd] ), ALL ( 'Date' ) ) )
 
