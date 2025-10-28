@@ -1,3 +1,29 @@
+Waterfall Amount (Sel, TotalAware) :=
+VAR step   = SELECTEDVALUE( 'Waterfall Steps'[Step] )
+VAR prev   = [Exposure Prev (Sel)]
+VAR newA   = [Δ New (Sel)]
+VAR closed = [Δ Closed (Sel)]
+VAR xin    = [Δ Xfer In (Sel)]
+VAR xout   = [Δ Xfer Out (Sel)]
+VAR bal    = [Δ Balance Change (Sel)]
+VAR curr   = [Exposure Curr (Sel)]
+RETURN
+SWITCH(
+    TRUE(),
+    step = "Previous Balance", prev,
+    step = "New Accounts",     newA,
+    step = "Closed Accounts",  closed,
+    step = "Transfers In",     xin,
+    step = "Transfers Out",    xout,
+    step = "Balance Change",   bal,
+    step = "Current Balance",
+        curr - (prev + newA + closed + xin + xout + bal),
+    BLANK()
+)
+
+
+
+
 Δ New (Sel) :=
 VAR lm = [Selected Month]
 RETURN
