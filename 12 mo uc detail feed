@@ -1,3 +1,15 @@
+Portfolio PSI (Latest) =
+VAR lm = CALCULATE( MAX( 'Date'[MonthEnd] ) )
+RETURN
+CALCULATE(
+    MAX( RC_PSI_ByDescription[PSI_TOTAL] ),
+    RC_PSI_ByDescription[MONTH_END] = lm
+)
+
+
+
+
+
 -- ================= RC Exposure Flow: Rolling MoM (Adds/Closes/Transfers/Balance) =================
 -- Emits rows per Current_Month × RC_DESCRIPTION × Movement_Type with Exposure_Change and Account_Count.
 -- Movement_Type: Previous Balance, New Account, Closed Account, Transfer In, Transfer Out, Balance Change, Current Balance
