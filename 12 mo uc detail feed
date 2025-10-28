@@ -1,3 +1,13 @@
+Recon Check (Common) :=
+VAR prev = [Exposure Prev (Total, Common)]
+VAR curr = [Exposure Curr (Total, Common)]
+VAR mid  = [Δ New (Total, Common)] + [Δ Closed (Total, Common)] + [Δ Balance Change (Total, Common)]
+RETURN curr - (prev + mid)
+
+
+
+
+
 WF Base Offset :=
 VAR step = SELECTEDVALUE( 'Waterfall Steps'[Step] )
 VAR prev   = [Exposure Prev (Total, Common)]
