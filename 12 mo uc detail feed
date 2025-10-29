@@ -1,3 +1,42 @@
+R2 By Model (Context, KPI Safe) :=
+VAR T =
+    SUMMARIZE(
+        RC_Code_Model_Base,
+        RC_Code_Model_Base[MONTH_END],
+        "y",    SUM ( RC_Code_Model_Base[Actual] ),
+        "yhat", SUM ( RC_Code_Model_Base[FORECAST_SELECTED] )
+    )
+VAR n      = COUNTROWS ( T )
+VAR ybar   = AVERAGEX ( T, [y] )
+VAR ss_tot = SUMX ( T, VAR dy = [y] - ybar RETURN dy * dy )
+VAR ss_res = SUMX ( T, VAR e  = [y] - [yhat] RETURN e * e )
+-- allow n>=2 to avoid blanks in KPI; fall back to 0 if undefined
+RETURN IF ( n >= 2 && ss_tot > 0, 1 - DIVIDE ( ss_res, ss_tot ), 0 )
+
+
+Avg Total R2 (EW, Monitorable, Trend – KPI Safe) :=
+VAR rcset = ALL( Dim_RC[RC_DESCRIPTION] )  -- ignore RC slicers → portfolio
+VAR weighted_sum =
+    SUMX(
+        rcset,
+        VAR is_mon = CALCULATE( [Monitorable Flag (Measure)] )         -- evaluated per RC
+        VAR exp_v  = CALCULATE( SUM ( RC_Code_Model_Base[Actual] ) )
+        VAR r2_v   = CALCULATE( [R2 By Model (Context, KPI Safe)] )
+        RETURN IF( is_mon = 1, exp_v * r2_v )
+    )
+VAR total_exp =
+    SUMX(
+        rcset,
+        VAR is_mon = CALCULATE( [Monitorable Flag (Measure)] )
+        VAR exp_v  = CALCULATE( SUM ( RC_Code_Model_Base[Actual] ) )
+        RETURN IF( is_mon = 1, exp_v )
+    )
+RETURN DIVIDE( weighted_sum, total_exp, 0 )
+
+
+
+
+
 R2 By Model (Context) :=
 VAR T =
     SUMMARIZE(
