@@ -1,3 +1,91 @@
+SELECT
+    cdm.LOADDT,
+    cdm.CIF,
+    cdm.CUST_LINE_NBR,
+    cdm.CLIENT_NM,
+    clm.INVESTOR_ID,
+
+    -- Display columns
+    FORMAT(clm.CommitmentParticipationSold, 'P2', 'en-US') AS PCT_SOLD,
+    CASE WHEN clm.RevolvingFlag = 1 THEN 'Yes' ELSE 'No' END AS REVOLVING_FLAG,
+    CASE WHEN clm.FormulaLine  = 1 THEN 'Yes' ELSE 'No' END AS FORMULA_LINE,
+    FORMAT(clm.GrossLineAmount, 'N2', 'en-US') AS GROSS_LINE_AMT,
+    FORMAT(clm.NetLineAmount,   'N2', 'en-US') AS NET_LINE_AMT,
+    FORMAT(clm.GrossDisbursed,  'N2', 'en-US') AS GROSS_DISBURSED,
+    FORMAT(clm.NetDisbursed,    'N2', 'en-US') AS NET_DISBURSED,
+    FORMAT(clm.GrossUtilized,   'N2', 'en-US') AS GROSS_UTILIZED,
+    FORMAT(clm.NetUtilized,     'N2', 'en-US') AS NET_UTILIZED,
+    FORMAT(cdm.SEC_UNFUNDED,    'N2', 'en-US') AS SEC_UNFUNDED,
+    FORMAT(cdm.FRB_UNFUNDED_AMT,'N2', 'en-US') AS FRB_UNFUNDED_AMT,
+
+    -- ✅ Correct_FRB_Unfunded (numeric)
+    CASE 
+        WHEN clm.CommitmentParticipationSold > 0 
+             AND clm.RevolvingFlag = 1 
+             AND clm.FormulaLine  = 0
+          THEN clm.GrossLineAmount - clm.GrossUtilized
+        WHEN clm.CommitmentParticipationSold > 0 
+             AND clm.RevolvingFlag = 0 
+             AND clm.FormulaLine  = 0
+          THEN clm.GrossLineAmount - clm.GrossDisbursed
+        ELSE NULL
+    END AS Correct_FRB_Unfunded,
+
+    -- ✅ Variance: CDM.FRB_Unfunded_Amt - Correct_FRB_Unfunded
+    (cdm.FRB_UNFUNDED_AMT - 
+        CASE 
+            WHEN clm.CommitmentParticipationSold > 0 
+                 AND clm.RevolvingFlag = 1 
+                 AND clm.FormulaLine  = 0
+              THEN clm.GrossLineAmount - clm.GrossUtilized
+            WHEN clm.CommitmentParticipationSold > 0 
+                 AND clm.RevolvingFlag = 0 
+                 AND clm.FormulaLine  = 0
+              THEN clm.GrossLineAmount - clm.GrossDisbursed
+            ELSE NULL
+        END
+    ) AS Variance,
+
+    -- (Optional formatted Variance)
+    FORMAT(
+        cdm.FRB_UNFUNDED_AMT - 
+        CASE 
+            WHEN clm.CommitmentParticipationSold > 0 
+                 AND clm.RevolvingFlag = 1 
+                 AND clm.FormulaLine  = 0
+              THEN clm.GrossLineAmount - clm.GrossUtilized
+            WHEN clm.CommitmentParticipationSold > 0 
+                 AND clm.RevolvingFlag = 0 
+                 AND clm.FormulaLine  = 0
+              THEN clm.GrossLineAmount - clm.GrossDisbursed
+            ELSE NULL
+        END,
+        'N2', 'en-US'
+    ) AS Variance_fmt,
+
+    CASE 
+        WHEN cdm.SEC_UNFUNDED = cdm.FRB_UNFUNDED_AMT THEN 'MATCH' 
+        ELSE 'DIFFERENT' 
+    END AS [SEC=FRB?]
+
+FROM CRDADMPRD.DBO.CDM_CREDITLINES_ALL_TOPSIDED cdm
+LEFT JOIN CRDLMTUFCALC.CRDLMTUFCALC.DBO.CREDIT_LINE_MONTHLY clm
+  ON cdm.LOADDT = clm.LoadDate 
+ AND cdm.CUST_LINE_NBR = clm.CreditLineNumber
+WHERE cdm.LOADDT IN (
+    '3/31/2025','4/30/2025','5/31/2025','6/30/2025',
+    '7/31/2025','8/31/2025','9/30/2025')
+  AND cdm.CUST_LINE_NBR IN (
+      '00000085407','00000085132','00000085136','00000078700',
+      '00000085376','00000085791','200067183CRDCARD1',
+      '00000060335','00000085468','200269331IMXARLINE1',
+      '200269331CRDCARD1','00000085460');
+
+
+
+
+
+
 Getting an error on the below query: Msg 8116, Level 16, State 1, Line 1
 Argument data type bit is invalid for argument 1 of format function.
 
