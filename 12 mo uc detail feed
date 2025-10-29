@@ -1,3 +1,44 @@
+-- Core R² per current date context (safe for KPI)
+R2 By Model (Context, KPI Safe) :=
+VAR T =
+    SUMMARIZE (
+        RC_Code_Model_Base,
+        RC_Code_Model_Base[MONTH_END],
+        "y",    SUM ( RC_Code_Model_Base[Actual] ),
+        "yhat", SUM ( RC_Code_Model_Base[FORECAST_SELECTED] )
+    )
+VAR n      = COUNTROWS ( T )
+VAR ybar   = AVERAGEX ( T, [y] )
+VAR ss_tot = SUMX ( T, VAR dy = [y] - ybar RETURN dy * dy )
+VAR ss_res = SUMX ( T, VAR e  = [y] - [yhat] RETURN e * e )
+RETURN IF ( n >= 2 && ss_tot > 0, 1 - DIVIDE ( ss_res, ss_tot ), 0 )
+
+
+-- Exposure-weighted average R² over time (monitorable, portfolio view)
+Avg Total R2 (EW, Monitorable, Trend – KPI Safe v2) :=
+VAR rcset_with_flag =
+    ADDCOLUMNS (
+        ALL ( Dim_RC[RC_DESCRIPTION] ),                      -- ignore RC slicers → portfolio
+        "mon", CALCULATE ( [Monitorable Flag (Measure)] )    -- evaluate per RC in current date context
+    )
+VAR rcset_mon =
+    FILTER ( rcset_with_flag, [mon] = 1 )
+
+VAR weighted_sum =
+    SUMX (
+        rcset_mon,
+        VAR exp_v = CALCULATE ( SUM ( RC_Code_Model_Base[Actual] ) )
+        VAR r2_v  = CALCULATE ( [R2 By Model (Context, KPI Safe)] )
+        RETURN exp_v * r2_v
+    )
+VAR total_exp =
+    SUMX ( rcset_mon, CALCULATE ( SUM ( RC_Code_Model_Base[Actual] ) ) )
+RETURN DIVIDE ( weighted_sum, total_exp, 0 )
+
+
+
+
+
 R2 By Model (Context, KPI Safe) :=
 VAR T =
     SUMMARIZE(
