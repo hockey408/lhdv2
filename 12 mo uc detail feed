@@ -1,3 +1,18 @@
+DBG – Monitorable RCs (Count) :=
+VAR rcset_with_flag =
+    ADDCOLUMNS ( VALUES ( Dim_RC[RC_DESCRIPTION] ), "mon", CALCULATE ( [Monitorable Flag (Measure)] ) )
+RETURN COUNTROWS ( FILTER ( rcset_with_flag, [mon] = 1 ) )
+
+DBG – Monitorable Exposure (Denominator) :=
+VAR rcset_with_flag =
+    ADDCOLUMNS ( VALUES ( Dim_RC[RC_DESCRIPTION] ), "mon", CALCULATE ( [Monitorable Flag (Measure)] ) )
+VAR rcset_mon = FILTER ( rcset_with_flag, [mon] = 1 )
+RETURN SUMX ( rcset_mon, CALCULATE ( SUM ( RC_Code_Model_Base[Actual] ) ) )
+
+
+
+
+
 -- Core R² per current date context (safe for KPI)
 R2 By Model (Context, KPI Safe) :=
 VAR T =
