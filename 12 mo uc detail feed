@@ -1,3 +1,53 @@
+R2_By_Model (Direct) :=
+VAR Data =
+    ADDCOLUMNS (
+        RC_Code_Model_Base,
+        "Residual", [Actual] - [Forecast_Selected]
+    )
+VAR MeanY =
+    AVERAGEX ( Data, [Actual] )
+VAR SST =
+    SUMX ( Data, POWER ( [Actual] - MeanY, 2 ) )
+VAR SSE =
+    SUMX ( Data, POWER ( [Residual], 2 ) )
+RETURN
+IF ( SST > 0, 1 - DIVIDE ( SSE, SST ), BLANK() )
+
+Avg Total R2 (EW, Monitorable) :=
+VAR MonitorableRCs =
+    FILTER (
+        ADDCOLUMNS ( VALUES ( Dim_RC[RC_DESCRIPTION] ), "IsMon", [Monitorable Flag (Measure)] ),
+        [IsMon] = 1
+    )
+VAR WeightedSum =
+    SUMX (
+        MonitorableRCs,
+        VAR Exposure = CALCULATE ( SUM ( RC_Code_Model_Base[Actual] ) )
+        VAR R2Value = CALCULATE ( [R2_By_Model (Direct)] )
+        RETURN Exposure * R2Value
+    )
+VAR TotalExp =
+    SUMX (
+        MonitorableRCs,
+        CALCULATE ( SUM ( RC_Code_Model_Base[Actual] ) )
+    )
+RETURN
+IF ( TotalExp > 0, DIVIDE ( WeightedSum, TotalExp ), BLANK() )
+
+
+Avg Total R2 (EW, Monitorable – Trend) :=
+CALCULATE (
+    [Avg Total R2 (EW, Monitorable)],
+    ALLEXCEPT ( Dim_Date, Dim_Date[MonthEnd] )
+)
+
+
+
+
+
+
+
+
 DBG – Monitorable RCs (Count) :=
 VAR rcset_with_flag =
     ADDCOLUMNS ( VALUES ( Dim_RC[RC_DESCRIPTION] ), "mon", CALCULATE ( [Monitorable Flag (Measure)] ) )
