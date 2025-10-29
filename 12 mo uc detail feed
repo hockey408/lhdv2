@@ -1,3 +1,47 @@
+Getting an error on the below query: Msg 8116, Level 16, State 1, Line 1
+Argument data type bit is invalid for argument 1 of format function.
+
+SELECT
+	cdm.LOADDT,
+	cdm.CIF,
+	cdm.CUST_LINE_NBR,
+	cdm.CLIENT_NM,
+	clm.INVESTOR_ID,
+	FORMAT(clm.CommitmentParticipationSold,'P2') AS PCT_SOLD,
+	FORMAT(clm.RevolvingFlag,'N2') AS REVOLVING_FLAG,
+	FORMAT(clm.FormulaLine,'N2') AS FORMULA_LINE,
+	FORMAT(clm.GrossLineAmount,'N2') AS GROSS_LINE_AMT,
+	FORMAT(clm.NetLineAmount,'N2') AS NET_LINE_AMT,
+	FORMAT(clm.GrossDisbursed,'N2') AS GROSS_DISBURSED,
+	FORMAT(clm.NetDisbursed,'N2') AS NET_DISBURSED,
+	FORMAT(clm.GrossUtilized,'N2') AS GROSS_UTILIZED,
+	FORMAT(clm.NetUtilized,'N2') AS NET_UTILIZED,
+	FORMAT(cdm.SEC_UNFUNDED,'N2') AS SEC_UNFUNDED,
+	FORMAT(cdm.FRB_UNFUNDED_AMT,'N2') AS FRB_UNFUNDED_AMT,
+	CASE WHEN (cdm.SEC_UNFUNDED = cdm.FRB_UNFUNDED_AMT) THEN 'MATCH' ELSE 'DIFFERENT' END AS 'SEC=FRB?'
+FROM CRDADMPRD.DBO.CDM_CREDITLINES_ALL_TOPSIDED cdm
+LEFT JOIN CRDLMTUFCALC.CRDLMTUFCALC.DBO.CREDIT_LINE_MONTHLY clm
+ON cdm.LOADDT = clm.LoadDate AND cdm.CUST_LINE_NBR = clm.CreditLineNumber
+WHERE cdm.LOADDT IN ('3/31/2025','4/30/2025','5/31/2025','6/30/2025','7/31/2025','8/31/2025','9/30/2025')
+ AND cdm.CUST_LINE_NBR IN (
+	'00000085407',
+	'00000085132',
+	'00000085136',
+	'00000078700',
+	'00000085376',
+	'00000085791',
+	'200067183CRDCARD1',
+	'00000060335',
+	'00000085468',
+	'200269331IMXARLINE1',
+	'200269331CRDCARD1',
+	'00000085460')
+
+
+
+
+
+
 Recon Check (Common) :=
 VAR prev = [Exposure Prev (Total, Common)]
 VAR curr = [Exposure Curr (Total, Common)]
