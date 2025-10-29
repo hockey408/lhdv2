@@ -1,3 +1,32 @@
+R2 (Portfolio, Monitorable, Month) :=
+VAR RcMonSet =
+    FILTER (
+        VALUES ( Dim_RC[RC_DESCRIPTION] ),
+        CALCULATE ( [Monitorable Flag (Measure)] ) = 1
+    )
+-- Build one row per RC (monitorable), in the current month context
+VAR T =
+    SUMMARIZECOLUMNS (
+        Dim_RC[RC_DESCRIPTION],
+        KEEPFILTERS ( RcMonSet ),
+        "y",    CALCULATE ( SUM ( RC_Code_Model_Base[Actual] ) ),
+        "yhat", CALCULATE ( SUM ( RC_Code_Model_Base[FORECAST_SELECTED] ) )
+    )
+VAR n      = COUNTROWS ( T )
+VAR ybar   = AVERAGEX ( T, [y] )
+VAR ss_tot = SUMX ( T, VAR dy = [y] - ybar RETURN dy * dy )
+VAR ss_res = SUMX ( T, VAR e  = [y] - [yhat] RETURN e * e )
+RETURN IF ( n >= 2 && ss_tot > 0, 1 - DIVIDE ( ss_res, ss_tot ), BLANK() )
+
+
+Has Data (This Month) :=
+VAR exp_this_month =
+    CALCULATE ( SUM ( RC_Code_Model_Base[Actual] ) )
+RETURN IF ( NOT ISBLANK ( exp_this_month ), 1, 0 )
+
+
+
+
 R2_By_Model (Direct) :=
 VAR Data =
     ADDCOLUMNS (
