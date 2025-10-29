@@ -1,3 +1,27 @@
+Avg Total R2 (Exposure-Weighted, Monitorable, Trend) :=
+VAR weighted_sum =
+    SUMX(
+        VALUES( Dim_RC[RC_DESCRIPTION] ),
+        VAR is_mon = CALCULATE( [Monitorable Flag (Measure)] )
+        VAR exp_val = CALCULATE( SUM( RC_Code_Model_Base[Actual] ) )
+        VAR r2_val = CALCULATE( AVERAGE( RC_Code_Model_Base[R2_By_Model] ) )
+        RETURN IF( is_mon = 1, exp_val * r2_val )
+    )
+VAR total_exp =
+    SUMX(
+        VALUES( Dim_RC[RC_DESCRIPTION] ),
+        VAR is_mon = CALCULATE( [Monitorable Flag (Measure)] )
+        VAR exp_val = CALCULATE( SUM( RC_Code_Model_Base[Actual] ) )
+        RETURN IF( is_mon = 1, exp_val )
+    )
+RETURN
+DIVIDE( weighted_sum, total_exp )
+
+
+
+
+
+
 SELECT
     cdm.LOADDT,
     cdm.CIF,
