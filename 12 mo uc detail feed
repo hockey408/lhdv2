@@ -1,3 +1,43 @@
+Waterfall Amount :=
+VAR curr = CALCULATE(
+    SUM( RC_Code_Model_Base[Actual] ),
+    TREATAS( { [Latest Month (Common)] }, RC_Code_Model_Base[MONTH_END] )
+)
+VAR prev = CALCULATE(
+    SUM( RC_Code_Model_Base[Actual] ),
+    TREATAS( { [Prior Month (Common)] }, RC_Code_Model_Base[MONTH_END] )
+)
+VAR adds =
+    CALCULATE(
+        SUM( RC_Exposure_Flow[Exposure_Change] ),
+        RC_Exposure_Flow[Movement_Type] = "New Account"
+    )
+VAR drops =
+    CALCULATE(
+        SUM( RC_Exposure_Flow[Exposure_Change] ),
+        RC_Exposure_Flow[Movement_Type] = "Closed Account"
+    )
+VAR balchg =
+    CALCULATE(
+        SUM( RC_Exposure_Flow[Exposure_Change] ),
+        RC_Exposure_Flow[Movement_Type] = "Balance Change"
+    )
+VAR step = SELECTEDVALUE( Waterfall_Steps[Step] )
+RETURN
+SWITCH(
+    TRUE(),
+    step = "Previous Balance", prev,
+    step = "New Accounts", adds,
+    step = "Closed Accounts", drops,
+    step = "Balance Change", balchg,
+    step = "Current Balance", curr,
+    BLANK()
+)
+
+
+
+
+
 j.Prev_SSB,
 j.Curr_SSB,
 (COALESCE(j.Curr_SSB,0) - COALESCE(j.Prev_SSB,0)) AS MoM_Delta
