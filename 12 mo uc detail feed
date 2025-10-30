@@ -1,3 +1,282 @@
+WITH params AS (
+  SELECT
+    DATE '2025-09-30'                  AS curr_eom,
+    ADD_MONTHS(DATE '2025-09-30', -1)  AS prev_eom
+),
+
+/* Base pull with filters + Bank_Code */
+base AS (
+  SELECT
+      End_of_Month_Date,
+      Account_Name,
+      Contract_Source_System,
+      CIS_Customer_Number,
+      Facility_ID,
+      TRIM(Account_Identifier) AS Account_Identifier,
+      Account_Key,
+      Status_Code_Description,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag,
+      PROD_HIER_LEVEL_5,
+      RBC_Code,
+      GL_ACCOUNT_CODE,
+      /* Bank_Code mapping */
+      CASE
+        WHEN Contract_Source_System IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN')
+          THEN 'L-SVB'
+        WHEN Contract_Source_System = 'ALL'
+             AND GL_ACCOUNT_CODE IN ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+                                     '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+                                     '1100001','1142067','1042886','1043008')
+          THEN 'L-SVB'
+        WHEN Contract_Source_System IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO')
+          THEN 'L-FCB'
+        WHEN Contract_Source_System IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN',
+                                        'INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001',
+                                        'SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+                                        'STRAT1','STRAT1-EXCPTN')
+          THEN 'L-CIT'
+        ELSE 'NULL-Need to Research'
+      END AS Bank_Code
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND End_of_Month_Date IN ((SELECT prev_eom FROM params),(SELECT curr_eom FROM params))
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+
+/* One row per account per month (sum balances just in case; carry descriptors) */
+prev_norm AS (
+  SELECT
+      Account_Identifier,
+      MAX(Account_Name)            AS Account_Name,
+      MAX(Contract_Source_System)  AS Contract_Source_System,
+      MAX(CIS_Customer_Number)     AS CIS_Customer_Number,
+      MAX(Facility_ID)             AS Facility_ID,
+      MAX(Account_Key)             AS Account_Key,
+      MAX(Status_Code_Description) AS Status_Code_Description,
+      MAX(GL_ACCOUNT_HIER_LEVEL_4) AS GL_ACCOUNT_HIER_LEVEL_4,
+      SUM(Source_System_Balance)   AS Source_System_Balance,
+      SUM(GL_Balance)              AS GL_Balance,
+      MAX(Available_Balance)       AS Available_Balance,
+      MAX(Borrower_Risk_Rating)    AS Borrower_Risk_Rating,
+      MAX(PD_Grade)                AS PD_Grade,
+      MAX(Days_Past_Due)           AS Days_Past_Due,
+      'Y'                          AS Non_Accrual_Flag,
+      MAX(PROD_HIER_LEVEL_5)       AS PROD_HIER_LEVEL_5,
+      MAX(RBC_Code)                AS RBC_Code,
+      MAX(GL_ACCOUNT_CODE)         AS GL_ACCOUNT_CODE,
+      MAX(Bank_Code)               AS Bank_Code
+  FROM base
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+  GROUP BY Account_Identifier
+),
+curr_norm AS (
+  SELECT
+      Account_Identifier,
+      MAX(Account_Name)            AS Account_Name,
+      MAX(Contract_Source_System)  AS Contract_Source_System,
+      MAX(CIS_Customer_Number)     AS CIS_Customer_Number,
+      MAX(Facility_ID)             AS Facility_ID,
+      MAX(Account_Key)             AS Account_Key,
+      MAX(Status_Code_Description) AS Status_Code_Description,
+      MAX(GL_ACCOUNT_HIER_LEVEL_4) AS GL_ACCOUNT_HIER_LEVEL_4,
+      SUM(Source_System_Balance)   AS Source_System_Balance,
+      SUM(GL_Balance)              AS GL_Balance,
+      MAX(Available_Balance)       AS Available_Balance,
+      MAX(Borrower_Risk_Rating)    AS Borrower_Risk_Rating,
+      MAX(PD_Grade)                AS PD_Grade,
+      MAX(Days_Past_Due)           AS Days_Past_Due,
+      'Y'                          AS Non_Accrual_Flag,
+      MAX(PROD_HIER_LEVEL_5)       AS PROD_HIER_LEVEL_5,
+      MAX(RBC_Code)                AS RBC_Code,
+      MAX(GL_ACCOUNT_CODE)         AS GL_ACCOUNT_CODE,
+      MAX(Bank_Code)               AS Bank_Code
+  FROM base
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+  GROUP BY Account_Identifier
+),
+
+/* Join months to compute change & characterization */
+joined AS (
+  SELECT
+    COALESCE(c.Account_Identifier, p.Account_Identifier) AS Account_Identifier,
+    p.Source_System_Balance AS Prev_SSB,
+    c.Source_System_Balance AS Curr_SSB,
+    /* Autochange flag if RBC='R' in either month */
+    CASE WHEN COALESCE(c.RBC_Code, p.RBC_Code) = 'R' THEN 1 ELSE 0 END AS Is_Auto,
+
+    /* carry prev fields */
+    p.Account_Name              AS Prev_Account_Name,
+    p.Contract_Source_System    AS Prev_Contract_Source_System,
+    p.CIS_Customer_Number       AS Prev_CIS_Customer_Number,
+    p.Facility_ID               AS Prev_Facility_ID,
+    p.Account_Key               AS Prev_Account_Key,
+    p.Status_Code_Description   AS Prev_Status_Code_Description,
+    p.GL_ACCOUNT_HIER_LEVEL_4   AS Prev_GL_ACCOUNT_HIER_LEVEL_4,
+    p.GL_Balance                AS Prev_GL_Balance,
+    p.Available_Balance         AS Prev_Available_Balance,
+    p.Borrower_Risk_Rating      AS Prev_Borrower_Risk_Rating,
+    p.PD_Grade                  AS Prev_PD_Grade,
+    p.Days_Past_Due             AS Prev_Days_Past_Due,
+    p.PROD_HIER_LEVEL_5         AS Prev_PROD_HIER_LEVEL_5,
+    p.RBC_Code                  AS Prev_RBC_Code,
+    p.GL_ACCOUNT_CODE           AS Prev_GL_ACCOUNT_CODE,
+    p.Bank_Code                 AS Prev_Bank_Code,
+
+    /* carry curr fields */
+    c.Account_Name              AS Curr_Account_Name,
+    c.Contract_Source_System    AS Curr_Contract_Source_System,
+    c.CIS_Customer_Number       AS Curr_CIS_Customer_Number,
+    c.Facility_ID               AS Curr_Facility_ID,
+    c.Account_Key               AS Curr_Account_Key,
+    c.Status_Code_Description   AS Curr_Status_Code_Description,
+    c.GL_ACCOUNT_HIER_LEVEL_4   AS Curr_GL_ACCOUNT_HIER_LEVEL_4,
+    c.GL_Balance                AS Curr_GL_Balance,
+    c.Available_Balance         AS Curr_Available_Balance,
+    c.Borrower_Risk_Rating      AS Curr_Borrower_Risk_Rating,
+    c.PD_Grade                  AS Curr_PD_Grade,
+    c.Days_Past_Due             AS Curr_Days_Past_Due,
+    c.PROD_HIER_LEVEL_5         AS Curr_PROD_HIER_LEVEL_5,
+    c.RBC_Code                  AS Curr_RBC_Code,
+    c.GL_ACCOUNT_CODE           AS Curr_GL_ACCOUNT_CODE,
+    c.Bank_Code                 AS Curr_Bank_Code
+  FROM curr_norm c
+  FULL OUTER JOIN prev_norm p
+    ON c.Account_Identifier = p.Account_Identifier
+)
+
+/* Final: emit rows for both months with Owner + Characterization */
+SELECT
+  /* ----- CURRENT MONTH ROWS ----- */
+  (SELECT curr_eom FROM params)               AS End_of_Month_Date,
+  j.Curr_Account_Name                         AS Account_Name,
+  j.Curr_Contract_Source_System               AS Contract_Source_System,
+  j.Curr_CIS_Customer_Number                  AS CIS_Customer_Number,
+  j.Curr_Facility_ID                          AS Facility_ID,
+  j.Account_Identifier                        AS Account_Identifier,
+  j.Curr_Account_Key                          AS Account_Key,
+  j.Curr_Status_Code_Description              AS Status_Code_Description,
+  j.Curr_GL_ACCOUNT_HIER_LEVEL_4              AS GL_ACCOUNT_HIER_LEVEL_4,
+  j.Curr_SSB                                  AS Source_System_Balance,
+  j.Curr_GL_Balance                           AS GL_Balance,
+  j.Curr_Available_Balance                    AS Available_Balance,
+  j.Curr_Borrower_Risk_Rating                 AS Borrower_Risk_Rating,
+  j.Curr_PD_Grade                             AS PD_Grade,
+  j.Curr_Days_Past_Due                        AS Days_Past_Due,
+  'Y'                                         AS Non_Accrual_Flag,
+  j.Curr_PROD_HIER_LEVEL_5                    AS PROD_HIER_LEVEL_5,
+  j.Curr_RBC_Code                             AS RBC_Code,
+  j.Curr_GL_ACCOUNT_CODE                      AS GL_ACCOUNT_CODE,
+  j.Curr_Bank_Code                            AS Bank_Code,
+
+  /* Owner (uses CURRENT row attributes; thresholds applied) */
+  CASE
+    WHEN j.Curr_PROD_HIER_LEVEL_5 = 'Business RE Term Loans'
+         AND j.Curr_Bank_Code = 'L-CIT'
+         AND j.Curr_SSB > 500000                                  THEN 'Samya'
+    WHEN j.Curr_PROD_HIER_LEVEL_5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+         AND j.Curr_Bank_Code = 'L-CIT'
+         AND j.Curr_SSB > 250000                                  THEN 'Casey'
+    WHEN j.Curr_PROD_HIER_LEVEL_5 = 'Business RE Term Loans'
+         AND j.Curr_Bank_Code = 'L-CIT'
+         AND j.Curr_SSB <= 500000                                 THEN 'Not Covered; Under $500k; Samya'
+    WHEN j.Curr_PROD_HIER_LEVEL_5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+         AND j.Curr_Bank_Code = 'L-CIT'
+         AND j.Curr_SSB <= 250000                                 THEN 'Not Covered; Under $250k; Casey'
+    WHEN j.Curr_Contract_Source_System = 'INFL10'                  THEN 'Daniel'
+    WHEN j.Curr_Bank_Code = 'L-SVB'                                THEN 'Eleanor'
+    WHEN j.Curr_RBC_Code = 'R'                                     THEN 'Autochange'
+    WHEN j.Curr_Bank_Code = 'L-FCB'                                THEN 'Connor'
+    ELSE 'NOT COVERED'
+  END AS Owner,
+
+  /* Characterization (precedence: Autochange > Downgrade > Exit > Persisting Δ) */
+  CASE
+    WHEN j.Is_Auto = 1 THEN 'Autochange'
+    WHEN j.Prev_SSB IS NULL OR j.Prev_SSB = 0 THEN 'Downgrade IN'
+    WHEN j.Prev_SSB > 0 AND j.Curr_SSB > 0 AND j.Curr_SSB <> j.Prev_SSB THEN 'Persisting Balance Changes'
+    ELSE NULL
+  END AS Characterization
+
+FROM joined j
+WHERE j.Curr_SSB > 0   -- emit only current-month rows here
+
+UNION ALL
+
+SELECT
+  /* ----- PREVIOUS MONTH ROWS (to show Exits) ----- */
+  (SELECT prev_eom FROM params)               AS End_of_Month_Date,
+  j.Prev_Account_Name                         AS Account_Name,
+  j.Prev_Contract_Source_System               AS Contract_Source_System,
+  j.Prev_CIS_Customer_Number                  AS CIS_Customer_Number,
+  j.Prev_Facility_ID                          AS Facility_ID,
+  j.Account_Identifier                        AS Account_Identifier,
+  j.Prev_Account_Key                          AS Account_Key,
+  j.Prev_Status_Code_Description              AS Status_Code_Description,
+  j.Prev_GL_ACCOUNT_HIER_LEVEL_4              AS GL_ACCOUNT_HIER_LEVEL_4,
+  j.Prev_SSB                                  AS Source_System_Balance,
+  j.Prev_GL_Balance                           AS GL_Balance,
+  j.Prev_Available_Balance                    AS Available_Balance,
+  j.Prev_Borrower_Risk_Rating                 AS Borrower_Risk_Rating,
+  j.Prev_PD_Grade                             AS PD_Grade,
+  j.Prev_Days_Past_Due                        AS Days_Past_Due,
+  'Y'                                         AS Non_Accrual_Flag,
+  j.Prev_PROD_HIER_LEVEL_5                    AS PROD_HIER_LEVEL_5,
+  j.Prev_RBC_Code                             AS RBC_Code,
+  j.Prev_GL_ACCOUNT_CODE                      AS GL_ACCOUNT_CODE,
+  j.Prev_Bank_Code                            AS Bank_Code,
+
+  /* Owner (uses PREVIOUS row attributes for prev rows) */
+  CASE
+    WHEN j.Prev_PROD_HIER_LEVEL_5 = 'Business RE Term Loans'
+         AND j.Prev_Bank_Code = 'L-CIT'
+         AND j.Prev_SSB > 500000                                  THEN 'Samya'
+    WHEN j.Prev_PROD_HIER_LEVEL_5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+         AND j.Prev_Bank_Code = 'L-CIT'
+         AND j.Prev_SSB > 250000                                  THEN 'Casey'
+    WHEN j.Prev_PROD_HIER_LEVEL_5 = 'Business RE Term Loans'
+         AND j.Prev_Bank_Code = 'L-CIT'
+         AND j.Prev_SSB <= 500000                                 THEN 'Not Covered; Under $500k; Samya'
+    WHEN j.Prev_PROD_HIER_LEVEL_5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+         AND j.Prev_Bank_Code = 'L-CIT'
+         AND j.Prev_SSB <= 250000                                 THEN 'Not Covered; Under $250k; Casey'
+    WHEN j.Prev_Contract_Source_System = 'INFL10'                  THEN 'Daniel'
+    WHEN j.Prev_Bank_Code = 'L-SVB'                                THEN 'Eleanor'
+    WHEN j.Prev_RBC_Code = 'R'                                     THEN 'Autochange'
+    WHEN j.Prev_Bank_Code = 'L-FCB'                                THEN 'Connor'
+    ELSE 'NOT COVERED'
+  END AS Owner,
+
+  /* Characterization: only 'Exit' (and 'Autochange' precedence if needed) */
+  CASE
+    WHEN j.Is_Auto = 1 THEN 'Autochange'
+    WHEN (j.Curr_SSB IS NULL OR j.Curr_SSB = 0)
+         AND (j.Prev_SSB IS NOT NULL AND j.Prev_SSB > 0) THEN 'Exit'
+    ELSE NULL
+  END AS Characterization
+
+FROM joined j
+WHERE j.Prev_SSB > 0   -- emit only previous-month rows here
+
+ORDER BY
+  End_of_Month_Date,
+  Bank_Code,
+  Account_Identifier;
+
+
+
+
+
+
+
+
 The logic is:
 
 1) If PROD_HIER_LEVEL_5 = 'Business RE Term Loans' and Bank_Code = 'L-CIT' then 'Samya'
