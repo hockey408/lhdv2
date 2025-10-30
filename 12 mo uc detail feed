@@ -1,3 +1,75 @@
+Latest Month (Common) :=
+MIN (
+    CALCULATE ( MAX ( RC_Code_Model_Base[MONTH_END] ), ALL ( RC_Code_Model_Base ) ),
+    CALCULATE ( MAX ( RC_Exposure_Flow[Month_End] ),  ALL ( RC_Exposure_Flow ) )
+)
+
+Prior Month (Common) := EOMONTH ( [Latest Month (Common)], -1 )
+
+Prev Balance :=
+CALCULATE( SUM( RC_Code_Model_Base[Actual] ),
+           TREATAS( { [Prior Month (Common)] }, RC_Code_Model_Base[MONTH_END] ) )
+
+Curr Balance :=
+CALCULATE( SUM( RC_Code_Model_Base[Actual] ),
+           TREATAS( { [Latest Month (Common)] }, RC_Code_Model_Base[MONTH_END] ) )
+
+Δ New :=
+CALCULATE( SUM( RC_Exposure_Flow[Exposure_Change] ),
+           TREATAS( { [Latest Month (Common)] }, RC_Exposure_Flow[Month_End] ),
+           KEEPFILTERS( RC_Exposure_Flow[Movement_Type] = "New Account" ) )
+
+Δ Closed :=
+CALCULATE( SUM( RC_Exposure_Flow[Exposure_Change] ),
+           TREATAS( { [Latest Month (Common)] }, RC_Exposure_Flow[Month_End] ),
+           KEEPFILTERS( RC_Exposure_Flow[Movement_Type] = "Closed Account" ) )
+
+Δ Balance Change :=
+CALCULATE( SUM( RC_Exposure_Flow[Exposure_Change] ),
+           TREATAS( { [Latest Month (Common)] }, RC_Exposure_Flow[Month_End] ),
+           KEEPFILTERS( RC_Exposure_Flow[Movement_Type] = "Balance Change" ) )
+
+WF Base Offset :=
+VAR s = SELECTEDVALUE ( Waterfall_Steps[Step] )
+VAR p = [Prev Balance]
+VAR a = [Δ New]
+VAR c = [Δ Closed]
+RETURN
+SWITCH(
+  TRUE(),
+  s = "New Accounts",     p,
+  s = "Closed Accounts",  p + a,
+  s = "Balance Change",   p + a + c,
+  0
+)
+
+WF Delta :=
+VAR s = SELECTEDVALUE ( Waterfall_Steps[Step] )
+RETURN
+SWITCH(
+  TRUE(),
+  s = "New Accounts",     [Δ New],
+  s = "Closed Accounts",  [Δ Closed],
+  s = "Balance Change",   [Δ Balance Change],
+  0
+)
+
+WF Total :=
+VAR s = SELECTEDVALUE ( Waterfall_Steps[Step] )
+RETURN
+SWITCH(
+  TRUE(),
+  s = "Previous Balance", [Prev Balance],
+  s = "Current Balance",  [Curr Balance],
+  0
+)
+
+
+
+
+
+
+
 WITH params AS (
   SELECT DATE '2025-09-30' AS curr_eom,
          ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
