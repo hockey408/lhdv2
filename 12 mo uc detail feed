@@ -1,3 +1,11 @@
+j.Prev_SSB,
+j.Curr_SSB,
+(COALESCE(j.Curr_SSB,0) - COALESCE(j.Prev_SSB,0)) AS MoM_Delta
+
+
+
+
+
 WITH params AS (
   SELECT
     DATE '2025-09-30'                 AS curr_eom,
