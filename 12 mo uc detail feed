@@ -1,3 +1,20 @@
+The logic is:
+
+1) If PROD_HIER_LEVEL_5 = 'Business RE Term Loans' and Bank_Code = 'L-CIT' then 'Samya'
+2) If PROD_HIER_LEVEL_5 = ('Business Non-RE Term Loans' OR 'Business Commitment Draw') and Bank_Code = 'L-CIT' then 'Casey'
+3) If PROD_HIER_LEVEL_5 = 'Business RE Term Loans' and Bank_Code = 'L-CIT' and Source_System_Balance < or = to 500000 then 'Not Covered; Under $500k; Samya'
+4) If PROD_HIER_LEVEL_5 = ('Business Non-RE Term Loans' OR 'Business Commitment Draw') and Bank_Code = 'L-CIT' and Source_System_Balance < or = to 250000 then 'Not Covered; Under $250k; Casey'
+5) If Contract_Source_System = 'INFL10' then 'Daniel'
+6) If Bank_Code = 'L-SVB' then 'Eleanor'
+7) If RBC_Code = 'R' then 'Autochange'
+8) If population remains and Bank_Code = 'L-FCB' then 'Connor'
+9) Else 'NOT COVERED'
+
+I also need to work in some logic to create column 'Characterization' which will tag each ACCOUNT_IDENTIFIER as 'Downgrade IN', 'Exit', 'Persisting Balance Changes', and 'Autochange'.
+
+
+
+
 WITH params AS (
   SELECT
     DATE '2025-09-30'  AS curr_eom,
