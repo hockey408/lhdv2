@@ -6,6 +6,23 @@ SELECT
   COUNT(DISTINCT CASE WHEN had_prev=1 THEN Prev_Facility_ID END)                          AS starting_facilities,
   COUNT(DISTINCT CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=1 THEN Curr_Facility_ID END)  AS auto_in_facilities,
   -COUNT(DISTINCT CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=1 THEN Prev_Facility_ID END) AS auto_out_facilities,
+  COUNT(DISTINCT CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=0 THEN Curr_Facility_ID END)  AS downgrade_in_ex_auto_facilities,
+  -COUNT(DISTINCT CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=0 THEN Prev_Facility_ID END) AS exit_ex_auto_facilities,
+  COUNT(DISTINCT CASE WHEN has_curr=1 THEN Curr_Facility_ID END) AS ending_facilities
+FROM lab
+GROUP BY COALESCE(Curr_Bank_Code, Prev_Bank_Code)
+ORDER BY bank_code;
+
+
+
+/* =================================
+   2) WATERFALL – FACILITY COUNTS
+   ================================= */
+SELECT
+  COALESCE(Curr_Bank_Code, Prev_Bank_Code) AS bank_code,
+  COUNT(DISTINCT CASE WHEN had_prev=1 THEN Prev_Facility_ID END)                          AS starting_facilities,
+  COUNT(DISTINCT CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=1 THEN Curr_Facility_ID END)  AS auto_in_facilities,
+  -COUNT(DISTINCT CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=1 THEN Prev_Facility_ID END) AS auto_out_facilities,
   COUNT(DISTINCT CASE WHEN had_prev=1 AND has_curr=1 AND curr_auto=0 AND delta<>0 THEN Curr_Facility_ID END) AS pers_delta_ex_auto_facilities,
   COUNT(DISTINCT CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=0 THEN Curr_Facility_ID END) AS downgrade_in_ex_auto_facilities,
   -COUNT(DISTINCT CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=0 THEN Prev_Facility_ID END) AS exit_ex_auto_facilities,
