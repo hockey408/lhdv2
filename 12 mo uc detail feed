@@ -2,6 +2,55 @@
    2) WATERFALL – FACILITY COUNTS
    ================================= */
 
+SELECT
+  b.bank_code,
+
+  /* Starting = distinct prev facilities for this bank (prev side) */
+  COUNT(DISTINCT CASE WHEN had_prev=1 AND Prev_Bank_Code = b.bank_code THEN Prev_Facility_ID END)
+    AS starting_facilities,
+
+  /* Auto In = distinct curr facilities that are adds+auto for this bank (curr side) */
+  COUNT(DISTINCT CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=1
+                       AND Curr_Bank_Code = b.bank_code THEN Curr_Facility_ID END)
+    AS auto_in_facilities,
+
+  /* Auto Out = negative distinct prev facilities that are exits+auto for this bank (prev side) */
+  -COUNT(DISTINCT CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=1
+                        AND Prev_Bank_Code = b.bank_code THEN Prev_Facility_ID END)
+    AS auto_out_facilities,
+
+  /* Downgrade IN (ex-Auto) = distinct curr facilities that are adds non-auto (curr side) */
+  COUNT(DISTINCT CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=0
+                       AND Curr_Bank_Code = b.bank_code THEN Curr_Facility_ID END)
+    AS downgrade_in_ex_auto_facilities,
+
+  /* Exit (ex-Auto) = negative distinct prev facilities that are exits non-auto (prev side) */
+  -COUNT(DISTINCT CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=0
+                        AND Prev_Bank_Code = b.bank_code THEN Prev_Facility_ID END)
+    AS exit_ex_auto_facilities,
+
+  /* Ending = distinct curr facilities for this bank (curr side) */
+  COUNT(DISTINCT CASE WHEN has_curr=1 AND Curr_Bank_Code = b.bank_code THEN Curr_Facility_ID END)
+    AS ending_facilities
+
+FROM (
+  SELECT DISTINCT Prev_Bank_Code AS bank_code FROM lab WHERE Prev_Bank_Code IS NOT NULL
+  UNION
+  SELECT DISTINCT Curr_Bank_Code FROM lab WHERE Curr_Bank_Code IS NOT NULL
+) b
+LEFT JOIN lab ON (b.bank_code = COALESCE(lab.Curr_Bank_Code, lab.Prev_Bank_Code))
+GROUP BY b.bank_code
+ORDER BY b.bank_code;
+
+
+
+
+
+
+/* =================================
+   2) WATERFALL – FACILITY COUNTS
+   ================================= */
+
 /* bank list from either side */
 WITH banks AS (
   SELECT DISTINCT Prev_Bank_Code AS bank_code FROM lab WHERE Prev_Bank_Code IS NOT NULL
