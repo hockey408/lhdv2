@@ -1,3 +1,58 @@
+Cum After New    := [Prev Balance] + [Δ New]
+Cum After Closed := [Prev Balance] + [Δ New] + [Δ Closed]
+
+WF Base Lower :=
+VAR s = SELECTEDVALUE( Waterfall_Steps[Step] )
+VAR p = [Prev Balance]
+VAR dN = [Δ New]
+VAR dC = [Δ Closed]
+VAR dB = [Δ Balance Change]
+RETURN
+SWITCH(
+  TRUE(),
+  s = "Previous Balance", 0,
+  s = "New Accounts",     p,
+  s = "Closed Accounts",  IF( dC < 0, [Cum After Closed], [Cum After New] ),
+  s = "Balance Change",   IF( dB < 0, [Cum After Closed] + dB, [Cum After Closed] ),
+  s = "Current Balance",  0,
+  0
+)
+
+WF Bar Height :=
+VAR s = SELECTEDVALUE( Waterfall_Steps[Step] )
+RETURN
+SWITCH(
+  TRUE(),
+  s = "Previous Balance", [Prev Balance],
+  s = "New Accounts",     ABS( [Δ New] ),
+  s = "Closed Accounts",  ABS( [Δ Closed] ),
+  s = "Balance Change",   ABS( [Δ Balance Change] ),
+  s = "Current Balance",  [Curr Balance],
+  0
+)
+
+WF Bar Color :=
+VAR s = SELECTEDVALUE( Waterfall_Steps[Step] )
+VAR sign =
+    SWITCH( TRUE(),
+        s = "New Accounts",     SIGN( [Δ New] ),
+        s = "Closed Accounts",  SIGN( [Δ Closed] ),
+        s = "Balance Change",   SIGN( [Δ Balance Change] ),
+        0  -- totals
+    )
+RETURN
+SWITCH(
+    TRUE(),
+    s IN {"Previous Balance","Current Balance"}, "#A9A9A9",   -- totals gray
+    sign < 0, "#D64E5B",                                      -- red for down
+    "#2DA44E"                                                 -- green for up
+)
+
+
+
+
+
+
 Latest Month (Common) :=
 MIN (
     CALCULATE ( MAX ( RC_Code_Model_Base[MONTH_END] ), ALL ( RC_Code_Model_Base ) ),
