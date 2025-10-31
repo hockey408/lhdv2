@@ -1,4 +1,26 @@
 Avg_R2_Weighted_Trend :=
+VAR base =
+    FILTER (
+        RC_Code_Model_Base,
+        [Monitorable Flag (Measure)] = 1
+    )
+VAR r2_table =
+    ADDCOLUMNS (
+        SUMMARIZE ( base, RC_Code_Model_Base[RC_DESCRIPTION], RC_Code_Model_Base[Month_End] ),
+        "Exposure", CALCULATE ( SUM ( RC_Code_Model_Base[Exposure] ), base ),
+        "R2_Value", CALCULATE ( AVERAGE ( RC_Code_Model_Base[R2_By_Model] ), base )
+    )
+RETURN
+DIVIDE (
+    SUMX ( r2_table, [Exposure] * [R2_Value] ),
+    SUMX ( r2_table, [Exposure] )
+)
+
+
+
+
+
+Avg_R2_Weighted_Trend :=
 VAR r2_by_rc =
     ADDCOLUMNS (
         SUMMARIZE (
