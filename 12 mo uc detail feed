@@ -1,3 +1,36 @@
+Exposure (Month) :=
+CALCULATE( SUM ( RC_Code_Model_Base[Actual] ) )
+
+R2_Safe :=
+VAR r = [R2_By_Model]              -- your existing R² per RC×Month
+VAR r_scaled = IF ( r > 1.5, r / 100.0, r )   -- if it comes as % (e.g., 77), scale to 0–1
+RETURN
+VAR r_clamped = MAX ( -1.0, MIN ( 1.0, r_scaled ) ) -- keep within [-1,1]
+RETURN r_clamped
+
+Avg R2 (EW, Monitorable, Month) :=
+VAR mon      = MAX ( Dim_Date[MonthEnd] )
+VAR rc_set   = FILTER ( VALUES ( Dim_RC[RC_DESCRIPTION] ), [Monitorable Flag (Measure)] = 1 )
+VAR t =
+    ADDCOLUMNS (
+        rc_set,
+        "@w",  CALCULATE ( [Exposure (Month)], TREATAS ( { mon }, RC_Code_Model_Base[MONTH_END] ) ),
+        "@r2", CALCULATE ( [R2_Safe],          TREATAS ( { mon }, RC_Code_Model_Base[MONTH_END] ) )
+    )
+VAR wtot = SUMX ( t, [@w] )
+RETURN IF ( wtot > 0, DIVIDE ( SUMX ( t, [@w] * [@r2] ), wtot ) )
+
+Avg R2 (EW, Mon, Latest) :=
+CALCULATE (
+    [Avg R2 (EW, Monitorable, Month)],
+    TREATAS ( { [Latest Month (Common)] }, Dim_Date[MonthEnd] )
+)
+
+
+
+
+
+
 Avg_R2_Weighted_Trend :=
 VAR r2_table =
     ADDCOLUMNS (
