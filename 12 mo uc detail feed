@@ -1,3 +1,63 @@
+Level Before – New    := [Prev Balance]
+Level Before – Closed := [Prev Balance] + [Δ New]
+Level Before – BalChg := [Prev Balance] + [Δ New] + [Δ Closed]
+
+WF Base :=
+VAR s = SELECTEDVALUE( Waterfall_Steps[Step] )
+VAR lbN = [Level Before – New]
+VAR lbC = [Level Before – Closed]
+VAR lbB = [Level Before – BalChg]
+VAR dC  = [Δ Closed]
+VAR dB  = [Δ Balance Change]
+RETURN
+SWITCH(
+  TRUE(),
+  s = "Previous Balance", 0,
+  s = "New Accounts",     lbN,
+  s = "Closed Accounts",  IF( dC < 0, lbC + dC, lbC ),      -- start lower if it’s a decrease
+  s = "Balance Change",   IF( dB < 0, lbB + dB, lbB ),      -- start lower if it’s a decrease
+  s = "Current Balance",  0,
+  0
+)
+
+WF Up :=
+VAR s = SELECTEDVALUE( Waterfall_Steps[Step] )
+RETURN
+SWITCH(
+  TRUE(),
+  s = "New Accounts",     MAX( [Δ New], 0 ),
+  s = "Closed Accounts",  MAX( [Δ Closed], 0 ),
+  s = "Balance Change",   MAX( [Δ Balance Change], 0 ),
+  0
+)
+
+WF Down :=
+VAR s = SELECTEDVALUE( Waterfall_Steps[Step] )
+RETURN
+SWITCH(
+  TRUE(),
+  s = "New Accounts",     ABS( MIN( [Δ New], 0 ) ),
+  s = "Closed Accounts",  ABS( MIN( [Δ Closed], 0 ) ),
+  s = "Balance Change",   ABS( MIN( [Δ Balance Change], 0 ) ),
+  0
+)
+
+WF Total :=
+VAR s = SELECTEDVALUE( Waterfall_Steps[Step] )
+RETURN
+SWITCH(
+  TRUE(),
+  s = "Previous Balance", [Prev Balance],
+  s = "Current Balance",  [Curr Balance],
+  0
+)
+
+
+
+
+
+
+
 Cum After New    := [Prev Balance] + [Δ New]
 Cum After Closed := [Prev Balance] + [Δ New] + [Δ Closed]
 
