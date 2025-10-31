@@ -1,6 +1,95 @@
 /* =================================
    2) WATERFALL – FACILITY COUNTS
    ================================= */
+
+/* bank list from either side */
+WITH banks AS (
+  SELECT DISTINCT Prev_Bank_Code AS bank_code FROM lab WHERE Prev_Bank_Code IS NOT NULL
+  UNION
+  SELECT DISTINCT Curr_Bank_Code AS bank_code FROM lab WHERE Curr_Bank_Code IS NOT NULL
+)
+SELECT
+  b.bank_code,
+
+  /* Starting = distinct prev facilities for this bank (prev side) */
+  (SELECT COUNT(DISTINCT Prev_Facility_ID)
+     FROM lab
+    WHERE had_prev=1
+      AND Prev_Facility_ID IS NOT NULL
+      AND Prev_Bank_Code = b.bank_code)                                           AS starting_facilities,
+
+  /* Auto In = distinct curr facilities that are adds+auto for this bank (curr side) */
+  (SELECT COUNT(DISTINCT Curr_Facility_ID)
+     FROM lab
+    WHERE has_curr=1 AND had_prev=0 AND curr_auto=1
+      AND Curr_Facility_ID IS NOT NULL
+      AND Curr_Bank_Code = b.bank_code)                                           AS auto_in_facilities,
+
+  /* Auto Out = negative distinct prev facilities that are exits+auto for this bank (prev side) */
+  -(SELECT COUNT(DISTINCT Prev_Facility_ID)
+      FROM lab
+     WHERE had_prev=1 AND has_curr=0 AND prev_auto=1
+       AND Prev_Facility_ID IS NOT NULL
+       AND Prev_Bank_Code = b.bank_code)                                          AS auto_out_facilities,
+
+  /* Downgrade IN (ex-Auto) = distinct curr facilities that are adds non-auto (curr side) */
+  (SELECT COUNT(DISTINCT Curr_Facility_ID)
+     FROM lab
+    WHERE has_curr=1 AND had_prev=0 AND curr_auto=0
+      AND Curr_Facility_ID IS NOT NULL
+      AND Curr_Bank_Code = b.bank_code)                                           AS downgrade_in_ex_auto_facilities,
+
+  /* Exit (ex-Auto) = negative distinct prev facilities that are exits non-auto (prev side) */
+  -(SELECT COUNT(DISTINCT Prev_Facility_ID)
+      FROM lab
+     WHERE had_prev=1 AND has_curr=0 AND prev_auto=0
+       AND Prev_Facility_ID IS NOT NULL
+       AND Prev_Bank_Code = b.bank_code)                                          AS exit_ex_auto_facilities,
+
+  /* Ending = distinct curr facilities for this bank (curr side) */
+  (SELECT COUNT(DISTINCT Curr_Facility_ID)
+     FROM lab
+    WHERE has_curr=1
+      AND Curr_Facility_ID IS NOT NULL
+      AND Curr_Bank_Code = b.bank_code)                                           AS ending_facilities,
+
+  /* Tie check: should be 0 for each bank */
+  (
+    (SELECT COUNT(DISTINCT Prev_Facility_ID)
+       FROM lab
+      WHERE had_prev=1 AND Prev_Facility_ID IS NOT NULL AND Prev_Bank_Code = b.bank_code)
+    +
+    (SELECT COUNT(DISTINCT Curr_Facility_ID)
+       FROM lab
+      WHERE has_curr=1 AND had_prev=0 AND curr_auto=1 AND Curr_Facility_ID IS NOT NULL AND Curr_Bank_Code = b.bank_code)
+    -
+    (SELECT COUNT(DISTINCT Prev_Facility_ID)
+       FROM lab
+      WHERE had_prev=1 AND has_curr=0 AND prev_auto=1 AND Prev_Facility_ID IS NOT NULL AND Prev_Bank_Code = b.bank_code)
+    +
+    (SELECT COUNT(DISTINCT Curr_Facility_ID)
+       FROM lab
+      WHERE has_curr=1 AND had_prev=0 AND curr_auto=0 AND Curr_Facility_ID IS NOT NULL AND Curr_Bank_Code = b.bank_code)
+    -
+    (SELECT COUNT(DISTINCT Prev_Facility_ID)
+       FROM lab
+      WHERE had_prev=1 AND has_curr=0 AND prev_auto=0 AND Prev_Facility_ID IS NOT NULL AND Prev_Bank_Code = b.bank_code)
+    -
+    (SELECT COUNT(DISTINCT Curr_Facility_ID)
+       FROM lab
+      WHERE has_curr=1 AND Curr_Facility_ID IS NOT NULL AND Curr_Bank_Code = b.bank_code)
+  ) AS bridge_check
+
+FROM banks b
+ORDER BY b.bank_code;
+
+
+
+
+
+/* =================================
+   2) WATERFALL – FACILITY COUNTS
+   ================================= */
 SELECT
   COALESCE(Curr_Bank_Code, Prev_Bank_Code) AS bank_code,
   COUNT(DISTINCT CASE WHEN had_prev=1 THEN Prev_Facility_ID END)                          AS starting_facilities,
