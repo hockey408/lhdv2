@@ -1,3 +1,25 @@
+Avg_R2_Weighted_Trend :=
+VAR r2_by_rc =
+    ADDCOLUMNS (
+        SUMMARIZE (
+            FILTER ( RC_Code_Model_Base, [Monitorable Flag (Measure)] = 1 ),
+            RC_Code_Model_Base[RC_DESCRIPTION],
+            RC_Code_Model_Base[Month_End]
+        ),
+        "@Exposure", CALCULATE ( SUM ( RC_Code_Model_Base[Exposure] ) ),
+        "@R2", CALCULATE ( AVERAGE ( RC_Code_Model_Base[R2_By_Model] ) )
+    )
+RETURN
+DIVIDE (
+    SUMX ( r2_by_rc, [@Exposure] * [@R2] ),
+    SUMX ( r2_by_rc, [@Exposure] )
+)
+
+
+
+
+
+
 Level Before – New    := [Prev Balance]
 Level Before – Closed := [Prev Balance] + [Δ New]
 Level Before – BalChg := [Prev Balance] + [Δ New] + [Δ Closed]
