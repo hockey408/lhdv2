@@ -1,3 +1,22 @@
+•	Is_Casey_Add_UT
+=AND([@Is_Add],[@curr_auto]=0,[@Curr_Bank_Code]="L-CIT",OR([@Curr_PROD5]="Business Non-RE Term Loans",[@Curr_PROD5]="Business Commitment Draw"),[@Curr_SSB]<=250000)
+	•	Is_Samya_Add_UT
+=AND([@Is_Add],[@curr_auto]=0,[@Curr_Bank_Code]="L-CIT",[@Curr_PROD5]="Business RE Term Loans",[@Curr_SSB]<=500000)
+	•	Is_Casey_Exit_UT
+=AND([@Is_Exit],[@prev_auto]=0,[@Prev_Bank_Code]="L-CIT",OR([@Prev_PROD5]="Business Non-RE Term Loans",[@Prev_PROD5]="Business Commitment Draw"),[@Prev_SSB]<=250000)
+	•	Is_Samya_Exit_UT
+=AND([@Is_Exit],[@prev_auto]=0,[@Prev_Bank_Code]="L-CIT",[@Prev_PROD5]="Business RE Term Loans",[@Prev_SSB]<=500000)
+
+C. One facility & balance “for event”
+	•	Facility_For_Event
+=IF([@Is_Exit],[@Prev_Facility_ID],[@Curr_Facility_ID])
+	•	Balance_For_Event
+=IF([@Is_Exit],[@Prev_SSB],[@Curr_SSB])
+
+
+
+
+
 WITH params AS (
   SELECT DATE '2025-09-30' curr_eom,
          ADD_MONTHS(DATE '2025-09-30',-1) prev_eom
