@@ -1,3 +1,157 @@
+/* ===================== 1) DETAIL EXTRACT (drill-down) with Owner ===================== */
+SELECT
+  Account_Identifier,
+
+  /* prev side */
+  Prev_Bank_Code, Prev_Facility_ID, Prev_SSB, prev_auto,
+  Prev_PROD5, Prev_CSS, Prev_RBC,
+
+  /* curr side */
+  Curr_Bank_Code, Curr_Facility_ID, Curr_SSB, curr_auto,
+  Curr_PROD5, Curr_CSS, Curr_RBC,
+
+  had_prev, has_curr, MoM_Delta,
+
+  /* ----- Owner per side ----- */
+  /* Current-month owner */
+  CASE
+    WHEN Curr_PROD5 = 'Business RE Term Loans'
+         AND Curr_Bank_Code = 'L-CIT'
+         AND COALESCE(Curr_SSB,0) > 500000                         THEN 'Samya'
+    WHEN Curr_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+         AND Curr_Bank_Code = 'L-CIT'
+         AND COALESCE(Curr_SSB,0) > 250000                         THEN 'Casey'
+    WHEN Curr_PROD5 = 'Business RE Term Loans'
+         AND Curr_Bank_Code = 'L-CIT'
+         AND COALESCE(Curr_SSB,0) <= 500000                        THEN 'Not Covered; Under $500k; Samya'
+    WHEN Curr_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+         AND Curr_Bank_Code = 'L-CIT'
+         AND COALESCE(Curr_SSB,0) <= 250000                        THEN 'Not Covered; Under $250k; Casey'
+    WHEN Curr_CSS = 'INFL10'                                       THEN 'Daniel'
+    WHEN Curr_Bank_Code = 'L-SVB'                                  THEN 'Eleanor'
+    WHEN Curr_RBC = 'R'                                            THEN 'Autochange'
+    WHEN Curr_Bank_Code = 'L-FCB'                                  THEN 'Connor'
+    ELSE 'NOT COVERED'
+  END AS Owner_Curr,
+
+  /* Previous-month owner */
+  CASE
+    WHEN Prev_PROD5 = 'Business RE Term Loans'
+         AND Prev_Bank_Code = 'L-CIT'
+         AND COALESCE(Prev_SSB,0) > 500000                         THEN 'Samya'
+    WHEN Prev_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+         AND Prev_Bank_Code = 'L-CIT'
+         AND COALESCE(Prev_SSB,0) > 250000                         THEN 'Casey'
+    WHEN Prev_PROD5 = 'Business RE Term Loans'
+         AND Prev_Bank_Code = 'L-CIT'
+         AND COALESCE(Prev_SSB,0) <= 500000                        THEN 'Not Covered; Under $500k; Samya'
+    WHEN Prev_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+         AND Prev_Bank_Code = 'L-CIT'
+         AND COALESCE(Prev_SSB,0) <= 250000                        THEN 'Not Covered; Under $250k; Casey'
+    WHEN Prev_CSS = 'INFL10'                                       THEN 'Daniel'
+    WHEN Prev_Bank_Code = 'L-SVB'                                  THEN 'Eleanor'
+    WHEN Prev_RBC = 'R'                                            THEN 'Autochange'
+    WHEN Prev_Bank_Code = 'L-FCB'                                  THEN 'Connor'
+    ELSE 'NOT COVERED'
+  END AS Owner_Prev,
+
+  /* Owner used for the event (aligns with bridges/bank attribution) */
+  CASE
+    WHEN had_prev = 1 AND has_curr = 0 THEN
+      CASE
+        WHEN Prev_PROD5 = 'Business RE Term Loans'
+             AND Prev_Bank_Code = 'L-CIT'
+             AND COALESCE(Prev_SSB,0) > 500000                     THEN 'Samya'
+        WHEN Prev_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+             AND Prev_Bank_Code = 'L-CIT'
+             AND COALESCE(Prev_SSB,0) > 250000                     THEN 'Casey'
+        WHEN Prev_PROD5 = 'Business RE Term Loans'
+             AND Prev_Bank_Code = 'L-CIT'
+             AND COALESCE(Prev_SSB,0) <= 500000                    THEN 'Not Covered; Under $500k; Samya'
+        WHEN Prev_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+             AND Prev_Bank_Code = 'L-CIT'
+             AND COALESCE(Prev_SSB,0) <= 250000                    THEN 'Not Covered; Under $250k; Casey'
+        WHEN Prev_CSS = 'INFL10'                                    THEN 'Daniel'
+        WHEN Prev_Bank_Code = 'L-SVB'                               THEN 'Eleanor'
+        WHEN Prev_RBC = 'R'                                         THEN 'Autochange'
+        WHEN Prev_Bank_Code = 'L-FCB'                               THEN 'Connor'
+        ELSE 'NOT COVERED'
+      END
+    WHEN has_curr = 1 THEN
+      CASE
+        WHEN Curr_PROD5 = 'Business RE Term Loans'
+             AND Curr_Bank_Code = 'L-CIT'
+             AND COALESCE(Curr_SSB,0) > 500000                     THEN 'Samya'
+        WHEN Curr_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+             AND Curr_Bank_Code = 'L-CIT'
+             AND COALESCE(Curr_SSB,0) > 250000                     THEN 'Casey'
+        WHEN Curr_PROD5 = 'Business RE Term Loans'
+             AND Curr_Bank_Code = 'L-CIT'
+             AND COALESCE(Curr_SSB,0) <= 500000                    THEN 'Not Covered; Under $500k; Samya'
+        WHEN Curr_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+             AND Curr_Bank_Code = 'L-CIT'
+             AND COALESCE(Curr_SSB,0) <= 250000                    THEN 'Not Covered; Under $250k; Casey'
+        WHEN Curr_CSS = 'INFL10'                                    THEN 'Daniel'
+        WHEN Curr_Bank_Code = 'L-SVB'                               THEN 'Eleanor'
+        WHEN Curr_RBC = 'R'                                         THEN 'Autochange'
+        WHEN Curr_Bank_Code = 'L-FCB'                               THEN 'Connor'
+        ELSE 'NOT COVERED'
+      END
+    ELSE COALESCE(
+      /* fallback if neither side present (shouldn't happen with our filters) */
+      CASE
+        WHEN Curr_PROD5 = 'Business RE Term Loans' AND Curr_Bank_Code = 'L-CIT' AND COALESCE(Curr_SSB,0) > 500000 THEN 'Samya'
+        WHEN Curr_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw') AND Curr_Bank_Code = 'L-CIT' AND COALESCE(Curr_SSB,0) > 250000 THEN 'Casey'
+        WHEN Curr_PROD5 = 'Business RE Term Loans' AND Curr_Bank_Code = 'L-CIT' AND COALESCE(Curr_SSB,0) <= 500000 THEN 'Not Covered; Under $500k; Samya'
+        WHEN Curr_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw') AND Curr_Bank_Code = 'L-CIT' AND COALESCE(Curr_SSB,0) <= 250000 THEN 'Not Covered; Under $250k; Casey'
+        WHEN Curr_CSS = 'INFL10' THEN 'Daniel'
+        WHEN Curr_Bank_Code = 'L-SVB' THEN 'Eleanor'
+        WHEN Curr_RBC = 'R' THEN 'Autochange'
+        WHEN Curr_Bank_Code = 'L-FCB' THEN 'Connor'
+        ELSE NULL
+      END,
+      CASE
+        WHEN Prev_PROD5 = 'Business RE Term Loans' AND Prev_Bank_Code = 'L-CIT' AND COALESCE(Prev_SSB,0) > 500000 THEN 'Samya'
+        WHEN Prev_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw') AND Prev_Bank_Code = 'L-CIT' AND COALESCE(Prev_SSB,0) > 250000 THEN 'Casey'
+        WHEN Prev_PROD5 = 'Business RE Term Loans' AND Prev_Bank_Code = 'L-CIT' AND COALESCE(Prev_SSB,0) <= 500000 THEN 'Not Covered; Under $500k; Samya'
+        WHEN Prev_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw') AND Prev_Bank_Code = 'L-CIT' AND COALESCE(Prev_SSB,0) <= 250000 THEN 'Not Covered; Under $250k; Casey'
+        WHEN Prev_CSS = 'INFL10' THEN 'Daniel'
+        WHEN Prev_Bank_Code = 'L-SVB' THEN 'Eleanor'
+        WHEN Prev_RBC = 'R' THEN 'Autochange'
+        WHEN Prev_Bank_Code = 'L-FCB' THEN 'Connor'
+        ELSE 'NOT COVERED'
+      END
+    )
+  END AS Owner_For_Event,
+
+  /* characterization for drill-down (unchanged) */
+  CASE
+    WHEN had_prev=0 AND has_curr=1 AND curr_auto=1 THEN 'Autochange Downgrade IN'
+    WHEN had_prev=1 AND has_curr=0 AND prev_auto=1 THEN 'Autochange Exit'
+    WHEN had_prev=1 AND has_curr=1 AND prev_auto=1 AND curr_auto=1 AND MoM_Delta<>0 THEN 'Autochange Persisting Δ'
+    WHEN had_prev=1 AND has_curr=1 AND prev_auto=1 AND curr_auto=1 AND MoM_Delta=0  THEN 'Autochange No Change'
+    WHEN had_prev=0 AND has_curr=1 AND curr_auto=0 THEN 'Downgrade IN (ex-Auto)'
+    WHEN had_prev=1 AND has_curr=0 AND prev_auto=0 THEN 'Exit (ex-Auto)'
+    WHEN had_prev=1 AND has_curr=1 AND curr_auto=0 AND MoM_Delta<>0 THEN 'Persisting Δ (ex-Auto)'
+    WHEN had_prev=1 AND has_curr=1 AND curr_auto=0 AND MoM_Delta=0  THEN 'No Change (ex-Auto)'
+    ELSE NULL
+  END AS Characterization,
+
+  /* bank attribution used by bridges */
+  CASE
+    WHEN (had_prev=1 AND has_curr=0) THEN Prev_Bank_Code
+    WHEN (has_curr=1 AND (had_prev=0 OR had_prev=1)) THEN Curr_Bank_Code
+    ELSE COALESCE(Curr_Bank_Code, Prev_Bank_Code)
+  END AS Bank_For_Event
+
+FROM lab
+ORDER BY COALESCE(Curr_Bank_Code, Prev_Bank_Code), Account_Identifier;
+
+
+
+
+
+
 /* =================================
    2) WATERFALL – FACILITY COUNTS
    ================================= */
