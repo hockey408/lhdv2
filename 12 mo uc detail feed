@@ -1,3 +1,286 @@
+/* ===========================
+   MoM Non-Accrual Canonical Set
+   =========================== */
+WITH params AS (
+  SELECT DATE '2025-09-30' AS curr_eom,
+         ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
+),
+
+/* Filter early + normalize IDs + map bank once */
+banked AS (
+  SELECT
+    End_of_Month_Date,
+    /* normalize to kill case/whitespace dupes */
+    UPPER(TRIM(Account_Identifier)) AS Account_Identifier,
+    UPPER(TRIM(Facility_ID))        AS Facility_ID,
+    Account_Name,
+    Contract_Source_System,
+    CIS_Customer_Number,
+    Account_Key,
+    Status_Code_Description,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    Source_System_Balance,
+    GL_Balance,
+    Available_Balance,
+    Borrower_Risk_Rating,
+    PD_Grade,
+    Days_Past_Due,
+    Non_Accrual_Flag,
+    PROD_HIER_LEVEL_5,
+    RBC_Code,
+    GL_ACCOUNT_CODE,
+    CASE
+      WHEN Contract_Source_System IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN') THEN 'L-SVB'
+      WHEN Contract_Source_System = 'ALL'
+       AND GL_ACCOUNT_CODE IN ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+                               '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+                               '1100001','1142067','1042886','1043008')                                            THEN 'L-SVB'
+      WHEN Contract_Source_System IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO')        THEN 'L-FCB'
+      WHEN Contract_Source_System IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN',
+                                      'INFL10','INFL10-EXCPTN','LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001',
+                                      'SBO001-EXCPTN','STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+                                      'STRAT1','STRAT1-EXCPTN')                                                     THEN 'L-CIT'
+      ELSE 'NULL-Need to Research'
+    END AS Bank_Code
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE End_of_Month_Date IN ((SELECT prev_eom FROM params),(SELECT curr_eom FROM params))
+    AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+),
+
+/* Collapse each month to 1 row per Account_Identifier (NA + SSB>0) */
+prev_na AS (
+  SELECT
+    Account_Identifier,
+    MAX(Bank_Code)             AS Prev_Bank_Code,
+    MAX(Facility_ID)           AS Prev_Facility_ID,
+    MAX(PROD_HIER_LEVEL_5)     AS Prev_PROD5,
+    MAX(Contract_Source_System)AS Prev_CSS,
+    MAX(RBC_Code)              AS Prev_RBC,
+    SUM(Source_System_Balance) AS Prev_SSB
+  FROM banked
+  WHERE End_of_Month_Date=(SELECT prev_eom FROM params)
+    AND Non_Accrual_Flag='Y' AND Source_System_Balance>0
+  GROUP BY Account_Identifier
+),
+curr_na AS (
+  SELECT
+    Account_Identifier,
+    MAX(Bank_Code)             AS Curr_Bank_Code,
+    MAX(Facility_ID)           AS Curr_Facility_ID,
+    MAX(PROD_HIER_LEVEL_5)     AS Curr_PROD5,
+    MAX(Contract_Source_System)AS Curr_CSS,
+    MAX(RBC_Code)              AS Curr_RBC,
+    SUM(Source_System_Balance) AS Curr_SSB
+  FROM banked
+  WHERE End_of_Month_Date=(SELECT curr_eom FROM params)
+    AND Non_Accrual_Flag='Y' AND Source_System_Balance>0
+  GROUP BY Account_Identifier
+),
+
+/* Canonical detail: join months once; compute flags + delta */
+lab AS (
+  SELECT
+    COALESCE(c.Account_Identifier,p.Account_Identifier) AS Account_Identifier,
+
+    /* prev */
+    p.Prev_SSB, p.Prev_Bank_Code, p.Prev_Facility_ID, p.Prev_PROD5, p.Prev_CSS, p.Prev_RBC,
+
+    /* curr */
+    c.Curr_SSB, c.Curr_Bank_Code, c.Curr_Facility_ID, c.Curr_PROD5, c.Curr_CSS, c.Curr_RBC,
+
+    /* presence & auto flags by side */
+    CASE WHEN COALESCE(p.Prev_SSB,0)>0 THEN 1 ELSE 0 END AS had_prev,
+    CASE WHEN COALESCE(c.Curr_SSB,0)>0 THEN 1 ELSE 0 END AS has_curr,
+    CASE WHEN UPPER(COALESCE(p.Prev_RBC,''))='R' THEN 1 ELSE 0 END AS prev_auto,
+    CASE WHEN UPPER(COALESCE(c.Curr_RBC,''))='R' THEN 1 ELSE 0 END AS curr_auto,
+
+    /* delta */
+    COALESCE(c.Curr_SSB,0) - COALESCE(p.Prev_SSB,0)     AS MoM_Delta
+  FROM curr_na c
+  FULL OUTER JOIN prev_na p
+    ON c.Account_Identifier=p.Account_Identifier
+)
+
+/* ===================== 1) DETAIL EXTRACT (drill-down) ===================== */
+SELECT
+  Account_Identifier,
+  Prev_Bank_Code, Prev_Facility_ID, Prev_SSB, prev_auto,
+  Curr_Bank_Code, Curr_Facility_ID, Curr_SSB, curr_auto,
+  had_prev, has_curr, MoM_Delta,
+  /* characterization for drill-down */
+  CASE
+    WHEN had_prev=0 AND has_curr=1 AND curr_auto=1 THEN 'Autochange Downgrade IN'
+    WHEN had_prev=1 AND has_curr=0 AND prev_auto=1 THEN 'Autochange Exit'
+    WHEN had_prev=1 AND has_curr=1 AND prev_auto=1 AND curr_auto=1 AND MoM_Delta<>0 THEN 'Autochange Persisting Δ'
+    WHEN had_prev=1 AND has_curr=1 AND prev_auto=1 AND curr_auto=1 AND MoM_Delta=0  THEN 'Autochange No Change'
+    WHEN had_prev=0 AND has_curr=1 AND curr_auto=0 THEN 'Downgrade IN (ex-Auto)'
+    WHEN had_prev=1 AND has_curr=0 AND prev_auto=0 THEN 'Exit (ex-Auto)'
+    WHEN had_prev=1 AND has_curr=1 AND curr_auto=0 AND MoM_Delta<>0 THEN 'Persisting Δ (ex-Auto)'
+    WHEN had_prev=1 AND has_curr=1 AND curr_auto=0 AND MoM_Delta=0  THEN 'No Change (ex-Auto)'
+    ELSE NULL
+  END AS Characterization,
+  /* bank attribution used by bridges */
+  CASE
+    WHEN (had_prev=1 AND has_curr=0) THEN Prev_Bank_Code
+    WHEN (has_curr=1 AND (had_prev=0 OR had_prev=1)) THEN Curr_Bank_Code
+    ELSE COALESCE(Curr_Bank_Code, Prev_Bank_Code)
+  END AS Bank_For_Event
+FROM lab
+ORDER BY COALESCE(Curr_Bank_Code, Prev_Bank_Code), Account_Identifier;
+
+/* ===================== 2) WATERFALL – BALANCES (by bank) ===================== */
+SELECT
+  COALESCE(Curr_Bank_Code, Prev_Bank_Code) AS bank_code,
+  /* Starting (prev side) */
+  SUM(CASE WHEN had_prev=1 THEN COALESCE(Prev_SSB,0) ELSE 0 END)                                      AS starting_balance,
+  /* Auto In / Out / Persisting Δ / Persisting ex-Auto / Adds ex-Auto / Exits ex-Auto */
+  SUM(CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=1 THEN COALESCE(Curr_SSB,0) END)              AS auto_in,
+  -SUM(CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=1 THEN COALESCE(Prev_SSB,0) END)             AS auto_out,
+  SUM(CASE WHEN had_prev=1 AND has_curr=1 AND prev_auto=1 AND curr_auto=1 THEN MoM_Delta END)         AS auto_persisting_delta,
+  SUM(CASE WHEN had_prev=1 AND has_curr=1 AND curr_auto=0 THEN MoM_Delta END)                         AS pers_delta_ex_auto,
+  SUM(CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=0 THEN COALESCE(Curr_SSB,0) END)              AS downgrade_in_ex_auto,
+  -SUM(CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=0 THEN COALESCE(Prev_SSB,0) END)             AS exit_ex_auto,
+  /* Ending (curr side) */
+  SUM(CASE WHEN has_curr=1 THEN COALESCE(Curr_SSB,0) ELSE 0 END)                                      AS ending_balance
+FROM lab
+GROUP BY COALESCE(Curr_Bank_Code, Prev_Bank_Code)
+ORDER BY bank_code;
+
+/* ===== 3) WATERFALL – FACILITY COUNTS (facility–bank presence; ties) ===== */
+SELECT
+  b.bank_code,
+
+  /* Starting = distinct prev facilities in this bank */
+  COUNT(DISTINCT CASE WHEN fp.facility_id IS NOT NULL THEN fp.facility_id END)                                                AS starting_facilities,
+
+  /* Auto In = curr-only facilities that are auto in curr (curr side) */
+  COUNT(DISTINCT CASE WHEN fp.facility_id IS NULL AND fc.facility_id IS NOT NULL AND fc.curr_auto=1 THEN fc.facility_id END)  AS auto_in_facilities,
+
+  /* Auto Out = prev-only facilities that are auto in prev (prev side, negative) */
+  -COUNT(DISTINCT CASE WHEN fp.facility_id IS NOT NULL AND fc.facility_id IS NULL AND fp.prev_auto=1 THEN fp.facility_id END) AS auto_out_facilities,
+
+  /* Downgrade IN (ex-Auto) = curr-only facilities not auto in curr (curr side) */
+  COUNT(DISTINCT CASE WHEN fp.facility_id IS NULL AND fc.facility_id IS NOT NULL AND COALESCE(fc.curr_auto,0)=0
+                      THEN fc.facility_id END)                                                                                AS downgrade_in_ex_auto_facilities,
+
+  /* Exit (ex-Auto) = prev-only facilities not auto in prev (prev side, negative) */
+  -COUNT(DISTINCT CASE WHEN fp.facility_id IS NOT NULL AND fc.facility_id IS NULL AND COALESCE(fp.prev_auto,0)=0
+                       THEN fp.facility_id END)                                                                               AS exit_ex_auto_facilities,
+
+  /* Ending = distinct curr facilities in this bank */
+  COUNT(DISTINCT CASE WHEN fc.facility_id IS NOT NULL THEN fc.facility_id END)                                                AS ending_facilities
+
+FROM
+  /* Bank list from either side */
+  ( SELECT DISTINCT Prev_Bank_Code AS bank_code FROM lab WHERE Prev_Bank_Code IS NOT NULL
+    UNION
+    SELECT DISTINCT Curr_Bank_Code FROM lab WHERE Curr_Bank_Code IS NOT NULL ) b
+
+  /* facility–bank PREV */
+  LEFT JOIN (
+    SELECT Prev_Bank_Code AS bank_code, Prev_Facility_ID AS facility_id, MAX(prev_auto) AS prev_auto
+    FROM lab
+    WHERE had_prev=1 AND Prev_Bank_Code IS NOT NULL AND Prev_Facility_ID IS NOT NULL
+    GROUP BY Prev_Bank_Code, Prev_Facility_ID
+  ) fp ON fp.bank_code=b.bank_code
+
+  /* facility–bank CURR */
+  LEFT JOIN (
+    SELECT Curr_Bank_Code AS bank_code, Curr_Facility_ID AS facility_id, MAX(curr_auto) AS curr_auto
+    FROM lab
+    WHERE has_curr=1 AND Curr_Bank_Code IS NOT NULL AND Curr_Facility_ID IS NOT NULL
+    GROUP BY Curr_Bank_Code, Curr_Facility_ID
+  ) fc ON fc.bank_code=b.bank_code AND fc.facility_id=fp.facility_id
+
+GROUP BY b.bank_code
+ORDER BY b.bank_code;
+
+/* ========== 4) DOWNGRADE IN (Adds) – counts & balances (ex-Auto buckets) ========== */
+SELECT
+  Curr_Bank_Code AS bank_code,
+  /* counts */
+  COUNT(DISTINCT CASE WHEN has_curr=1 AND had_prev=0 THEN Curr_Facility_ID END) AS total_add_facilities,
+  COUNT(DISTINCT CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=1 THEN Curr_Facility_ID END) AS autochange_facilities,
+  COUNT(DISTINCT CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=0
+        AND Curr_Bank_Code='L-CIT'
+        AND Curr_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+        AND COALESCE(Curr_SSB,0) <= 250000 THEN Curr_Facility_ID END) AS casey_under_250k_facilities,
+  COUNT(DISTINCT CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=0
+        AND Curr_Bank_Code='L-CIT'
+        AND Curr_PROD5 = 'Business RE Term Loans'
+        AND COALESCE(Curr_SSB,0) <= 500000 THEN Curr_Facility_ID END) AS samya_under_500k_facilities,
+  COUNT(DISTINCT CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=0
+        AND NOT ( Curr_Bank_Code='L-CIT' AND (
+              (Curr_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw') AND COALESCE(Curr_SSB,0) <= 250000) OR
+              (Curr_PROD5 = 'Business RE Term Loans' AND COALESCE(Curr_SSB,0) <= 500000)
+            ) )
+        THEN Curr_Facility_ID END) AS reviewable_facilities,
+  /* balances */
+  SUM(CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=1 THEN COALESCE(Curr_SSB,0) END)::NUMERIC(38,2) AS autochange_balances,
+  SUM(CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=0
+        AND Curr_Bank_Code='L-CIT'
+        AND Curr_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+        AND COALESCE(Curr_SSB,0) <= 250000 THEN COALESCE(Curr_SSB,0) END)::NUMERIC(38,2) AS casey_under_250k_balances,
+  SUM(CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=0
+        AND Curr_Bank_Code='L-CIT'
+        AND Curr_PROD5 = 'Business RE Term Loans'
+        AND COALESCE(Curr_SSB,0) <= 500000 THEN COALESCE(Curr_SSB,0) END)::NUMERIC(38,2) AS samya_under_500k_balances,
+  SUM(CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=0
+        AND NOT ( Curr_Bank_Code='L-CIT' AND (
+              (Curr_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw') AND COALESCE(Curr_SSB,0) <= 250000) OR
+              (Curr_PROD5 = 'Business RE Term Loans' AND COALESCE(Curr_SSB,0) <= 500000)
+            ) )
+        THEN COALESCE(Curr_SSB,0) END)::NUMERIC(38,2) AS reviewable_balances
+FROM lab
+WHERE has_curr=1 AND had_prev=0
+GROUP BY Curr_Bank_Code
+ORDER BY bank_code;
+
+/* ========== 5) EXITs – counts & balances (ex-Auto buckets) ========== */
+SELECT
+  Prev_Bank_Code AS bank_code,
+  /* counts */
+  COUNT(DISTINCT CASE WHEN had_prev=1 AND has_curr=0 THEN Prev_Facility_ID END) AS total_exit_facilities,
+  COUNT(DISTINCT CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=1 THEN Prev_Facility_ID END) AS autochange_facilities,
+  COUNT(DISTINCT CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=0
+        AND Prev_Bank_Code='L-CIT'
+        AND Prev_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+        AND COALESCE(Prev_SSB,0) <= 250000 THEN Prev_Facility_ID END) AS casey_under_250k_facilities,
+  COUNT(DISTINCT CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=0
+        AND Prev_Bank_Code='L-CIT'
+        AND Prev_PROD5 = 'Business RE Term Loans'
+        AND COALESCE(Prev_SSB,0) <= 500000 THEN Prev_Facility_ID END) AS samya_under_500k_facilities,
+  COUNT(DISTINCT CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=0
+        AND NOT ( Prev_Bank_Code='L-CIT' AND (
+              (Prev_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw') AND COALESCE(Prev_SSB,0) <= 250000) OR
+              (Prev_PROD5 = 'Business RE Term Loans' AND COALESCE(Prev_SSB,0) <= 500000)
+            ) )
+        THEN Prev_Facility_ID END) AS reviewable_facilities,
+  /* balances */
+  SUM(CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=1 THEN COALESCE(Prev_SSB,0) END)::NUMERIC(38,2) AS autochange_balances,
+  SUM(CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=0
+        AND Prev_Bank_Code='L-CIT'
+        AND Prev_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw')
+        AND COALESCE(Prev_SSB,0) <= 250000 THEN COALESCE(Prev_SSB,0) END)::NUMERIC(38,2) AS casey_under_250k_balances,
+  SUM(CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=0
+        AND Prev_Bank_Code='L-CIT'
+        AND Prev_PROD5 = 'Business RE Term Loans'
+        AND COALESCE(Prev_SSB,0) <= 500000 THEN COALESCE(Prev_SSB,0) END)::NUMERIC(38,2) AS samya_under_500k_balances,
+  SUM(CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=0
+        AND NOT ( Prev_Bank_Code='L-CIT' AND (
+              (Prev_PROD5 IN ('Business Non-RE Term Loans','Business Commitment Draw') AND COALESCE(Prev_SSB,0) <= 250000) OR
+              (Prev_PROD5 = 'Business RE Term Loans' AND COALESCE(Prev_SSB,0) <= 500000)
+            ) )
+        THEN COALESCE(Prev_SSB,0) END)::NUMERIC(38,2) AS reviewable_balances
+FROM lab
+WHERE had_prev=1 AND has_curr=0
+GROUP BY Prev_Bank_Code
+ORDER BY bank_code;
+
+
+
+
+
 /* ===================== 1) DETAIL EXTRACT (drill-down) with Owner ===================== */
 SELECT
   Account_Identifier,
