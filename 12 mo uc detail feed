@@ -1,3 +1,11 @@
+Msg 207, Level 16, State 1, Line 63
+Invalid column name 'DERIVED_ AMORTIZED_COST_BASIS'.
+Msg 207, Level 16, State 1, Line 66
+Invalid column name 'DERIVED_ AMORTIZED_COST_BASIS'.
+
+
+
+
 /*=============================================================
 NULL checks for CRR / RBS / FDIC at the latest month end
 Tables have daily LOADDT; we select MAX(EOMONTH(LOADDT)) per table.
