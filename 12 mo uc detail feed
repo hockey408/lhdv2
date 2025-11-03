@@ -1,5 +1,109 @@
 /*=============================================================
 NULL checks for CRR / RBS / FDIC on a manually specified date
+Now also filters to only rows with non-null/non-zero exposure
+===============================================================*/
+
+DECLARE @AsOfDate date = '2025-09-30';  -- << set your snapshot date here
+
+/* Sargable date window: [@AsOfDate, @AsOfDate + 1) */
+WITH date_window AS (
+    SELECT 
+        start_dt = CAST(@AsOfDate AS datetime2(0)),
+        end_dt   = DATEADD(day, 1, CAST(@AsOfDate AS datetime2(0)))
+),
+
+/*======== Credit Lines: CRR/RBS/FDIC NULLs, with exposures ========*/
+creditline_nulls AS (
+    SELECT
+        SourceTable    = 'CDM_CREDITLINES_ALL_TOPSIDED',
+        IdentifierType = 'CUST_LINE_NBR',
+        Identifier     = CAST(L.CUST_LINE_NBR AS varchar(64)),
+        AsOfDate       = CAST(L.LOADDT AS date),
+
+        CRR  = L.RISK_CD,
+        RBS  = L.RISK_BAS_SEG_CD,
+        FDIC = L.FDIC_CD,
+
+        SEC_Exposure       = CAST(CASE WHEN ISNULL(L.SEC_UNFUNDED,0) <> 0 THEN L.SEC_UNFUNDED END AS decimal(38,6)),
+        FRB_Exposure       = CAST(CASE WHEN ISNULL(L.FRB_UNFUNDED,0) <> 0 THEN L.FRB_UNFUNDED END AS decimal(38,6)),
+        ACB_Exposure       = CAST(CASE WHEN ISNULL(L.AMORTIZED_COST_BASIS,0) <> 0 THEN L.AMORTIZED_COST_BASIS END AS decimal(38,6)),
+        Derived_ACB_Exposure = CAST(NULL AS decimal(38,6))  -- not applicable for credit lines
+    FROM CRDADMPRD.dbo.CDM_CREDITLINES_ALL_TOPSIDED L
+    CROSS JOIN date_window w
+    WHERE L.LOADDT >= w.start_dt AND L.LOADDT < w.end_dt
+      AND (L.RISK_CD IS NULL OR L.RISK_BAS_SEG_CD IS NULL OR L.FDIC_CD IS NULL)
+      AND (
+            ISNULL(L.SEC_UNFUNDED,0) <> 0 OR 
+            ISNULL(L.FRB_UNFUNDED,0) <> 0 OR 
+            ISNULL(L.AMORTIZED_COST_BASIS,0) <> 0
+          )
+),
+
+/*======== Instruments: CRR/RBS/FDIC NULLs, with exposures ========*/
+instrument_nulls AS (
+    SELECT
+        SourceTable    = 'CDM_INSTRUMENTS_TOPSIDED',
+        IdentifierType = 'ACCTNBR',
+        Identifier     = CAST(I.ACCTNBR AS varchar(64)),
+        AsOfDate       = CAST(I.LOADDT AS date),
+
+        CRR  = I.RISKCD,
+        RBS  = I.RISK_BAS_SEG_CD,
+        FDIC = I.FDICCD,
+
+        SEC_Exposure       = CAST(NULL AS decimal(38,6)),  -- not applicable for instruments
+        FRB_Exposure       = CAST(NULL AS decimal(38,6)),  -- not applicable for instruments
+        ACB_Exposure       = CAST(CASE WHEN ISNULL(I.AMORTIZED_COST_BASIS,0) <> 0 THEN I.AMORTIZED_COST_BASIS END AS decimal(38,6)),
+        Derived_ACB_Exposure = CAST(CASE WHEN ISNULL(I.DERIVED_AMORTIZED_COST_BASIS,0) <> 0 THEN I.DERIVED_AMORTIZED_COST_BASIS END AS decimal(38,6))
+    FROM CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED I
+    CROSS JOIN date_window w
+    WHERE I.LOADDT >= w.start_dt AND I.LOADDT < w.end_dt
+      AND (I.RISKCD IS NULL OR I.RISK_BAS_SEG_CD IS NULL OR I.FDICCD IS NULL)
+      AND (
+            ISNULL(I.AMORTIZED_COST_BASIS,0) <> 0 OR 
+            ISNULL(I.DERIVED_AMORTIZED_COST_BASIS,0) <> 0
+          )
+)
+
+/*======== Final unified output ========*/
+SELECT
+    SourceTable,
+    IdentifierType,
+    Identifier,
+    AsOfDate,
+    CRR,
+    RBS,
+    FDIC,
+    SEC_Exposure,
+    FRB_Exposure,
+    ACB_Exposure,
+    Derived_ACB_Exposure
+FROM creditline_nulls
+
+UNION ALL
+
+SELECT
+    SourceTable,
+    IdentifierType,
+    Identifier,
+    AsOfDate,
+    CRR,
+    RBS,
+    FDIC,
+    SEC_Exposure,
+    FRB_Exposure,
+    ACB_Exposure,
+    Derived_ACB_Exposure
+FROM instrument_nulls
+ORDER BY SourceTable, Identifier;
+
+
+
+
+
+
+/*=============================================================
+NULL checks for CRR / RBS / FDIC on a manually specified date
 - Uses sargable range filter on LOADDT
 - Unifies outputs from Credit Lines and Instruments
 ===============================================================*/
