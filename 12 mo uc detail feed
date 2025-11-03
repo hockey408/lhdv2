@@ -1,3 +1,117 @@
+/* === Trend of SEC_UNFUNDED for system = 'UBS' over the last 12 month-ends === */
+/* Finds latest EOM from CREDIT_LINE_MONTHLY, generates prior 11 EOMs, gets latest rows per date/line,
+   applies Cards tagging first (date-scoped), then system mapping incl. UBS, and aggregates. */
+
+SET NOCOUNT ON;
+
+/* Latest EOM present in CLM */
+WITH MaxEOM AS (
+    SELECT EOMONTH(MAX(CAST(LoadDate AS DATE))) AS curr_eom
+    FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY
+),
+/* Last 12 month-ends, starting from latest present */
+Months AS (
+    SELECT 0 AS n, curr_eom AS eom
+    FROM MaxEOM
+    UNION ALL
+    SELECT n + 1,
+           EOMONTH(DATEADD(MONTH, -1, eom))
+    FROM Months
+    WHERE n < 11
+),
+/* Cards tagging (date-scoped) limited to our 12 months */
+Cards AS (
+    SELECT DISTINCT CAST(c.LOADDT AS DATE) AS LoadDate,
+           c.CUST_LINE_NBR                 AS CreditLineNumber
+    FROM CRDADMPRD.CRDADMPRD.dbo.CDM_CARDS_LOAN c
+    WHERE CAST(c.LOADDT AS DATE) IN (SELECT eom FROM Months)
+),
+/* Latest CLM per date & line */
+CLM AS (
+    SELECT
+        CAST(a.LoadDate AS DATE) AS LoadDate,
+        a.CreditLineNumber,
+        a.NetUtilized,
+        a.ApplID,
+        a.RunID,
+        ROW_NUMBER() OVER (
+            PARTITION BY CAST(a.LoadDate AS DATE), a.CreditLineNumber
+            ORDER BY a.RunID DESC
+        ) AS rn
+    FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY a
+    WHERE CAST(a.LoadDate AS DATE) IN (SELECT eom FROM Months)
+),
+CLM_Latest AS (
+    SELECT * FROM CLM WHERE rn = 1
+),
+/* Latest Unfunded per date & line */
+UF AS (
+    SELECT
+        CAST(b.LoadDate AS DATE) AS LoadDate,
+        b.CreditLineNumber,
+        b.SecUnfunded,
+        b.RunID,
+        ROW_NUMBER() OVER (
+            PARTITION BY CAST(b.LoadDate AS DATE), b.CreditLineNumber
+            ORDER BY b.RunID DESC
+        ) AS rn
+    FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED b
+    WHERE CAST(b.LoadDate AS DATE) IN (SELECT eom FROM Months)
+),
+UF_Latest AS (
+    SELECT * FROM UF WHERE rn = 1
+),
+/* Tag system — Cards first (date-scoped), then other mappings incl. UBS */
+Flux AS (
+    SELECT
+        c.LoadDate,
+        c.CreditLineNumber,
+        c.NetUtilized,
+        COALESCE(u.SecUnfunded, 0.0) AS SecUnfunded,
+        c.ApplID,
+        CASE
+            WHEN EXISTS (
+                SELECT 1 FROM Cards x
+                WHERE x.LoadDate = c.LoadDate
+                  AND x.CreditLineNumber = c.CreditLineNumber
+            ) THEN 'Cards'
+            WHEN c.ApplID IN ('CF')                     THEN 'CFD'
+            WHEN c.ApplID IN ('ML')                     THEN 'Miser Lines'
+            WHEN c.ApplID IN ('MO')                     THEN 'Miser Mortgage'
+            WHEN c.CreditLineNumber LIKE '%iMX%'        THEN 'iMX'
+            WHEN c.ApplID IN ('LN')                     THEN 'CBS'
+            WHEN c.ApplID IN ('LO')                     THEN 'UBS'
+            WHEN c.ApplID IN ('LJ')                     THEN 'LJ'
+            ELSE NULL
+        END AS [system]
+    FROM CLM_Latest c
+    LEFT JOIN UF_Latest u
+      ON u.LoadDate = c.LoadDate
+     AND u.CreditLineNumber = c.CreditLineNumber
+)
+/* Aggregate to monthly trend for UBS with MoM deltas */
+SELECT
+    f.LoadDate                                 AS [EOM],
+    SUM(f.SecUnfunded)                         AS [SEC_UNFUNDED],
+    SUM(f.SecUnfunded)
+      - LAG(SUM(f.SecUnfunded)) OVER (ORDER BY f.LoadDate)               AS [MoM_Change],
+    CASE
+        WHEN LAG(SUM(f.SecUnfunded)) OVER (ORDER BY f.LoadDate) = 0 THEN NULL
+        ELSE (SUM(f.SecUnfunded)
+             - LAG(SUM(f.SecUnfunded)) OVER (ORDER BY f.LoadDate))
+             / NULLIF(LAG(SUM(f.SecUnfunded)) OVER (ORDER BY f.LoadDate), 0.0)
+    END                                          AS [MoM_Change_Pct]
+FROM Flux f
+WHERE f.[system] = 'UBS'
+GROUP BY f.LoadDate
+ORDER BY f.LoadDate
+OPTION (MAXRECURSION 12);
+
+
+
+
+
+
 /* Clean up temp tables */
 IF OBJECT_ID('tempdb..#FLUX')   IS NOT NULL DROP TABLE #FLUX;
 IF OBJECT_ID('tempdb..#CARDS')  IS NOT NULL DROP TABLE #CARDS;
