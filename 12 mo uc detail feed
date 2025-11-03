@@ -1,3 +1,17 @@
+/* ========= 5) Customer-level SSB (CIS totals by month) ========= */
+joined_with_cis AS (
+  SELECT
+    j.*,
+    /* Sum all NA-pop account SSBs for the same customer in that month */
+    SUM(COALESCE(j.Curr_SSB,0)) OVER (PARTITION BY j.Curr_CIS_Customer_Number) AS Curr_CIS_SSB,
+    SUM(COALESCE(j.Prev_SSB,0)) OVER (PARTITION BY j.Prev_CIS_Customer_Number) AS Prev_CIS_SSB
+  FROM joined j
+)
+
+
+
+
+
 WITH params AS (
   SELECT
     DATE '2025-09-30'                 AS curr_eom,
