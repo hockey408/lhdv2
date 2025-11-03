@@ -1,3 +1,22 @@
+=LET(
+  bank, B$1,
+  mask, (Account_Detail[Is_Add]=TRUE)*
+        (Account_Detail[Bank_For_Event]=bank)*
+        (Account_Detail[Owner_For_Event]<>"Autochange")*
+        (Account_Detail[Owner_For_Event]<>"Not Covered; Under $250k; Casey")*
+        (Account_Detail[Owner_For_Event]<>"Not Covered; Under $500k; Samya"),
+  fac, FILTER(Account_Detail[Facility_For_Event], mask),
+  amt, FILTER(Account_Detail[Balance_For_Event],  mask),
+  fac_u, UNIQUE(fac),
+  fac_sum, MAP(fac_u, LAMBDA(f, SUM(IF(fac=f, amt)))),
+  SUM(IFERROR(LARGE(fac_sum, SEQUENCE(30)), 0))
+)
+
+
+
+
+
+
 =ROWS(UNIQUE(FILTER(
   Account_Detail[Facility_For_Event],
   (Account_Detail[Is_Add]=TRUE)*
