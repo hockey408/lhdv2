@@ -1,4 +1,27 @@
 =ROWS(UNIQUE(FILTER(
+  Account_Detail[Facility_For_Event],
+  (Account_Detail[Is_Add]=TRUE)*
+  (Account_Detail[curr_auto]=0)*
+  (Account_Detail[Bank_For_Event]=B$1)
+)))
+
+=-ROWS(UNIQUE(FILTER(
+  Account_Detail[Facility_For_Event],
+  (Account_Detail[Is_Exit]=TRUE)*
+  (Account_Detail[prev_auto]=0)*
+  (Account_Detail[Bank_For_Event]=B$1)
+)))
+
+=ROWS(UNIQUE(FILTER(
+  Account_Detail[Curr_Facility_ID],
+  (Account_Detail[has_curr]=TRUE)*
+  (Account_Detail[Curr_Bank_Code]=B$1)
+)))
+
+
+
+
+=ROWS(UNIQUE(FILTER(
     Account_Detail[Facility_For_Event],
     (Account_Detail[Is_Add]=TRUE)*
     (Account_Detail[curr_auto]=1)*
