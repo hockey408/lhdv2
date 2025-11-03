@@ -1,3 +1,31 @@
+=SUMIFS(Account_Detail[Balance_For_Event],
+        Account_Detail[Is_Add], TRUE,
+        Account_Detail[Bank_For_Event], B$1)
+
+=SUMIFS(Account_Detail[Balance_For_Event],
+        Account_Detail[Is_Add], TRUE,
+        Account_Detail[Owner_For_Event], "Autochange",
+        Account_Detail[Bank_For_Event], B$1)
+
+
+=SUMIFS(Account_Detail[Balance_For_Event],
+        Account_Detail[Is_Add], TRUE,
+        Account_Detail[Owner_For_Event], "Not Covered; Under $250k; Casey",
+        Account_Detail[Bank_For_Event], B$1)
+
+=SUMIFS(Account_Detail[Balance_For_Event],
+        Account_Detail[Is_Add], TRUE,
+        Account_Detail[Owner_For_Event], "Not Covered; Under $500k; Samya",
+        Account_Detail[Bank_For_Event], B$1)
+
+
+
+
+
+
+
+
+
 =ROWS(UNIQUE(FILTER(Account_Detail[Facility_For_Event],
  (Account_Detail[Is_Add]=TRUE)*
  (Account_Detail[curr_auto]=1)*
