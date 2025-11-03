@@ -1,3 +1,133 @@
+/*=============================================================
+NULL checks for CRR / RBS / FDIC at latest month end
+Across:
+  1) CRDADMPRD.dbo.CDM_CREDITLINES_ALL_TOPSIDED  (key: CUST_LINE_NBR)
+  2) CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED      (key: ACCTNBR)
+
+Edit the variables below to add manual fields or force a specific EOM.
+===============================================================*/
+
+DECLARE @AsOfEOM        date         = NULL;  -- Set to a specific EOM to override auto-latest, e.g. '2025-09-30'
+DECLARE @Analyst        varchar(100) = '<<your name here>>';
+DECLARE @RunLabel       varchar(120) = 'CRR/RBS/FDIC NULL Audit';
+DECLARE @Comments       varchar(200) = NULL;
+
+/*======== Latest EOM filters (use @AsOfEOM if provided, else MAX(LOADDT) per table) ========*/
+WITH latest_lines AS (
+    SELECT L.*
+    FROM CRDADMPRD.dbo.CDM_CREDITLINES_ALL_TOPSIDED AS L
+    WHERE L.LOADDT = COALESCE(
+        @AsOfEOM,
+        (SELECT MAX(LOADDT) FROM CRDADMPRD.dbo.CDM_CREDITLINES_ALL_TOPSIDED)
+    )
+),
+latest_instr AS (
+    SELECT I.*
+    FROM CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED AS I
+    WHERE I.LOADDT = COALESCE(
+        @AsOfEOM,
+        (SELECT MAX(LOADDT) FROM CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED)
+    )
+),
+
+/*======== Credit Lines: rows where CRR/RBS/FDIC is NULL, with exposures ========*/
+creditline_nulls AS (
+    SELECT
+        SourceTable            = 'CDM_CREDITLINES_ALL_TOPSIDED',
+        IdentifierType         = 'CUST_LINE_NBR',
+        Identifier             = CAST(L.CUST_LINE_NBR AS varchar(64)),
+        AsOfEOM                = L.LOADDT,
+
+        -- Target code columns
+        CRR                    = L.RISK_CD,
+        RBS                    = L.RISK_BAS_SEG_CD,
+        FDIC                   = L.FDIC_CD,
+
+        -- Exposures (only show values if non-null and non-zero)
+        SEC_Exposure           = CASE WHEN ISNULL(L.SEC_UNFUNDED,0) <> 0 THEN L.SEC_UNFUNDED END,
+        FRB_Exposure           = CASE WHEN ISNULL(L.FRB_UNFUNDED,0) <> 0 THEN L.FRB_UNFUNDED END,
+        ACB_Exposure           = CASE WHEN ISNULL(L.AMORTIZED_COST_BASIS,0) <> 0 THEN L.AMORTIZED_COST_BASIS END,
+
+        -- Manual fields
+        Analyst                = @Analyst,
+        RunLabel               = @RunLabel,
+        Comments               = @Comments
+    FROM latest_lines AS L
+    WHERE
+        (L.RISK_CD IS NULL OR L.RISK_BAS_SEG_CD IS NULL OR L.FDIC_CD IS NULL)
+),
+
+/*======== Instruments: rows where CRR/RBS/FDIC is NULL, with exposures ========*/
+instrument_nulls AS (
+    SELECT
+        SourceTable            = 'CDM_INSTRUMENTS_TOPSIDED',
+        IdentifierType         = 'ACCTNBR',
+        Identifier             = CAST(I.ACCTNBR AS varchar(64)),
+        AsOfEOM                = I.LOADDT,
+
+        -- Target code columns (note: CRR column is RISKCD in instruments)
+        CRR                    = I.RISKCD,
+        RBS                    = I.RISK_BAS_SEG_CD,
+        FDIC                   = I.FDICCD,
+
+        -- Exposures (only show values if non-null and non-zero)
+        ACB_Exposure           = CASE WHEN ISNULL(I.AMORTIZED_COST_BASIS,0) <> 0 THEN I.AMORTIZED_COST_BASIS END,
+        Derived_ACB_Exposure   = CASE WHEN ISNULL(I.DERIVED_AMORTIZED_COST_BASIS,0) <> 0 THEN I.DERIVED_AMORTIZED_COST_BASIS END,
+
+        -- Manual fields
+        Analyst                = @Analyst,
+        RunLabel               = @RunLabel,
+        Comments               = @Comments
+    FROM latest_instr AS I
+    WHERE
+        (I.RISKCD IS NULL OR I.RISK_BAS_SEG_CD IS NULL OR I.FDICCD IS NULL)
+)
+
+/*======== Final unified output ========*/
+SELECT
+    SourceTable,
+    IdentifierType,
+    Identifier,
+    AsOfEOM,
+    CRR,
+    RBS,
+    FDIC,
+    -- Credit Lines exposure columns (present for credit lines; NULL for instruments)
+    SEC_Exposure,
+    FRB_Exposure,
+    ACB_Exposure,
+    -- Instruments exposure column (present for instruments; NULL for credit lines)
+    Derived_ACB_Exposure,
+    Analyst,
+    RunLabel,
+    Comments
+FROM creditline_nulls
+
+UNION ALL
+
+SELECT
+    SourceTable,
+    IdentifierType,
+    Identifier,
+    AsOfEOM,
+    CRR,
+    RBS,
+    FDIC,
+    -- map to unified column list
+    SEC_Exposure         = CAST(NULL AS decimal(38,6)),
+    FRB_Exposure         = CAST(NULL AS decimal(38,6)),
+    ACB_Exposure,
+    Derived_ACB_Exposure,
+    Analyst,
+    RunLabel,
+    Comments
+FROM instrument_nulls
+ORDER BY SourceTable, Identifier;
+
+
+
+
+
 WITH params AS (
   SELECT DATE '2025-09-30' AS curr_eom,
          ADD_MONTHS(DATE '2025-09-30', -1) AS prev_eom
