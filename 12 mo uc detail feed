@@ -1,3 +1,75 @@
+/* Last 12 EOM SEC_UNFUNDED for ApplID='LO' with Cards removed */
+SET NOCOUNT ON;
+
+WITH MaxEOM AS (
+    SELECT EOMONTH(MAX(CAST(LoadDate AS DATE))) AS curr_eom
+    FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY
+),
+Months AS (
+    SELECT 0 AS n, curr_eom AS eom FROM MaxEOM
+    UNION ALL
+    SELECT n + 1, EOMONTH(DATEADD(MONTH, -1, eom))
+    FROM Months
+    WHERE n < 11
+),
+Cards AS (  -- date-scoped exclusion
+    SELECT DISTINCT CAST(LOADDT AS DATE) AS LoadDate,
+           CUST_LINE_NBR                AS CreditLineNumber
+    FROM CRDADMPRD.CRDADMPRD.dbo.CDM_CARDS_LOAN
+    WHERE CAST(LOADDT AS DATE) IN (SELECT eom FROM Months)
+),
+CLM AS (
+    SELECT
+        CAST(a.LoadDate AS DATE) AS LoadDate,
+        a.CreditLineNumber,
+        a.ApplID,
+        a.RunID,
+        ROW_NUMBER() OVER (
+            PARTITION BY CAST(a.LoadDate AS DATE), a.CreditLineNumber
+            ORDER BY a.RunID DESC
+        ) AS rn
+    FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY a
+    WHERE CAST(a.LoadDate AS DATE) IN (SELECT eom FROM Months)
+),
+CLM_Latest AS (
+    SELECT * FROM CLM WHERE rn = 1 AND ApplID = 'LO'
+),
+UF AS (
+    SELECT
+        CAST(b.LoadDate AS DATE) AS LoadDate,
+        b.CreditLineNumber,
+        b.SecUnfunded,
+        b.RunID,
+        ROW_NUMBER() OVER (
+            PARTITION BY CAST(b.LoadDate AS DATE), b.CreditLineNumber
+            ORDER BY b.RunID DESC
+        ) AS rn
+    FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED b
+    WHERE CAST(b.LoadDate AS DATE) IN (SELECT eom FROM Months)
+),
+UF_Latest AS (
+    SELECT * FROM UF WHERE rn = 1
+)
+SELECT
+    u.LoadDate        AS EOM,
+    SUM(u.SecUnfunded) AS SEC_UNFUNDED
+FROM CLM_Latest c
+JOIN UF_Latest u
+  ON u.LoadDate = c.LoadDate
+ AND u.CreditLineNumber = c.CreditLineNumber
+LEFT JOIN Cards x
+  ON x.LoadDate = u.LoadDate
+ AND x.CreditLineNumber = u.CreditLineNumber
+WHERE x.CreditLineNumber IS NULL          -- exclude Cards (date-scoped)
+GROUP BY u.LoadDate
+ORDER BY u.LoadDate
+OPTION (MAXRECURSION 12);
+
+
+
+
+
+
 /* === Trend of SEC_UNFUNDED for system = 'UBS' over the last 12 month-ends === */
 /* Finds latest EOM from CREDIT_LINE_MONTHLY, generates prior 11 EOMs, gets latest rows per date/line,
    applies Cards tagging first (date-scoped), then system mapping incl. UBS, and aggregates. */
