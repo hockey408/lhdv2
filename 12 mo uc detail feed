@@ -1,3 +1,112 @@
+/* Auto-detect the derived ACB column name (handles name with/without space) */
+DECLARE @DerivedCol sysname;
+
+SELECT TOP (1) @DerivedCol = c.name
+FROM sys.columns c
+WHERE c.object_id = OBJECT_ID('CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED')
+  AND c.name IN ('DERIVED_AMORTIZED_COST_BASIS', 'DERIVED_ AMORTIZED_COST_BASIS');
+
+DECLARE @sql nvarchar(max);
+
+/* Build the expression for Derived_ACB_Exposure only if the column exists */
+DECLARE @DerivedExpr nvarchar(max) =
+    CASE 
+      WHEN @DerivedCol IS NOT NULL
+        THEN N'CASE WHEN ISNULL(I.' + QUOTENAME(@DerivedCol) + N',0) <> 0 
+                   THEN I.' + QUOTENAME(@DerivedCol) + N' END'
+      ELSE N'CAST(NULL AS decimal(38,6))'
+    END;
+
+SET @sql = N'
+WITH eoms AS (
+    SELECT
+        lines_eom = (SELECT MAX(EOMONTH(LOADDT)) FROM CRDADMPRD.dbo.CDM_CREDITLINES_ALL_TOPSIDED),
+        instr_eom = (SELECT MAX(EOMONTH(LOADDT)) FROM CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED)
+),
+latest_lines AS (
+    SELECT L.*
+    FROM CRDADMPRD.dbo.CDM_CREDITLINES_ALL_TOPSIDED AS L
+    CROSS JOIN eoms
+    WHERE CAST(L.LOADDT AS date) = (SELECT lines_eom FROM eoms)
+),
+latest_instr AS (
+    SELECT I.*
+    FROM CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED AS I
+    CROSS JOIN eoms
+    WHERE CAST(I.LOADDT AS date) = (SELECT instr_eom FROM eoms)
+),
+creditline_nulls AS (
+    SELECT
+        SourceTable    = ''CDM_CREDITLINES_ALL_TOPSIDED'',
+        IdentifierType = ''CUST_LINE_NBR'',
+        Identifier     = CAST(L.CUST_LINE_NBR AS varchar(64)),
+        AsOfEOM        = CAST(L.LOADDT AS date),
+
+        CRR  = L.RISK_CD,
+        RBS  = L.RISK_BAS_SEG_CD,
+        FDIC = L.FDIC_CD,
+
+        SEC_Exposure = CASE WHEN ISNULL(L.SEC_UNFUNDED,0) <> 0 THEN L.SEC_UNFUNDED END,
+        FRB_Exposure = CASE WHEN ISNULL(L.FRB_UNFUNDED,0) <> 0 THEN L.FRB_UNFUNDED END,
+        ACB_Exposure = CASE WHEN ISNULL(L.AMORTIZED_COST_BASIS,0) <> 0 THEN L.AMORTIZED_COST_BASIS END,
+        Derived_ACB_Exposure = CAST(NULL AS decimal(38,6))
+    FROM latest_lines AS L
+    WHERE (L.RISK_CD IS NULL OR L.RISK_BAS_SEG_CD IS NULL OR L.FDIC_CD IS NULL)
+),
+instrument_nulls AS (
+    SELECT
+        SourceTable    = ''CDM_INSTRUMENTS_TOPSIDED'',
+        IdentifierType = ''ACCTNBR'',
+        Identifier     = CAST(I.ACCTNBR AS varchar(64)),
+        AsOfEOM        = CAST(I.LOADDT AS date),
+
+        CRR  = I.RISKCD,
+        RBS  = I.RISK_BAS_SEG_CD,
+        FDIC = I.FDICCD,
+
+        SEC_Exposure = CAST(NULL AS decimal(38,6)),
+        FRB_Exposure = CAST(NULL AS decimal(38,6)),
+        ACB_Exposure = CASE WHEN ISNULL(I.AMORTIZED_COST_BASIS,0) <> 0 THEN I.AMORTIZED_COST_BASIS END,
+        Derived_ACB_Exposure = ' + @DerivedExpr + N'
+    FROM latest_instr AS I
+    WHERE (I.RISKCD IS NULL OR I.RISK_BAS_SEG_CD IS NULL OR I.FDICCD IS NULL)
+)
+SELECT
+    SourceTable,
+    IdentifierType,
+    Identifier,
+    AsOfEOM,
+    CRR,
+    RBS,
+    FDIC,
+    SEC_Exposure,
+    FRB_Exposure,
+    ACB_Exposure,
+    Derived_ACB_Exposure
+FROM creditline_nulls
+UNION ALL
+SELECT
+    SourceTable,
+    IdentifierType,
+    Identifier,
+    AsOfEOM,
+    CRR,
+    RBS,
+    FDIC,
+    SEC_Exposure,
+    FRB_Exposure,
+    ACB_Exposure,
+    Derived_ACB_Exposure
+FROM instrument_nulls
+ORDER BY SourceTable, Identifier;
+';
+
+EXEC sys.sp_executesql @sql;
+
+
+
+
+
 Msg 207, Level 16, State 1, Line 63
 Invalid column name 'DERIVED_ AMORTIZED_COST_BASIS'.
 Msg 207, Level 16, State 1, Line 66
