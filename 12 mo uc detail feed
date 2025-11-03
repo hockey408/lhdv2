@@ -1,3 +1,18 @@
+=LET(
+  bank, B$1,
+  mask, (Account_Detail[Is_Add]=TRUE)*
+        (Account_Detail[Bank_For_Event]=bank),
+  fac, FILTER(Account_Detail[Facility_For_Event], mask),
+  amt, FILTER(Account_Detail[Balance_For_Event],  mask),
+  u, UNIQUE(fac),
+  uamt, MAP(u, LAMBDA(f, SUM(IF(fac=f, amt)))),
+  SUM(IFERROR(LARGE(uamt, SEQUENCE(30)), 0))
+)
+
+
+
+
+
 =SUMIFS(Account_Detail[Balance_For_Event],
         Account_Detail[Is_Add], TRUE,
         Account_Detail[Bank_For_Event], B$1)
