@@ -1,3 +1,21 @@
+=ROWS(UNIQUE(FILTER(
+    Account_Detail[Facility_For_Event],
+    (Account_Detail[Is_Add]=TRUE)*
+    (Account_Detail[curr_auto]=1)*
+    (Account_Detail[Bank_For_Event]=B$1)
+)))
+-
+ROWS(UNIQUE(FILTER(
+    Account_Detail[Facility_For_Event],
+    (Account_Detail[Is_Exit]=TRUE)*
+    (Account_Detail[prev_auto]=1)*
+    (Account_Detail[Bank_For_Event]=B$1)
+)))
+
+
+
+
+
 •	Is_Casey_Add_UT
 =AND([@Is_Add],[@curr_auto]=0,[@Curr_Bank_Code]="L-CIT",OR([@Curr_PROD5]="Business Non-RE Term Loans",[@Curr_PROD5]="Business Commitment Draw"),[@Curr_SSB]<=250000)
 	•	Is_Samya_Add_UT
