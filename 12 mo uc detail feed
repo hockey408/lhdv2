@@ -9,6 +9,62 @@
   SUM(IFERROR(LARGE(uamt, SEQUENCE(30)), 0))
 )
 
+=LET(
+  bank, B$1,
+  mask, (Account_Detail[Is_Add]=TRUE)*
+        (Account_Detail[Bank_For_Event]=bank)*
+        (Account_Detail[Owner_For_Event]="Autochange"),
+  fac, FILTER(Account_Detail[Facility_For_Event], mask),
+  amt, FILTER(Account_Detail[Balance_For_Event],  mask),
+  u, UNIQUE(fac),
+  uamt, MAP(u, LAMBDA(f, SUM(IF(fac=f, amt)))),
+  SUM(IFERROR(LARGE(uamt, SEQUENCE(30)), 0))
+)
+
+
+=LET(
+  bank, B$1,
+  mask, (Account_Detail[Is_Add]=TRUE)*
+        (Account_Detail[Bank_For_Event]=bank)*
+        (Account_Detail[Owner_For_Event]="Not Covered; Under $250k; Casey"),
+  fac, FILTER(Account_Detail[Facility_For_Event], mask),
+  amt, FILTER(Account_Detail[Balance_For_Event],  mask),
+  u, UNIQUE(fac),
+  uamt, MAP(u, LAMBDA(f, SUM(IF(fac=f, amt)))),
+  SUM(IFERROR(LARGE(uamt, SEQUENCE(30)), 0))
+)
+
+
+=LET(
+  bank, B$1,
+  mask, (Account_Detail[Is_Add]=TRUE)*
+        (Account_Detail[Bank_For_Event]=bank)*
+        (Account_Detail[Owner_For_Event]="Not Covered; Under $500k; Samya"),
+  fac, FILTER(Account_Detail[Facility_For_Event], mask),
+  amt, FILTER(Account_Detail[Balance_For_Event],  mask),
+  u, UNIQUE(fac),
+  uamt, MAP(u, LAMBDA(f, SUM(IF(fac=f, amt)))),
+  SUM(IFERROR(LARGE(uamt, SEQUENCE(30)), 0))
+)
+
+
+=LET(
+  bank, B$1,
+  mask, (Account_Detail[Is_Add]=TRUE)*
+        (Account_Detail[Bank_For_Event]=bank)*
+        (Account_Detail[Owner_For_Event]<>"Autochange")*
+        (Account_Detail[Owner_For_Event]<>"Not Covered; Under $250k; Casey")*
+        (Account_Detail[Owner_For_Event]<>"Not Covered; Under $500k; Samya"),
+  fac, FILTER(Account_Detail[Facility_For_Event], mask),
+  amt, FILTER(Account_Detail[Balance_For_Event],  mask),
+  u, UNIQUE(fac),
+  uamt, MAP(u, LAMBDA(f, SUM(IF(fac=f, amt)))),
+  SUM(IFERROR(LARGE(uamt, SEQUENCE(30)), 0))
+)
+
+
+
+
 
 
 
