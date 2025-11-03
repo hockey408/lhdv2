@@ -1,5 +1,114 @@
 /*=============================================================
 NULL checks for CRR / RBS / FDIC at the latest month end
+Tables have daily LOADDT; we select MAX(EOMONTH(LOADDT)) per table.
+===============================================================*/
+
+WITH eoms AS (
+    SELECT
+        lines_eom = (SELECT MAX(EOMONTH(LOADDT)) FROM CRDADMPRD.dbo.CDM_CREDITLINES_ALL_TOPSIDED),
+        instr_eom = (SELECT MAX(EOMONTH(LOADDT)) FROM CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED)
+),
+
+latest_lines AS (
+    SELECT L.*
+    FROM CRDADMPRD.dbo.CDM_CREDITLINES_ALL_TOPSIDED AS L
+    CROSS JOIN eoms
+    WHERE CAST(L.LOADDT AS date) = (SELECT lines_eom FROM eoms)
+),
+
+latest_instr AS (
+    SELECT I.*
+    FROM CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED AS I
+    CROSS JOIN eoms
+    WHERE CAST(I.LOADDT AS date) = (SELECT instr_eom FROM eoms)
+),
+
+/*======== Credit Lines: CRR/RBS/FDIC NULLs, with exposures ========*/
+creditline_nulls AS (
+    SELECT
+        SourceTable    = 'CDM_CREDITLINES_ALL_TOPSIDED',
+        IdentifierType = 'CUST_LINE_NBR',
+        Identifier     = CAST(L.CUST_LINE_NBR AS varchar(64)),
+        AsOfEOM        = CAST(L.LOADDT AS date),
+
+        CRR  = L.RISK_CD,
+        RBS  = L.RISK_BAS_SEG_CD,
+        FDIC = L.FDIC_CD,
+
+        SEC_Exposure       = CASE WHEN ISNULL(L.SEC_UNFUNDED,0) <> 0 THEN L.SEC_UNFUNDED END,
+        FRB_Exposure       = CASE WHEN ISNULL(L.FRB_UNFUNDED,0) <> 0 THEN L.FRB_UNFUNDED END,
+        ACB_Exposure       = CASE WHEN ISNULL(L.AMORTIZED_COST_BASIS,0) <> 0 THEN L.AMORTIZED_COST_BASIS END,
+        Derived_ACB_Exposure = CAST(NULL AS decimal(38,6))  -- not applicable for credit lines
+    FROM latest_lines AS L
+    WHERE (L.RISK_CD IS NULL OR L.RISK_BAS_SEG_CD IS NULL OR L.FDIC_CD IS NULL)
+),
+
+/*======== Instruments: CRR/RBS/FDIC NULLs, with exposures ========*/
+instrument_nulls AS (
+    SELECT
+        SourceTable    = 'CDM_INSTRUMENTS_TOPSIDED',
+        IdentifierType = 'ACCTNBR',
+        Identifier     = CAST(I.ACCTNBR AS varchar(64)),
+        AsOfEOM        = CAST(I.LOADDT AS date),
+
+        CRR  = I.RISKCD,
+        RBS  = I.RISK_BAS_SEG_CD,
+        FDIC = I.FDICCD,
+
+        SEC_Exposure       = CAST(NULL AS decimal(38,6)),  -- not applicable for instruments
+        FRB_Exposure       = CAST(NULL AS decimal(38,6)),  -- not applicable for instruments
+        ACB_Exposure       = CASE WHEN ISNULL(I.AMORTIZED_COST_BASIS,0) <> 0 THEN I.AMORTIZED_COST_BASIS END,
+        Derived_ACB_Exposure = CASE 
+                                  WHEN ISNULL(
+                                         COALESCE(I.DERIVED_AMORTIZED_COST_BASIS, I.[DERIVED_ AMORTIZED_COST_BASIS]),
+                                         0
+                                       ) <> 0
+                                  THEN COALESCE(I.DERIVED_AMORTIZED_COST_BASIS, I.[DERIVED_ AMORTIZED_COST_BASIS])
+                               END
+    FROM latest_instr AS I
+    WHERE (I.RISKCD IS NULL OR I.RISK_BAS_SEG_CD IS NULL OR I.FDICCD IS NULL)
+)
+
+/*======== Final unified output ========*/
+SELECT
+    SourceTable,
+    IdentifierType,
+    Identifier,
+    AsOfEOM,
+    CRR,
+    RBS,
+    FDIC,
+    SEC_Exposure,
+    FRB_Exposure,
+    ACB_Exposure,
+    Derived_ACB_Exposure
+FROM creditline_nulls
+
+UNION ALL
+
+SELECT
+    SourceTable,
+    IdentifierType,
+    Identifier,
+    AsOfEOM,
+    CRR,
+    RBS,
+    FDIC,
+    SEC_Exposure,
+    FRB_Exposure,
+    ACB_Exposure,
+    Derived_ACB_Exposure
+FROM instrument_nulls
+ORDER BY SourceTable, Identifier;
+
+
+
+
+
+
+
+/*=============================================================
+NULL checks for CRR / RBS / FDIC at the latest month end
 Across:
   1) CRDADMPRD.dbo.CDM_CREDITLINES_ALL_TOPSIDED  (key: CUST_LINE_NBR)
   2) CRDADMPRD.dbo.CDM_INSTRUMENTS_TOPSIDED      (key: ACCTNBR)
