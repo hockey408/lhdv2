@@ -1,3 +1,12 @@
+=ROWS(UNIQUE(FILTER(Account_Detail[Facility_For_Event],
+ (Account_Detail[Is_Add]=TRUE)*
+ (Account_Detail[curr_auto]=1)*
+ (Account_Detail[Bank_For_Event]=B$1))))
+
+
+
+
+
 /* Last 12 EOM SEC_UNFUNDED for ApplID='LO' with Cards removed */
 SET NOCOUNT ON;
 
