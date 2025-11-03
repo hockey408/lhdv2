@@ -1,3 +1,35 @@
+=ROWS(UNIQUE(FILTER(Account_Detail[Facility_For_Event],
+ (Account_Detail[Is_Add]=TRUE)*
+ (Account_Detail[Bank_For_Event]=B$1))))
+
+=ROWS(UNIQUE(FILTER(Account_Detail[Facility_For_Event],
+ (Account_Detail[Is_Add]=TRUE)*
+ (Account_Detail[Bank_For_Event]=B$1)*
+ (Account_Detail[Owner_For_Event]="Autochange"))))
+
+=ROWS(UNIQUE(FILTER(Account_Detail[Facility_For_Event],
+ (Account_Detail[Is_Add]=TRUE)*
+ (Account_Detail[Bank_For_Event]=B$1)*
+ (Account_Detail[Owner_For_Event]="Not Covered; Under $250k; Casey"))))
+
+=ROWS(UNIQUE(FILTER(Account_Detail[Facility_For_Event],
+ (Account_Detail[Is_Add]=TRUE)*
+ (Account_Detail[Bank_For_Event]=B$1)*
+ (Account_Detail[Owner_For_Event]="Not Covered; Under $500k; Samya"))))
+
+=ROWS(UNIQUE(FILTER(Account_Detail[Facility_For_Event],
+ (Account_Detail[Is_Add]=TRUE)*
+ (Account_Detail[Bank_For_Event]=B$1)*
+ (Account_Detail[Owner_For_Event]<>"Autochange")*
+ (Account_Detail[Owner_For_Event]<>"Not Covered; Under $250k; Casey")*
+ (Account_Detail[Owner_For_Event]<>"Not Covered; Under $500k; Samya"))))
+
+
+
+
+
+
+
 =LET(
   bank, B$1,
   mask, (Account_Detail[Is_Add]=TRUE)*
