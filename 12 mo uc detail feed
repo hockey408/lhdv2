@@ -1,4 +1,15 @@
 =SUMIFS(
+  MoM_Account_Detail[Persisting_Delta_ex_Auto],
+  MoM_Account_Detail[ExAuto_Persist], TRUE,
+  MoM_Account_Detail[Bank_For_Event], B$1
+) / 1000
+
+
+
+
+
+
+=SUMIFS(
   MoM_Account_Detail[Auto_Persist_Delta],
   MoM_Account_Detail[Auto_Persist], TRUE,
   MoM_Account_Detail[Bank_For_Event], B$1
