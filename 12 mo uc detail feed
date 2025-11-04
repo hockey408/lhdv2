@@ -1,3 +1,73 @@
+B2 — Starting Balance
+=SUMIFS(MoM_Account_Detail[Prev_SSB],
+       MoM_Account_Detail[Prev_Bank_Code], B$1) / 1000
+
+B3 — Auto_In
+=SUMIFS(MoM_Account_Detail[Curr_SSB],
+       MoM_Account_Detail[Is_Add], TRUE,
+       MoM_Account_Detail[curr_auto], 1,
+       MoM_Account_Detail[Bank_For_Event], B$1) / 1000
+
+B4 — Auto_Out (negative)
+=-SUMIFS(MoM_Account_Detail[Prev_SSB],
+        MoM_Account_Detail[Is_Exit], TRUE,
+        MoM_Account_Detail[prev_auto], 1,
+        MoM_Account_Detail[Bank_For_Event], B$1) / 1000
+
+B5 — Auto_Persist (Δ)
+=(SUMIFS(MoM_Account_Detail[Curr_SSB],
+        MoM_Account_Detail[Is_Add], FALSE,
+        MoM_Account_Detail[Is_Exit], FALSE,
+        MoM_Account_Detail[prev_auto], 1,
+        MoM_Account_Detail[curr_auto], 1,
+        MoM_Account_Detail[Bank_For_Event], B$1)
+ -
+ SUMIFS(MoM_Account_Detail[Prev_SSB],
+        MoM_Account_Detail[Is_Add], FALSE,
+        MoM_Account_Detail[Is_Exit], FALSE,
+        MoM_Account_Detail[prev_auto], 1,
+        MoM_Account_Detail[curr_auto], 1,
+        MoM_Account_Detail[Bank_For_Event], B$1)) / 1000
+
+B6 — Downgrade IN (ex-Auto)
+=SUMIFS(MoM_Account_Detail[Curr_SSB],
+       MoM_Account_Detail[Is_Add], TRUE,
+       MoM_Account_Detail[curr_auto], 0,
+       MoM_Account_Detail[Bank_For_Event], B$1) / 1000
+
+B7 — Exit (ex-Auto) (negative)
+=-SUMIFS(MoM_Account_Detail[Prev_SSB],
+        MoM_Account_Detail[Is_Exit], TRUE,
+        MoM_Account_Detail[prev_auto], 0,
+        MoM_Account_Detail[Bank_For_Event], B$1) / 1000
+
+B8 — Persisting Δ (ex-Auto)
+=(SUMIFS(MoM_Account_Detail[Curr_SSB],
+        MoM_Account_Detail[Is_Add], FALSE,
+        MoM_Account_Detail[Is_Exit], FALSE,
+        MoM_Account_Detail[curr_auto], 0,
+        MoM_Account_Detail[Bank_For_Event], B$1)
+ -
+ SUMIFS(MoM_Account_Detail[Prev_SSB],
+        MoM_Account_Detail[Is_Add], FALSE,
+        MoM_Account_Detail[Is_Exit], FALSE,
+        MoM_Account_Detail[prev_auto], 0,
+        MoM_Account_Detail[curr_auto], 0,
+        MoM_Account_Detail[Bank_For_Event], B$1)) / 1000
+
+B9 — Ending Balance
+=SUMIFS(MoM_Account_Detail[Curr_SSB],
+       MoM_Account_Detail[Curr_Bank_Code], B$1) / 1000
+
+B11 — Tie Check
+= (B2 + B3 + B4 + B5 + B6 + B7 + B8 - B9)
+
+
+
+
+
+
+
 Triage Score (Latest) :=
 VAR _latest =
     CALCULATE ( MAX ( Dim_Date[MonthEnd] ) )
