@@ -1,3 +1,69 @@
+-- Month context exposure (rename if you already have one)
+Exposure (Month) :=
+CALCULATE( SUM( RC_Code_Model_Base[Actual] ) )
+
+-- ML anomaly by month (assumes RC_ML_Scored has monthly history)
+ML Anomaly (Month) :=
+MAX( RC_ML_Scored[Anomaly_Score_0_100] )
+
+ML Anomaly (Month, Bound) :=
+VAR v = [ML Anomaly (Month)]
+RETURN IF( ISBLANK(v), BLANK(), MIN(100, MAX(0, v)) )
+
+-- Severity by month (if you already have a monthly severity measure, use it here)
+Severity (Weighted, Month) :=
+AVERAGE( RC_Code_Model_Base[SEVERITY_0_100] )
+
+Severity (Weighted, Month, Bound) :=
+VAR v = [Severity (Weighted, Month)]
+RETURN IF( ISBLANK(v), BLANK(), MIN(100, MAX(0, v)) )
+
+-- PSI Abs by month (from RC_PSI_ByDescription)
+PSI Abs (Month) :=
+CALCULATE( SUM( RC_PSI_ByDescription[PSI_CONTRIB_ABS] ) )
+
+-- Scale PSI to ~0–100 so it’s comparable in the composite (tune scalar if needed)
+PSI Abs (Month, Bound) :=
+VAR v = [PSI Abs (Month)]
+RETURN IF( ISBLANK(v), BLANK(), MIN(100, MAX(0, v * 100 )) )
+
+Triage Score (Composite, Month, EW, MonOnly) :=
+VAR mon  = MAX( Dim_Date[MonthEnd] )
+VAR rc_set =
+    FILTER(
+        VALUES( Dim_RC[RC_DESCRIPTION] ),
+        [Monitorable Flag (Measure)] = 1
+    )
+VAR t =
+    ADDCOLUMNS(
+        rc_set,
+        "@w",   CALCULATE( [Exposure (Month)],                 TREATAS( { mon }, Dim_Date[MonthEnd] ) ),
+        "@ml",  CALCULATE( [ML Anomaly (Month, Bound)],        TREATAS( { mon }, Dim_Date[MonthEnd] ) ),
+        "@sev", CALCULATE( [Severity (Weighted, Month, Bound)],TREATAS( { mon }, Dim_Date[MonthEnd] ) ),
+        "@psi", CALCULATE( [PSI Abs (Month, Bound)],           TREATAS( { mon }, Dim_Date[MonthEnd] ) ),
+        "@tri", 
+            0.50 * [@ml] +
+            0.35 * [@sev] +
+            0.15 * [@psi]
+    )
+VAR wtot = SUMX( t, [@w] )
+RETURN IF( wtot > 0, DIVIDE( SUMX( t, [@w] * [@tri] ), wtot ) )
+
+
+Triage Score (Composite, Latest, EW, MonOnly) :=
+CALCULATE(
+    [Triage Score (Composite, Month, EW, MonOnly)],
+    TREATAS( { [Latest Month (Common)] }, Dim_Date[MonthEnd] )
+)
+
+
+
+
+
+
+
+
+
 Triage Score (Composite, Month) :=
 VAR _table =
     ADDCOLUMNS (
