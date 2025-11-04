@@ -1,3 +1,32 @@
+Triage Score (Composite, Month, EW, MonOnly) :=
+VAR mon  = MAX( Dim_Date[MonthEnd] )
+VAR rc_set =
+    FILTER(
+        VALUES( Dim_RC[RC_DESCRIPTION] ),
+        [Monitorable Flag (Measure)] = 1
+    )
+VAR t =
+    ADDCOLUMNS(
+        rc_set,
+        "w",   CALCULATE( [Exposure (Month)],                  TREATAS( { mon }, Dim_Date[MonthEnd] ) ),
+        "ml",  CALCULATE( [ML Anomaly (Month, Bound)],         TREATAS( { mon }, Dim_Date[MonthEnd] ) ),
+        "sev", CALCULATE( [Severity (Weighted, Month, Bound)], TREATAS( { mon }, Dim_Date[MonthEnd] ) ),
+        "psi", CALCULATE( [PSI Abs (Month, Bound)],            TREATAS( { mon }, Dim_Date[MonthEnd] ) )
+    )
+VAR wtot = SUMX( t, [w] )
+RETURN
+IF(
+    wtot > 0,
+    DIVIDE(
+        SUMX( t, [w] * ( 0.50 * [ml] + 0.35 * [sev] + 0.15 * [psi] ) ),
+        wtot
+    )
+)
+
+
+
+
+
 -- Inputs assumed available as measures:
 -- [ML Anomaly (Month, Bound)]   -- 0..100 from your Python output by RC×Month
 -- [Severity (Weighted, Month, Bound)] -- 0..100 from your model table by RC×Month
