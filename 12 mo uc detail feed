@@ -1,3 +1,16 @@
+=IF(
+   AND(
+      OR(MoM_Account_Detail[@ExAuto_Add], MoM_Account_Detail[@ExAuto_Exit]),
+      MoM_Account_Detail[@Owner_For_Event]<>"Autochange",
+      LEFT(MoM_Account_Detail[@Owner_For_Event],12)<>"Not Covered;"
+   ),
+   "Reviewable","Not Reviewable"
+)
+
+
+
+
+
 B6 — Starting count
 =ROWS(UNIQUE(FILTER(MoM_Account_Detail[Prev_Facility_ID],
  (MoM_Account_Detail[had_prev]=TRUE)*
