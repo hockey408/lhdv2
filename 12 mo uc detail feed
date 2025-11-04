@@ -1,3 +1,32 @@
+/* Choose latest two populated EOMs that matter for your NA analysis */
+WITH latest_curr AS (
+  SELECT MAX(End_of_Month_Date) AS curr_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    /* Optional but recommended: anchor to rows that actually appear in NA pop */
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+latest_prev AS (
+  SELECT MAX(End_of_Month_Date) AS prev_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, latest_curr
+  WHERE End_of_Month_Date < (SELECT curr_eom FROM latest_curr)
+    AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Non_Accrual_Flag = 'Y'
+    AND Source_System_Balance > 0
+),
+params AS (
+  SELECT
+    (SELECT curr_eom FROM latest_curr) AS curr_eom,
+    (SELECT prev_eom FROM latest_prev) AS prev_eom
+)
+
+
+
+
+
+
+
 =ROWS(UNIQUE(FILTER(Account_Detail[Facility_For_Event],
  (Account_Detail[Is_Add]=TRUE)*
  (Account_Detail[Bank_For_Event]=B$1))))
