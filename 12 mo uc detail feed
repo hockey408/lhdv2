@@ -1,3 +1,45 @@
+B6 — Starting count
+=ROWS(UNIQUE(FILTER(MoM_Account_Detail[Prev_Facility_ID],
+ (MoM_Account_Detail[had_prev]=TRUE)*
+ (MoM_Account_Detail[Prev_Bank_Code]=B$5))))
+
+B7 — Auto_In (distinct adds with curr_auto=1)
+=ROWS(UNIQUE(FILTER(MoM_Account_Detail[Facility_For_Event],
+ (MoM_Account_Detail[Is_Add]=TRUE)*
+ (MoM_Account_Detail[curr_auto]=1)*
+ (MoM_Account_Detail[Bank_For_Event]=B$5))))
+
+B8 — Auto_Out (distinct exits with prev_auto=1) — negative
+=-ROWS(UNIQUE(FILTER(MoM_Account_Detail[Facility_For_Event],
+  (MoM_Account_Detail[Is_Exit]=TRUE)*
+  (MoM_Account_Detail[prev_auto]=1)*
+  (MoM_Account_Detail[Bank_For_Event]=B$5))))
+
+B9 — Downgrade IN (ex-Auto)
+=ROWS(UNIQUE(FILTER(MoM_Account_Detail[Facility_For_Event],
+ (MoM_Account_Detail[Is_Add]=TRUE)*
+ (MoM_Account_Detail[curr_auto]=0)*
+ (MoM_Account_Detail[Bank_For_Event]=B$5))))
+
+B10 — Exit (ex-Auto) — negative
+=-ROWS(UNIQUE(FILTER(MoM_Account_Detail[Facility_For_Event],
+  (MoM_Account_Detail[Is_Exit]=TRUE)*
+  (MoM_Account_Detail[prev_auto]=0)*
+  (MoM_Account_Detail[Bank_For_Event]=B$5))))
+
+B11 — Ending count
+=ROWS(UNIQUE(FILTER(MoM_Account_Detail[Curr_Facility_ID],
+ (MoM_Account_Detail[has_curr]=TRUE)*
+ (MoM_Account_Detail[Curr_Bank_Code]=B$5))))
+
+B13 — Tie Check
+= B6 + B7 + B8 + B9 + B10 - B11
+
+
+
+
+
+
 =SUMIFS(
   MoM_Account_Detail[Persisting_Delta_ex_Auto],
   MoM_Account_Detail[ExAuto_Persist], TRUE,
