@@ -1,3 +1,21 @@
+-- One PSI value per month; works on a Trend axis
+PSI Total (Trend) :=
+CALCULATE (
+    MAX ( RC_PSI_ByDescription[PSI_TOTAL] ),
+    ALLEXCEPT ( RC_PSI_ByDescription, RC_PSI_ByDescription[MONTH_END] )
+)
+
+PSI Total (Trend – Use Date Rel) :=
+CALCULATE (
+    MAX ( RC_PSI_ByDescription[PSI_TOTAL] ),
+    USERELATIONSHIP ( Dim_Date[MonthEnd], RC_PSI_ByDescription[MONTH_END] ),
+    ALLEXCEPT ( Dim_Date, Dim_Date[MonthEnd] )
+)
+
+
+
+
+
 /* Auto-pick latest two EOMs that actually have NA + SSB>0 rows */
 WITH latest_curr AS (
   SELECT MAX(End_of_Month_Date) AS curr_eom
