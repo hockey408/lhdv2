@@ -1,3 +1,11 @@
+PSI Total (Trend) :=
+CALCULATE (
+    MAX ( RC_PSI_ByDescription[PSI_TOTAL] ),
+    ALLEXCEPT ( RC_PSI_ByDescription, RC_PSI_ByDescription[MONTH_END] )
+)
+
+
+
 Triage Score (Composite, Month, EW, MonOnly) :=
 VAR mon  = MAX( Dim_Date[MonthEnd] )
 VAR rc_set =
