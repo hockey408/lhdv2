@@ -1,3 +1,27 @@
+Triage Score (Composite, Month) :=
+VAR _table =
+    ADDCOLUMNS (
+        FILTER ( RC_ML_Scored, [Monitorable_Flag] = 1 ),
+        "@Triage",
+            DIVIDE (
+                0.5 * [ML Anomaly (Latest, Bound)] +
+                0.35 * [Severity (Weighted, Latest, Bound)] +
+                0.15 * ([PSI Abs (Latest, Bound)] * 100),
+                1.00
+            )
+    )
+VAR _weightedAvg =
+    DIVIDE (
+        SUMX ( _table, [Exposure (Latest)] * [@Triage] ),
+        SUMX ( _table, [Exposure (Latest)] )
+    )
+RETURN
+    _weightedAvg
+
+
+
+
+
 /* Choose latest two populated EOMs that matter for your NA analysis */
 WITH latest_curr AS (
   SELECT MAX(End_of_Month_Date) AS curr_eom
