@@ -1,4 +1,129 @@
 =LET(
+  bank, "L-SVB",                                   /* change to L-CIT / L-FCB as needed */
+  d,    MoM_Account_Detail[End_of_Month_Date],
+  mov,  MoM_Account_Detail[Movement_Type],
+  b,    MoM_Account_Detail[Bank_Code],
+  rev,  MoM_Account_Detail[Reviewable_Flag],
+  fac,  MoM_Account_Detail[Facility_ID],
+  UNIQUE( FILTER(fac, (d=Curr_EOM)*(b=bank)*(mov="Downgrade IN (ex-Auto)")*(rev="Reviewable")) )
+)
+
+=LET(
+  bank, "L-SVB",
+  d,    MoM_Account_Detail[End_of_Month_Date],
+  mov,  MoM_Account_Detail[Movement_Type],
+  b,    MoM_Account_Detail[Bank_Code],
+  rev,  MoM_Account_Detail[Reviewable_Flag],
+  fac,  MoM_Account_Detail[Facility_ID],
+  UNIQUE( FILTER(fac, (d=Prev_EOM)*(b=bank)*(mov="Exit (ex-Auto)")*(rev="Reviewable")) )
+)
+
+=LET(
+  facRev, SVB_DowngradeIN_Reviewable_Facilities,  /* the spill from step 1A */
+  d,     Core_Data[End_of_Month_Date],
+  fac,   Core_Data[Facility_ID],
+  bal,   Core_Data[Source_System_Balance],
+
+  m,      (d=Curr_EOM) * ISNUMBER(MATCH(fac, facRev, 0)),
+  fac_m,  FILTER(fac, m),
+  bal_m,  FILTER(bal, m),
+
+  ufac,   UNIQUE(fac_m),
+  sums,   MAP(ufac, LAMBDA(f, SUM(IF(fac_m=f, bal_m)))),
+  TAKE(SORTBY(ufac, sums, -1), MIN(30, ROWS(ufac)))
+)
+
+=LET(
+  facRev, SVB_Exit_Reviewable_Facilities,         /* the spill from step 1B */
+  d,     Core_Data[End_of_Month_Date],
+  fac,   Core_Data[Facility_ID],
+  bal,   Core_Data[Source_System_Balance],
+
+  m,      (d=Prev_EOM) * ISNUMBER(MATCH(fac, facRev, 0)),
+  fac_m,  FILTER(fac, m),
+  bal_m,  FILTER(bal, m),
+
+  ufac,   UNIQUE(fac_m),
+  sums,   MAP(ufac, LAMBDA(f, SUM(IF(fac_m=f, bal_m)))),
+  TAKE(SORTBY(ufac, sums, -1), MIN(30, ROWS(ufac)))
+)
+
+=LET(
+  topFac, SVB_Top30_DowngradeIN_Facilities,
+  d, Core_Data[End_of_Month_Date],
+  VSTACK(
+    Core_Data[#Headers],
+    FILTER(Core_Data, ISNUMBER(MATCH(Core_Data[Facility_ID], topFac, 0)) * (d=Curr_EOM))
+  )
+)
+
+=LET(
+  topFac, SVB_Top30_Exit_Facilities,
+  d, Core_Data[End_of_Month_Date],
+  VSTACK(
+    Core_Data[#Headers],
+    FILTER(Core_Data, ISNUMBER(MATCH(Core_Data[Facility_ID], topFac, 0)) * (d=Prev_EOM))
+  )
+)
+
+=LET(
+  topFac, SVB_Top30_DowngradeIN_Facilities,
+  d,     Core_Data[End_of_Month_Date],
+  fac,   Core_Data[Facility_ID],
+  bal,   Core_Data[Source_System_Balance],
+  m,     (d=Curr_EOM) * ISNUMBER(MATCH(fac, topFac, 0)),
+  fac_m, FILTER(fac, m),
+  bal_m, FILTER(bal, m),
+  ufac,  UNIQUE(fac_m),
+  sums,  MAP(ufac, LAMBDA(f, SUM(IF(fac_m=f, bal_m)))),
+  SUM(sums) / 1000            /* divide if you want $ in millions */
+)
+
+=LET(
+  topFac, SVB_Top30_Exit_Facilities,
+  d,     Core_Data[End_of_Month_Date],
+  fac,   Core_Data[Facility_ID],
+  bal,   Core_Data[Source_System_Balance],
+  m,     (d=Prev_EOM) * ISNUMBER(MATCH(fac, topFac, 0)),
+  fac_m, FILTER(fac, m),
+  bal_m, FILTER(bal, m),
+  ufac,  UNIQUE(fac_m),
+  sums,  MAP(ufac, LAMBDA(f, SUM(IF(fac_m=f, bal_m)))),
+  SUM(sums) / 1000
+)
+
+=LAMBDA(bank, movement,
+  LET(
+    dM,   MoM_Account_Detail[End_of_Month_Date],
+    movM, MoM_Account_Detail[Movement_Type],
+    bM,   MoM_Account_Detail[Bank_Code],
+    revM, MoM_Account_Detail[Reviewable_Flag],
+    fM,   MoM_Account_Detail[Facility_ID],
+    eom,  IF(movement="Exit (ex-Auto)", Prev_EOM, Curr_EOM),
+
+    facRev, UNIQUE(FILTER(fM, (dM=eom)*(bM=bank)*(movM=movement)*(revM="Reviewable"))),
+
+    d,   Core_Data[End_of_Month_Date],
+    f,   Core_Data[Facility_ID],
+    bal, Core_Data[Source_System_Balance],
+    m,   (d=eom) * ISNUMBER(MATCH(f, facRev, 0)),
+
+    f_m, FILTER(f, m),
+    b_m, FILTER(bal, m),
+    uf,  UNIQUE(f_m),
+    s,   MAP(uf, LAMBDA(x, SUM(IF(f_m=x, b_m)))),
+    TAKE(SORTBY(uf, s, -1), MIN(30, ROWS(uf)))
+  )
+)
+
+
+
+
+
+
+
+
+=LET(
   fac_piv, FILTER(Pivot_Facilities, Pivot_Facilities<>""),     /* Top-30 list */
   amt_piv,  TAKE(FILTER(Pivot_Amounts, Pivot_Amounts<>""), ROWS(fac_piv)),
   d,       Core_Data[End_of_Month_Date],
