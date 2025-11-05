@@ -1,4 +1,39 @@
 =LET(
+  d,     Core_Data[End_of_Month_Date],
+  acct,  Core_Data[ACCOUNT_IDENTIFIER],
+  fac,   Core_Data[Facility_ID],
+  bal,   Core_Data[Source_System_Balance],
+  bank,  Core_Data[Bank_Code],
+
+  curr,  Curr_EOM,
+  prev,  Prev_EOM,
+
+  /* sets of IDs in each month */
+  prevIDs, UNIQUE(FILTER(acct, d=prev)),
+
+  /* row-level logicals */
+  isCurr, d=curr,
+  isAdd,  isCurr * (COUNTIF(prevIDs, acct)=0),
+
+  /* scope rows to CIT adds this month */
+  mask,   isAdd * (bank="L-CIT"),
+
+  fac_add, FILTER(fac,  mask),
+  bal_add, FILTER(bal,  mask),
+
+  /* aggregate to Facility -> total SSB, then take top 30 */
+  ufac,   UNIQUE(fac_add),
+  sums,   MAP(ufac, LAMBDA(f, SUM(IF(fac_add=f, bal_add)))),
+  n,      MIN(30, ROWS(ufac)),
+  topFac, IF(n>0, TAKE(SORTBY(ufac, sums, -1), n), ufac),
+
+  IF(ISNUMBER(MATCH([@Facility_ID], topFac, 0)), "Y", "")
+)
+
+
+
+
+=LET(
   fids, Top30_CIT_DowngradeIN_Facilities,
   fids_clean, FILTER(fids, fids<>""), 
   d, Core_Data[End_of_Month_Date],
