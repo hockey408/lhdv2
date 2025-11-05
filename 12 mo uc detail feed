@@ -1,4 +1,36 @@
 =LET(
+  /* normalize dates */
+  dC, --Core_Data[End_of_Month_Date],
+  curr, MAX(dC),
+  /* normalize IDs to trimmed text for safe joins */
+  facCore, TEXT(Core_Data[Facility_ID],"@"),
+  facEvt,  TEXT(MoM_Account_Detail[Facility_For_Event],"@"),
+
+  bank, "L-SVB",
+  mov,  "Downgrade IN (ex-Auto)",
+
+  /* reviewable facility set from MoM_Account_Detail */
+  revFac, UNIQUE(FILTER(facEvt,
+           (MoM_Account_Detail[Bank_For_Event]=bank)*
+           (MoM_Account_Detail[Movement_Type]=mov)*
+           (MoM_Account_Detail[Reviewable_Flag]=1))),
+
+  /* current-month core rows for those facilities */
+  maskCore, (dC=curr)*ISNUMBER(MATCH(facCore, revFac, 0)),
+  facHit,   FILTER(facCore, maskCore),
+
+  VSTACK(
+    {"Stage","Count","Sample (first 10)"},
+    {"Reviewable facility list",  ROWS(revFac),  TEXTJOIN(", ",TRUE, TAKE(revFac, MIN(10, ROWS(revFac))))},
+    {"Core matches @ Curr EOM",   ROWS(facHit),  TEXTJOIN(", ",TRUE, TAKE(UNIQUE(facHit), MIN(10, ROWS(UNIQUE(facHit)))))}
+  )
+)
+
+
+
+
+
+=LET(
   /* Month ends from Core_Data */
   dC, Core_Data[End_of_Month_Date],
   Curr_EOM, MAX(dC),
