@@ -1,3 +1,10 @@
+=VSTACK(
+    Core_Data[#Headers],
+    FILTER(Core_Data, Core_Data[Is_Top30_CIT_DowngradeIN]="Y")
+)
+
+
+
 =FILTER(Core_Data, Core_Data[Is_Top30_CIT_DowngradeIN]="Y")
 
 =FILTER(Core_Data, Core_Data[Is_Top30_CIT_Exit]="Y")
