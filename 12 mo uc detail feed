@@ -1,4 +1,19 @@
 =LET(
+  fids, Top30_CIT_DowngradeIN_Facilities,
+  fids_clean, FILTER(fids, fids<>""),                     /* drop blanks from the pivot list */
+  d, Core_Data[End_of_Month_Date],
+  currEOM, MAX(d),
+  FILTER(Core_Data,
+         ISNUMBER(MATCH(Core_Data[Facility_ID], fids_clean, 0)) *
+         (d = currEOM)
+  )
+)
+
+
+
+
+
+=LET(
   cols, {"Facility_ID","Account_Identifier","Account_Name","Owner_For_Event",
          "Movement_Type","Bank_For_Event","CIS_Customer_Number",
          "Curr_SSB","Prev_SSB","MoM_Delta"},
