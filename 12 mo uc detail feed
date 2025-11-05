@@ -1,3 +1,76 @@
+/* ========= ONE-CELL FORMULA PACK (USING Bank_For_Event) =========
+   Paste into one cell in Excel 365 +
+   Depends on:
+     MoM_Account_Detail[Bank_For_Event]
+     MoM_Account_Detail[Movement_Type]
+     MoM_Account_Detail[Reviewable_Flag]
+     MoM_Account_Detail[Facility_For_Event]
+     Core_Data[End_of_Month_Date]
+     Core_Data[Facility_ID]
+     Core_Data[Source_System_Balance]
+*/
+
+=LET(
+  /* === Month logic === */
+  Curr_EOM, MAX(Core_Data[End_of_Month_Date]),
+  Prev_EOM, MAX(FILTER(Core_Data[End_of_Month_Date], Core_Data[End_of_Month_Date] < MAX(Core_Data[End_of_Month_Date]))),
+
+  /* === 1) Reviewable facilities for SVB === */
+  RevFac_DowngIN, UNIQUE(
+      FILTER(MoM_Account_Detail[Facility_For_Event],
+        (MoM_Account_Detail[Bank_For_Event]="L-SVB")*
+        (MoM_Account_Detail[Movement_Type]="Downgrade IN (ex-Auto)")*
+        (MoM_Account_Detail[Reviewable_Flag]=1))
+  ),
+  RevFac_Exit, UNIQUE(
+      FILTER(MoM_Account_Detail[Facility_For_Event],
+        (MoM_Account_Detail[Bank_For_Event]="L-SVB")*
+        (MoM_Account_Detail[Movement_Type]="Exit (ex-Auto)")*
+        (MoM_Account_Detail[Reviewable_Flag]=1))
+  ),
+
+  /* === 2) Top-30 by balance – Downgrade IN (current EOM) === */
+  f, Core_Data[Facility_ID],
+  d, Core_Data[End_of_Month_Date],
+  s, Core_Data[Source_System_Balance],
+
+  f_dn, FILTER(f, (d=Curr_EOM)*ISNUMBER(MATCH(f, RevFac_DowngIN, 0))),
+  s_dn, FILTER(s, (d=Curr_EOM)*ISNUMBER(MATCH(f, RevFac_DowngIN, 0))),
+  uf_dn, UNIQUE(f_dn),
+  sums_dn, MAP(uf_dn, LAMBDA(x, SUM(IF(f_dn=x, s_dn)))),
+  Top30_DowngIN, TAKE(SORTBY(uf_dn, sums_dn, -1), MIN(30, ROWS(uf_dn))),
+
+  /* === 3) Top-30 by balance – Exit (prev EOM) === */
+  f_ex, FILTER(f, (d=Prev_EOM)*ISNUMBER(MATCH(f, RevFac_Exit, 0))),
+  s_ex, FILTER(s, (d=Prev_EOM)*ISNUMBER(MATCH(f, RevFac_Exit, 0))),
+  uf_ex, UNIQUE(f_ex),
+  sums_ex, MAP(uf_ex, LAMBDA(x, SUM(IF(f_ex=x, s_ex)))),
+  Top30_Exit, TAKE(SORTBY(uf_ex, sums_ex, -1), MIN(30, ROWS(uf_ex))),
+
+  /* === 4) Account-level detail pulls === */
+  Details_DowngIN, VSTACK(
+    Core_Data[#Headers],
+    FILTER(Core_Data, ISNUMBER(MATCH(Core_Data[Facility_ID], Top30_DowngIN, 0))*(d=Curr_EOM))
+  ),
+  Details_Exit, VSTACK(
+    Core_Data[#Headers],
+    FILTER(Core_Data, ISNUMBER(MATCH(Core_Data[Facility_ID], Top30_Exit, 0))*(d=Prev_EOM))
+  ),
+
+  /* === Final stacked output === */
+  VSTACK(
+    {"--- SVB Downgrade IN (Top 30 Facilities) ---"},
+    Details_DowngIN,
+    {"--- SVB Exit (Top 30 Facilities) ---"},
+    Details_Exit
+  )
+)
+
+
+
+
+
+
 /* ========= ONE-CELL FORMULA PACK =========
    Paste into a single Excel cell (365+)
    Works with:
