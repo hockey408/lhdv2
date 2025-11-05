@@ -1,3 +1,70 @@
+=LET(
+  /* Month ends from Core_Data */
+  dC, Core_Data[End_of_Month_Date],
+  Curr_EOM, MAX(dC),
+  Prev_EOM, MAX(FILTER(dC, dC<Curr_EOM)),
+
+  /* Base columns */
+  f, Core_Data[Facility_ID],
+  s, Core_Data[Source_System_Balance],
+  cols, COLUMNS(Core_Data[#Headers]),
+  blankRow, MAKEARRAY(1, cols, LAMBDA(r,c,"")),
+
+  /* Reviewable facility universes from MoM_Account_Detail via Facility_For_Event */
+  Bank, "L-SVB",
+  RevFac_DowngIN, UNIQUE(FILTER(
+      MoM_Account_Detail[Facility_For_Event],
+      (MoM_Account_Detail[Bank_For_Event]=Bank)*
+      (MoM_Account_Detail[Movement_Type]="Downgrade IN (ex-Auto)")*
+      (MoM_Account_Detail[Reviewable_Flag]=1)
+  )),
+  RevFac_Exit, UNIQUE(FILTER(
+      MoM_Account_Detail[Facility_For_Event],
+      (MoM_Account_Detail[Bank_For_Event]=Bank)*
+      (MoM_Account_Detail[Movement_Type]="Exit (ex-Auto)")*
+      (MoM_Account_Detail[Reviewable_Flag]=1)
+  )),
+
+  /* ---- Top-30 lists (guard empty) ---- */
+  f_dn_all, FILTER(f, (dC=Curr_EOM)*ISNUMBER(MATCH(f, RevFac_DowngIN,0))),
+  s_dn_all, FILTER(s, (dC=Curr_EOM)*ISNUMBER(MATCH(f, RevFac_DowngIN,0))),
+  uf_dn, IFERROR(UNIQUE(f_dn_all), ""),
+  sums_dn, IF(ROWS(uf_dn)>0, MAP(uf_dn, LAMBDA(x, SUM(IF(f_dn_all=x, s_dn_all)))), ""),
+  Top30_DowngIN, IF(ROWS(uf_dn)>0, TAKE(SORTBY(uf_dn, sums_dn, -1), MIN(30, ROWS(uf_dn))), ""),
+
+  f_ex_all, FILTER(f, (dC=Prev_EOM)*ISNUMBER(MATCH(f, RevFac_Exit,0))),
+  s_ex_all, FILTER(s, (dC=Prev_EOM)*ISNUMBER(MATCH(f, RevFac_Exit,0))),
+  uf_ex, IFERROR(UNIQUE(f_ex_all), ""),
+  sums_ex, IF(ROWS(uf_ex)>0, MAP(uf_ex, LAMBDA(x, SUM(IF(f_ex_all=x, s_ex_all)))), ""),
+  Top30_Exit, IF(ROWS(uf_ex)>0, TAKE(SORTBY(uf_ex, sums_ex, -1), MIN(30, ROWS(uf_ex))), ""),
+
+  /* ---- Banner rows sized to Core_Data column width ---- */
+  banner, LAMBDA(text, HSTACK(text, MAKEARRAY(1, cols-1, LAMBDA(r,c,"")))),
+
+  /* ---- Account-level details (guard empty FILTER) ---- */
+  Details_DN, VSTACK(
+      Core_Data[#Headers],
+      IFERROR(FILTER(Core_Data, ISNUMBER(MATCH(Core_Data[Facility_ID], Top30_DowngIN,0))*(dC=Curr_EOM)), blankRow)
+  ),
+  Details_EX, VSTACK(
+      Core_Data[#Headers],
+      IFERROR(FILTER(Core_Data, ISNUMBER(MATCH(Core_Data[Facility_ID], Top30_Exit,0))*(dC=Prev_EOM)), blankRow)
+  ),
+
+  /* ---- Final output ---- */
+  VSTACK(
+    banner("— "&Bank&" Downgrade IN (Top 30 Facilities) —"),
+    Details_DN,
+    banner("— "&Bank&" Exit (Top 30 Facilities) —"),
+    Details_EX
+  )
+)
+
+
+
+
+
+
 /* ========= ONE-CELL FORMULA PACK (USING Bank_For_Event) =========
    Paste into one cell in Excel 365 +
    Depends on:
