@@ -1,3 +1,170 @@
+Option Explicit
+
+'==== Utility: ensure sheets exist ====
+Private Function SheetExists(ByVal name As String) As Boolean
+    On Error Resume Next
+    SheetExists = Not ThisWorkbook.Sheets(name) Is Nothing
+    On Error GoTo 0
+End Function
+
+'==== Utility: append to Log sheet ====
+Private Sub WriteLog(msg As String)
+    Dim ws As Worksheet
+    If Not SheetExists("Log") Then
+        Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+        ws.Name = "Log"
+        ws.Range("A1:B1").Value = Array("Timestamp", "Message")
+    Else
+        Set ws = ThisWorkbook.Sheets("Log")
+    End If
+    With ws
+        .Cells(.Rows.Count, 1).End(xlUp).Offset(1, 0).Value = Now
+        .Cells(.Rows.Count, 2).End(xlUp).Offset(0, 1).Value = msg
+    End With
+End Sub
+
+'==== Utility: wait until connections stop refreshing (defensive) ====
+Private Sub WaitForAllConnections(Optional ByVal timeoutSeconds As Long = 1800)
+    Dim t0 As Single: t0 = Timer
+    Dim done As Boolean
+    Dim cn As WorkbookConnection
+    Dim refreshing As Boolean
+
+    Do
+        refreshing = False
+
+        For Each cn In ThisWorkbook.Connections
+            On Error Resume Next
+            ' Only probe the property that exists for that type
+            Select Case cn.Type
+                Case xlConnectionTypeODBC
+                    If cn.ODBCConnection.Refreshing Then refreshing = True
+                Case xlConnectionTypeOLEDB
+                    If cn.OLEDBConnection.Refreshing Then refreshing = True
+                Case xlConnectionTypeWORKSHEET
+                    ' worksheet connection (Power Query table load) has no .Refreshing we can read safely
+                    ' skip probing; rely on RefreshAll completion
+                Case xlConnectionTypeMODEL
+                    ' data model connection – skip probing
+                Case Else
+                    ' other types – skip
+            End Select
+            On Error GoTo 0
+            If refreshing Then Exit For
+        Next cn
+
+        DoEvents
+        If Not refreshing Then Exit Do
+        If Timer - t0 > timeoutSeconds Then
+            WriteLog "Timeout waiting for connections."
+            Exit Do
+        End If
+        Application.Wait Now + TimeSerial(0, 0, 1)
+    Loop
+End Sub
+
+Public Sub Refresh_All_Safe()
+    Dim t0 As Date, t1 As Date
+    On Error GoTo FAIL
+
+    If Not SheetExists("Control") Then
+        ThisWorkbook.Worksheets.Add.Name = "Control"
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+    Application.StatusBar = "Refreshing…"
+
+    t0 = Now
+    With Sheets("Control")
+        .Range("B3").Value = t0                 ' Last refresh start
+        .Range("B5").Value = "Refreshing…"      ' Status
+    End With
+    WriteLog "Refresh started"
+
+    ' Turn off background refresh defensively so RefreshAll is synchronous
+    Dim cn As WorkbookConnection
+    For Each cn In ThisWorkbook.Connections
+        On Error Resume Next
+        If cn.Type = xlConnectionTypeODBC Then cn.ODBCConnection.BackgroundQuery = False
+        If cn.Type = xlConnectionTypeOLEDB Then cn.OLEDBConnection.BackgroundQuery = False
+        On Error GoTo 0
+    Next cn
+
+    ' 1) Kick off refresh for everything (Power Query + legacy connections)
+    ThisWorkbook.RefreshAll
+
+    ' 2) Wait until connections are done (defensive loop)
+    WaitForAllConnections 1800
+
+    ' 3) Full calc (in case formulas depend on tables)
+    Application.CalculateFull
+
+    ' 4) Refresh all pivot caches (handles Order/Dependency issues)
+    Dim pc As PivotCache
+    For Each pc In ThisWorkbook.PivotCaches
+        On Error Resume Next
+        pc.Refresh
+        On Error GoTo 0
+    Next pc
+
+    t1 = Now
+    With Sheets("Control")
+        .Range("B4").Value = t1                 ' Last refresh end
+        .Range("B5").Value = "OK"
+    End With
+    Application.StatusBar = False
+    WriteLog "Refresh OK (" & Format(t1 - t0, "hh:nn:ss") & ")"
+    GoTo CLEAN
+
+FAIL:
+    Sheets("Control").Range("B5").Value = "⚠️ FAILED: " & Err.Number & " - " & Err.Description
+    WriteLog "Refresh FAILED: " & Err.Number & " - " & Err.Description
+    Application.StatusBar = False
+
+CLEAN:
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+Public Sub Run_Checks()
+    On Error GoTo HANDLE
+    ' Example checks — adjust the sheet/range names to yours
+    Dim issues As String
+
+    ' Balance bridge tie (sum of tie checks across banks should be 0)
+    If Evaluate("SUM(Bridge_Balances!TieCheckRange)") <> 0 Then
+        issues = issues & "• Balance bridge tie check failed." & vbCrLf
+    End If
+
+    ' Count bridge tie
+    If Evaluate("SUM(Bridge_Counts!TieCheckRange)") <> 0 Then
+        issues = issues & "• Counts bridge tie check failed." & vbCrLf
+    End If
+
+    If Len(issues) = 0 Then
+        Sheets("Control").Range("B5").Value = "OK (Checks passed)"
+        WriteLog "Checks OK"
+        MsgBox "Sanity checks passed.", vbInformation
+    Else
+        Sheets("Control").Range("B5").Value = "⚠️ Issues found"
+        WriteLog Replace("Checks issues: " & issues, vbCrLf, " | ")
+        MsgBox "Sanity checks found issues:" & vbCrLf & issues, vbExclamation
+    End If
+    Exit Sub
+HANDLE:
+    WriteLog "Run_Checks error: " & Err.Number & " - " & Err.Description
+    MsgBox "Run_Checks error: " & Err.Number & " - " & Err.Description, vbExclamation
+End Sub
+
+
+
+
+
+
+
 Public Sub Run_Checks()
     ' These are examples—tailor to your sheet/columns.
     Dim wsC As Worksheet: Set wsC = Sheets("Control")
