@@ -1,3 +1,5 @@
+Okay, I'm wondering if this MoM_Account_Detail query is right. It needs to consider Account_Key when aggregating at Facility_ID level for reporting, as well as the 'reviewable' and 'Movement_Type' type logic.
+
 /* Query 2: MoM Account Detail (for bridge, segement breakouts, and Top30 Reviews) */
 WITH latest_curr AS (
   SELECT MAX(End_of_Month_Date) AS curr_eom
