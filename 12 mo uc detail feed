@@ -1,3 +1,19 @@
+=LET(
+  fids, FILTER(Top30_SVB_Exit_Facilities, Top30_SVB_Exit_Facilities<>""),
+  prevEOM, MAX(FILTER(Core_Data[End_of_Month_Date],
+                      Core_Data[End_of_Month_Date]<MAX(Core_Data[End_of_Month_Date]))),
+  hdrs,  Core_Data[#Headers],
+  rows,  FILTER(Core_Data,
+          (Core_Data[Facility_ID]=fids) * 
+          (Core_Data[End_of_Month_Date]=prevEOM)
+        ),
+  VSTACK(hdrs, rows)
+)
+
+
+
+
+
 =IF(
   AND(
     ISNUMBER(MATCH([@Facility_ID], FILTER(Top30_SVB_Exit_Facilities, Top30_SVB_Exit_Facilities<>""), 0)),
