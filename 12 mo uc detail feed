@@ -1,4 +1,24 @@
 =LET(
+  d,  --Core_Data[End_of_Month_Date],
+  fac, TEXT(Core_Data[Facility_ID],"@"),
+  acct, TEXT(Core_Data[Account_Key],"@"),
+  ssb, Core_Data[Source_System_Balance],
+  key, acct & "|" & TEXT(d,"yyyy-mm-dd"),
+  firstOnly, MATCH(key, key, 0)=SEQUENCE(ROWS(key)),
+  HSTACK(
+    FILTER(d,   firstOnly),
+    FILTER(fac, firstOnly),
+    FILTER(acct,firstOnly),
+    FILTER(ssb, firstOnly)
+  )
+)
+
+
+
+
+
+
+=LET(
   /* month ends from de-duped */
   eom_col, TAKE(Core_AccGrain,,1),
   curr, MAX(eom_col),
