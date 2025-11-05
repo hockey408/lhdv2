@@ -1,3 +1,78 @@
+Option Explicit
+
+Private Sub WriteLog(msg As String)
+    With ThisWorkbook.Sheets("Log")
+        .Cells(.Rows.Count, 1).End(xlUp).Offset(1, 0).Value = Now
+        .Cells(.Rows.Count, 2).End(xlUp).Offset(0, 1).Value = msg
+    End With
+End Sub
+
+Public Sub Refresh_All()
+    Dim t0 As Date, t1 As Date, ok As Boolean
+    On Error GoTo FAIL
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    t0 = Now
+    With Sheets("Control")
+        .Range("B3").Value = t0
+        .Range("B5").Value = "Refreshing…"
+    End With
+
+    ' 1) Refresh Power Query / connections
+    Dim qt As QueryTable, cn As WorkbookConnection, i As Long
+
+    ' Prefer RefreshAll for PQ
+    ThisWorkbook.RefreshAll
+
+    ' Wait until all refreshes complete
+    Do
+        DoEvents
+        ok = True
+        For Each cn In ThisWorkbook.Connections
+            If cn.RefreshWithRefreshAll Then
+                If cn.ODBCConnection.Refreshing Or cn.OLEDBConnection.Refreshing Then ok = False
+            End If
+        Next cn
+    Loop Until ok
+
+    ' 2) Recalc (if any formulas depend on refreshed tables)
+    Application.CalculateFull
+
+    ' 3) Refresh all pivot caches explicitly (ensures ordering)
+    Dim pc As PivotCache
+    For Each pc In ThisWorkbook.PivotCaches
+        On Error Resume Next
+        pc.Refresh
+        On Error GoTo 0
+    Next pc
+
+    t1 = Now
+    With Sheets("Control")
+        .Range("B4").Value = t1
+        .Range("B5").Value = "OK"
+    End With
+    Call WriteLog("Refresh OK (" & Format(t1 - t0, "hh:nn:ss") & ")")
+    GoTo CLEAN
+
+FAIL:
+    With Sheets("Control")
+        .Range("B5").Value = "⚠️ FAILED: " & Err.Number & " - " & Err.Description
+    End With
+    Call WriteLog("Refresh FAILED: " & Err.Number & " - " & Err.Description)
+
+CLEAN:
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+End Sub
+
+
+
+
+
 =IF(
    AND(
       OR(MoM_Account_Detail[@ExAuto_Add], MoM_Account_Detail[@ExAuto_Exit]),
