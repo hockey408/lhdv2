@@ -1,3 +1,22 @@
+Is_Top30_CIT_DowngradeIN
+=IF(COUNTIF(Top30_CIT_DowngradeIN_Facilities,[@Facility_ID])>0,"Y","N")
+Is_Top30_CIT_Exit
+=IF(COUNTIF(Top30_CIT_Exit_Facilities,[@Facility_ID])>0,"Y","N")
+Is_Top30_FCB_DowngradeIN
+=IF(COUNTIF(Top30_FCB_DowngradeIN_Facilities,[@Facility_ID])>0,"Y","N")
+Is_Top30_FCB_Exit
+=IF(COUNTIF(Top30_FCB_Exit_Facilities,[@Facility_ID])>0,"Y","N")
+Is_Top30_SVB_DowngradeIN
+=IF(COUNTIF(Top30_SVB_DowngradeIN_Facilities,[@Facility_ID])>0,"Y","N")
+Is_Top30_SVB_Exit
+=IF(COUNTIF(Top30_SVB_Exit_Facilities,[@Facility_ID])>0,"Y","N")
+
+
+
+
+
+
+
 Option Explicit
 
 '==== Utility: ensure sheets exist ====
