@@ -1,3 +1,144 @@
+/* ================================
+   GLOBAL NAMED CELLS (define once)
+   ================================ */
+
+Curr_EOM:
+=MAX(Core_Data[End_of_Month_Date])
+
+Prev_EOM:
+=MAX(FILTER(Core_Data[End_of_Month_Date], Core_Data[End_of_Month_Date] < Curr_EOM))
+
+/* =========================================
+   1) REVIEWABLE FACILITY UNIVERSE (SVB)
+   ========================================= */
+
+/* Downgrade IN (ex-Auto) */
+=LET(
+  bank,"L-SVB",
+  UNIQUE(
+    FILTER(
+      MoM_Account_Detail[Facility_ID],
+      (MoM_Account_Detail[Bank_Code]=bank)*
+      (MoM_Account_Detail[Movement_Type]="Downgrade IN (ex-Auto)")*
+      (MoM_Account_Detail[Reviewable_Flag]="Reviewable")
+    )
+  )
+)
+
+/* Exit (ex-Auto) */
+=LET(
+  bank,"L-SVB",
+  UNIQUE(
+    FILTER(
+      MoM_Account_Detail[Facility_ID],
+      (MoM_Account_Detail[Bank_Code]=bank)*
+      (MoM_Account_Detail[Movement_Type]="Exit (ex-Auto)")*
+      (MoM_Account_Detail[Reviewable_Flag]="Reviewable")
+    )
+  )
+)
+
+/* ======================================
+   2) TOP-30 FACILITIES BY FACILITY TOTAL
+   ====================================== */
+
+/* Downgrade IN (Curr EOM) */
+=LET(
+  facRev, SVB_RevFac_DowngIN,
+  d, Core_Data[End_of_Month_Date],
+  f, Core_Data[Facility_ID],
+  s, Core_Data[Source_System_Balance],
+  m, (d=Curr_EOM)*ISNUMBER(MATCH(f, facRev, 0)),
+  f_m, FILTER(f, m),
+  s_m, FILTER(s, m),
+  uf, UNIQUE(f_m),
+  sums, MAP(uf, LAMBDA(x, SUM(IF(f_m=x, s_m)))),
+  TAKE(SORTBY(uf, sums, -1), MIN(30, ROWS(uf)))
+)
+
+/* Exit (Prev EOM) */
+=LET(
+  facRev, SVB_RevFac_Exit,
+  d, Core_Data[End_of_Month_Date],
+  f, Core_Data[Facility_ID],
+  s, Core_Data[Source_System_Balance],
+  m, (d=Prev_EOM)*ISNUMBER(MATCH(f, facRev, 0)),
+  f_m, FILTER(f, m),
+  s_m, FILTER(s, m),
+  uf, UNIQUE(f_m),
+  sums, MAP(uf, LAMBDA(x, SUM(IF(f_m=x, s_m)))),
+  TAKE(SORTBY(uf, sums, -1), MIN(30, ROWS(uf)))
+)
+
+/* ==========================================
+   3) ACCOUNT-LEVEL DETAILS FROM CORE_DATA
+   ========================================== */
+
+/* Downgrade IN Details (Curr EOM) */
+=LET(
+  topFac, SVB_Top30_DowngIN_Fac,
+  d, Core_Data[End_of_Month_Date],
+  VSTACK(
+    Core_Data[#Headers],
+    FILTER(Core_Data, ISNUMBER(MATCH(Core_Data[Facility_ID], topFac, 0))*(d=Curr_EOM))
+  )
+)
+
+/* Exit Details (Prev EOM) */
+=LET(
+  topFac, SVB_Top30_Exit_Fac,
+  d, Core_Data[End_of_Month_Date],
+  VSTACK(
+    Core_Data[#Headers],
+    FILTER(Core_Data, ISNUMBER(MATCH(Core_Data[Facility_ID], topFac, 0))*(d=Prev_EOM))
+  )
+)
+
+/* ==========================================
+   4) OPTIONAL REUSABLE LAMBDA FUNCTIONS
+   ========================================== */
+
+/* Top30Facilities (by bank + movement) */
+=LAMBDA(bank, movement,
+  LET(
+    facRev, UNIQUE(
+      FILTER(
+        MoM_Account_Detail[Facility_ID],
+        (MoM_Account_Detail[Bank_Code]=bank)*
+        (MoM_Account_Detail[Movement_Type]=movement)*
+        (MoM_Account_Detail[Reviewable_Flag]="Reviewable")
+      )
+    ),
+    eom, IF(movement="Exit (ex-Auto)", Prev_EOM, Curr_EOM),
+    d, Core_Data[End_of_Month_Date],
+    f, Core_Data[Facility_ID],
+    s, Core_Data[Source_System_Balance],
+    m, (d=eom)*ISNUMBER(MATCH(f, facRev, 0)),
+    f_m, FILTER(f, m),
+    s_m, FILTER(s, m),
+    uf, UNIQUE(f_m),
+    sums, MAP(uf, LAMBDA(x, SUM(IF(f_m=x, s_m)))),
+    TAKE(SORTBY(uf, sums, -1), MIN(30, ROWS(uf)))
+  )
+)
+
+/* Top30Details (all account rows for those facilities) */
+=LAMBDA(bank, movement,
+  LET(
+    topFac, Top30Facilities(bank, movement),
+    eom, IF(movement="Exit (ex-Auto)", Prev_EOM, Curr_EOM),
+    d, Core_Data[End_of_Month_Date],
+    VSTACK(Core_Data[#Headers],
+           FILTER(Core_Data, ISNUMBER(MATCH(Core_Data[Facility_ID], topFac, 0))*(d=eom)))
+  )
+)
+
+
+
+
+
+
+
 =LET(
   bank, "L-SVB",                                   /* change to L-CIT / L-FCB as needed */
   d,    MoM_Account_Detail[End_of_Month_Date],
