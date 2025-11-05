@@ -1,4 +1,19 @@
 =LET(
+  d,   --Core_Data[End_of_Month_Date],
+  curr, MAX(d),
+  fids, FILTER(Facility_List, Facility_List<>""), 
+  facC, TEXT(Core_Data[Facility_ID], "@"),
+  rows, IFERROR(
+          FILTER(Core_Data, ISNUMBER(MATCH(facC, TEXT(fids,"@"),0)) * (d=curr)),
+          Core_Data[#Headers]*0
+        ),
+  VSTACK(Core_Data[#Headers], rows)
+)
+
+
+
+
+=LET(
   fids, FILTER(Facility_List, Facility_List<>""),                   /* your list */
   facC, TEXT(Core_Data[Facility_ID], "@"),                          /* normalize */
   rows, IFERROR(
