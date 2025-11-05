@@ -1,4 +1,58 @@
 =LET(
+  /* --- De-dup Core_Data to Account_Key × EOM --- */
+  d,  --Core_Data[End_of_Month_Date],
+  fac, TEXT(Core_Data[Facility_ID],"@"),
+  acct, TEXT(Core_Data[Account_Key],"@"),
+  ssb, Core_Data[Source_System_Balance],
+  key, acct & "|" & TEXT(d,"yyyy-mm-dd"),
+  keep, MATCH(key,key,0)=SEQUENCE(ROWS(key)),
+  d_u,   FILTER(d,keep),
+  fac_u, FILTER(fac,keep),
+  ssb_u, FILTER(ssb,keep),
+
+  /* --- Params --- */
+  bankWanted, UPPER("L-SVB"),
+  movWanted,  UPPER("Downgrade IN (ex-Auto)"),
+
+  /* --- Normalize MoM_Account_Detail fields --- */
+  facEvt,  TEXT(MoM_Account_Detail[Facility_For_Event],"@"),
+  bankCol, UPPER(TRIM(TEXT(MoM_Account_Detail[Bank_For_Event],"@"))),
+  movCol,  UPPER(TRIM(TEXT(MoM_Account_Detail[Movement_Type],"@"))),
+  revCol,  (N(MoM_Account_Detail[Reviewable_Flag])=1) + (TEXT(MoM_Account_Detail[Reviewable_Flag],"@")="1"),
+
+  /* --- Reviewable facilities for this bank/movement --- */
+  revFac,  IFERROR(UNIQUE(FILTER(facEvt,(bankCol=bankWanted)*(movCol=movWanted)*(revCol>0))),""),
+  hasRev,  IF(AND(ROWS(revFac)=1,revFac=""),0,1),
+
+  /* --- Current EOM --- */
+  curr, MAX(d_u),
+
+  /* --- Filter to curr EOM + reviewable facilities --- */
+  m,      (d_u=curr)*ISNUMBER(MATCH(fac_u,revFac,0)),
+  fac_f,  IFERROR(FILTER(fac_u,m),""),
+  ssb_f,  IFERROR(FILTER(ssb_u,m),""),
+
+  hasRows, IF(AND(ROWS(fac_f)=1,fac_f=""),0,1),
+
+  /* --- Aggregate by facility and rank --- */
+  ufac,   IF(hasRows=0,"",UNIQUE(fac_f)),
+  sums,   IF(hasRows=0,"",SUMIF(fac_f,ufac,ssb_f)),
+  topFac, IF(hasRows=0,"",TAKE(SORTBY(ufac,sums,-1),MIN(30,ROWS(ufac)))),
+  topSum, IF(hasRows=0,"",TAKE(SORTBY(sums,sums,-1),MIN(30,ROWS(sums)))),
+
+  /* --- Output --- */
+  IF(hasRev=0,
+     "No reviewable facilities found for "&bankWanted&" / "&movWanted&" (check spelling/case/flag).",
+     IF(hasRows=0,
+        "No Core_Data matches at current EOM ("&TEXT(curr,"yyyy-mm-dd")&") for those facilities (check Facility keys and date types).",
+        VSTACK({"Facility_ID","Total_SSB"}, HSTACK(topFac, topSum))
+     )
+  )
+)
+
+
+
+=LET(
   /* --- De-dup Core_Data at Account_Key × EOM --- */
   d,  --Core_Data[End_of_Month_Date],
   fac, TEXT(Core_Data[Facility_ID],"@"),
