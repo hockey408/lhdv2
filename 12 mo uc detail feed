@@ -1,3 +1,17 @@
+=LET(
+  fids, FILTER(Facility_List, Facility_List<>""),                   /* your list */
+  facC, TEXT(Core_Data[Facility_ID], "@"),                          /* normalize */
+  rows, IFERROR(
+          FILTER(Core_Data, ISNUMBER(MATCH(facC, TEXT(fids,"@"), 0))),
+          Core_Data[#Headers]*0                                     /* empty row */
+        ),
+  VSTACK(Core_Data[#Headers], rows)
+)
+
+
+
+
+
 =ROWS(
   UNIQUE(
     FILTER(
