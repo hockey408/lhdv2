@@ -1,4 +1,50 @@
 =LET(
+  dC; --Core_Data[End_of_Month_Date];
+  curr; MAX(dC);
+  facCore; TEXT(Core_Data[Facility_ID];"@");
+  facEvt;  TEXT(MoM_Account_Detail[Facility_For_Event];"@");
+  bank; "L-SVB";
+  mov;  "Downgrade IN (ex-Auto)";
+
+  revFac; IFERROR(
+            UNIQUE(
+              FILTER(
+                facEvt;
+                (MoM_Account_Detail[Bank_For_Event]=bank)*
+                (MoM_Account_Detail[Movement_Type]=mov)*
+                (MoM_Account_Detail[Reviewable_Flag]=1)
+              )
+            );
+            ""
+         );
+
+  facHit; IFERROR(
+            FILTER(
+              facCore;
+              (dC=curr) * ISNUMBER(MATCH(facCore; revFac; 0))
+            );
+            ""
+          );
+
+  sampleA; IF(ROWS(revFac)>0;
+              TEXTJOIN(", "; TRUE; INDEX(revFac; SEQUENCE(MIN(10; ROWS(revFac)); 1)));
+              "— none —");
+  sampleB; IF(ROWS(facHit)>0;
+              TEXTJOIN(", "; TRUE; INDEX(UNIQUE(facHit); SEQUENCE(MIN(10; ROWS(UNIQUE(facHit))); 1)));
+              "— none —");
+
+  VSTACK(
+    {"Stage","Count","Sample (first 10)"};
+    {"Reviewable facility list"; ROWS(revFac); sampleA};
+    {"Core matches @ Curr EOM"; ROWS(facHit); sampleB}
+  )
+)
+
+
+
+
+
+=LET(
   dC, --Core_Data[End_of_Month_Date],
   curr, MAX(dC),
   facCore, TEXT(Core_Data[Facility_ID],"@"),
