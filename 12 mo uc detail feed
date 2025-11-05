@@ -1,3 +1,31 @@
+=LET(
+  cols, {"Facility_ID","Account_Identifier","Account_Name","Owner_For_Event",
+         "Movement_Type","Bank_For_Event","CIS_Customer_Number",
+         "Curr_SSB","Prev_SSB","MoM_Delta"},
+  hdrs, CHOOSECOLS(Core_Data[#Headers], XMATCH(cols, Core_Data[#Headers], 0)),
+  body, FILTER(
+           CHOOSECOLS(Core_Data, XMATCH(cols, Core_Data[#Headers], 0)),
+           Core_Data[Is_Top30_CIT_DowngradeIN]="Y"
+        ),
+  VSTACK(hdrs, body)
+)
+
+=LET(
+  cols, {"Facility_ID","Account_Identifier","Account_Name","Owner_For_Event",
+         "Movement_Type","Bank_For_Event","CIS_Customer_Number",
+         "Prev_SSB","Curr_SSB","MoM_Delta"},
+  hdrs, CHOOSECOLS(Core_Data[#Headers], XMATCH(cols, Core_Data[#Headers], 0)),
+  body, FILTER(
+           CHOOSECOLS(Core_Data, XMATCH(cols, Core_Data[#Headers], 0)),
+           Core_Data[Is_Top30_CIT_Exit]="Y"
+        ),
+  VSTACK(hdrs, body)
+)
+
+
+
+
+
 =VSTACK(
     Core_Data[#Headers],
     FILTER(Core_Data, Core_Data[Is_Top30_CIT_DowngradeIN]="Y")
