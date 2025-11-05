@@ -1,3 +1,23 @@
+=IF(
+  AND(
+    ISNUMBER(MATCH([@Facility_ID], FILTER(Top30_SVB_Exit_Facilities, Top30_SVB_Exit_Facilities<>""), 0)),
+    [@End_of_Month_Date]=Prev_EOM
+  ),
+  "Y",""
+)
+
+=IF(
+  AND(
+    ISNUMBER(MATCH([@Facility_ID], FILTER(Top30_SVB_Exit_Facilities, Top30_SVB_Exit_Facilities<>""), 0)),
+    [@End_of_Month_Date]=Prev_EOM
+  ),
+  "Y",""
+)
+
+
+
+
+
 =LET(
   d,     Core_Data[End_of_Month_Date],
   acct,  Core_Data[ACCOUNT_IDENTIFIER],
