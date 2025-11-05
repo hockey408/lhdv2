@@ -1,3 +1,17 @@
+=SORT(
+  UNIQUE(
+    FILTER(
+      TEXT(MoM_Account_Detail[Facility_For_Event],"@"),
+      (UPPER(TRIM(TEXT(MoM_Account_Detail[Bank_For_Event],"@")))="L-SVB")*
+      (UPPER(TRIM(TEXT(MoM_Account_Detail[Movement_Type],"@")))=UPPER("Downgrade IN (ex-Auto)"))*
+      ( (N(MoM_Account_Detail[Reviewable_Flag])=1) + (TEXT(MoM_Account_Detail[Reviewable_Flag],"@")="1") )
+    )
+  )
+)
+
+
+
+
 =LET(
   /* --- De-dup Core_Data to Account_Key × EOM --- */
   d,  --Core_Data[End_of_Month_Date],
