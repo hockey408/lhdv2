@@ -1,3 +1,17 @@
+=ROWS(
+  UNIQUE(
+    FILTER(
+      TEXT(MoM_Account_Detail[Facility_For_Event],"@"),
+      (MoM_Account_Detail[Bank_For_Event]="L-SVB")*
+      (MoM_Account_Detail[Movement_Type]="Downgrade IN (ex-Auto)")*
+      (MoM_Account_Detail[Reviewable_Flag]=1)
+    )
+  )
+)
+
+
+
+
 =LET(
   dC; --Core_Data[End_of_Month_Date];
   curr; MAX(dC);
