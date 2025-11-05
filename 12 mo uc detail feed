@@ -1,3 +1,76 @@
+/* Auto-latest ME + prior ME, then pull NA population with timestamp */
+WITH mx AS (
+  SELECT MAX(CAST(End_of_Month_Date AS DATE)) AS curr_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+),
+pr AS (
+  SELECT MAX(CAST(End_of_Month_Date AS DATE)) AS prev_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+  CROSS JOIN mx
+  WHERE t.GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND CAST(t.End_of_Month_Date AS DATE) < mx.curr_eom
+),
+params AS (
+  SELECT mx.curr_eom, pr.prev_eom
+  FROM mx CROSS JOIN pr
+)
+SELECT
+    t.End_of_Month_Date,
+    t.Account_Name,
+    t.Contract_Source_System,
+    t.CIS_Customer_Number,
+    t.Facility_ID,
+    t.Account_Identifier,
+    t.Account_Key,
+    t.Status_Code_Description,
+    t.GL_ACCOUNT_HIER_LEVEL_4,
+    t.Source_System_Balance,
+    t.GL_Balance,
+    t.Available_Balance,
+    t.Borrower_Risk_Rating,
+    t.PD_Grade,
+    t.Days_Past_Due,
+    t.Non_Accrual_Flag,
+    t.PROD_HIER_LEVEL_5,
+    t.RBC_Code,
+    t.GL_ACCOUNT_CODE,
+    CASE
+      WHEN t.Contract_Source_System IN
+           ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN') THEN 'L-SVB'
+      WHEN t.Contract_Source_System = 'ALL'
+           AND t.GL_ACCOUNT_CODE IN
+           ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+            '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+            '1100001','1142067','1042886','1043008') THEN 'L-SVB'
+      WHEN t.Contract_Source_System IN
+           ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO') THEN 'L-FCB'
+      WHEN t.Contract_Source_System IN
+           ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN',
+            'INFL05','INFL05-EXCPTN','INFL10','INFL10-EXCPTN',
+            'LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001','SBO001-EXCPTN',
+            'STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN',
+            'STRAT1','STRAT1-EXCPTN') THEN 'L-CIT'
+      ELSE 'NULL-Need to Research'
+    END AS Bank_Code,
+    CURRENT_TIMESTAMP AS Query_Run_Timestamp
+FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+CROSS JOIN params p
+WHERE t.GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+  AND CAST(t.End_of_Month_Date AS DATE) IN (p.curr_eom, p.prev_eom)
+  AND t.Non_Accrual_Flag = 'Y'
+  AND t.Source_System_Balance > 0
+ORDER BY
+  t.End_of_Month_Date,
+  Bank_Code,
+  t.Account_Identifier;
+
+
+
+
+
+
+
 WITH params AS (
   SELECT
     DATE '2025-09-30'  AS curr_eom,
