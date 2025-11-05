@@ -1,4 +1,35 @@
 Triage Score (Latest) :=
+VAR _latest = CALCULATE ( MAX ( Dim_Date[MonthEnd] ) )
+
+VAR _severity =
+    CALCULATE (
+        AVERAGE ( RC_ML_Scored[SEVERITY_0_100] ),
+        KEEPFILTERS ( RC_ML_Scored[MONTH_END] = _latest ),
+        KEEPFILTERS ( [Monitorable_Flag] = 1 )
+    )
+
+VAR _psi =
+    CALCULATE (
+        AVERAGE ( [PSI Contrib Abs] ),
+        KEEPFILTERS ( RC_PSI_ByDescription[MONTH_END] = _latest )
+    ) * 100
+
+VAR _ml =
+    CALCULATE (
+        AVERAGE ( RC_ML_Scored[Anomaly_Score_0_100] ),
+        KEEPFILTERS ( RC_ML_Scored[MONTH_END] = _latest ),
+        KEEPFILTERS ( [Monitorable_Flag] = 1 )
+    )
+
+RETURN
+ROUND ( 0.6 * _severity + 0.3 * _ml + 0.1 * _psi, 1 )
+
+
+
+
+
+
+Triage Score (Latest) :=
 VAR _latest =
     CALCULATE ( MAX ( Dim_Date[MonthEnd] ) )
 VAR _severity =
