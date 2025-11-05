@@ -1,4 +1,43 @@
 =LET(
+  fac_piv, FILTER(Pivot_Facilities, Pivot_Facilities<>""),     /* Top-30 list */
+  amt_piv,  TAKE(FILTER(Pivot_Amounts, Pivot_Amounts<>""), ROWS(fac_piv)),
+  d,       Core_Data[End_of_Month_Date],
+  fac,     Core_Data[Facility_ID],
+  bal,     Core_Data[Source_System_Balance],
+  currEOM, MAX(d),
+  prevEOM, MAX(FILTER(d, d<currEOM)),
+
+  /* sum Core_Data by facility for previous EOM */
+  sum_core, MAP(fac_piv, LAMBDA(f, SUMIFS(bal, fac, f, d, prevEOM))),
+  amt_piv_aligned, XLOOKUP(fac_piv, fac_piv, amt_piv, 0, 0),
+
+  HSTACK(
+    {"Facility_ID","Core_Sum","Pivot_Sum","Variance"},
+    VSTACK(
+      fac_piv,
+      sum_core,
+      amt_piv_aligned,
+      sum_core - amt_piv_aligned
+    )
+  )
+)
+
+=LET(t, B1#, SUM(TAKE(t, -ROWS(t)+1, -1)))   /* change B1# to the table’s anchor */
+
+=LET(
+  t, B1#,
+  body, DROP(t,1),
+  var,  TAKE(body,, -1),
+  rows, FILTER(body, ABS(var) > 0.01),
+  VSTACK(TAKE(t,1), rows)
+)
+
+
+
+
+
+
+=LET(
   fids_raw, Top30_SVB_Exit_Facilities,
   fids, IFERROR(FILTER(fids_raw, fids_raw<>""), {"§EMPTY§"}),
   d, Core_Data[End_of_Month_Date],
