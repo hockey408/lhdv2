@@ -1,5 +1,37 @@
 =LET(
   fids, Top30_CIT_DowngradeIN_Facilities,
+  fids_clean, FILTER(fids, fids<>""), 
+  d, Core_Data[End_of_Month_Date],
+  currEOM, MAX(d),
+  hdrs, Core_Data[#Headers],
+  body, FILTER(Core_Data,
+         ISNUMBER(MATCH(Core_Data[Facility_ID], fids_clean, 0)) *
+         (d = currEOM)
+        ),
+  VSTACK(hdrs, body)
+)
+
+=LET(
+  fids, Top30_CIT_Exit_Facilities,
+  fids_clean, FILTER(fids, fids<>""), 
+  d, Core_Data[End_of_Month_Date],
+  currEOM, MAX(d),
+  prevEOM, MAX(FILTER(d, d < currEOM)),
+  hdrs, Core_Data[#Headers],
+  body, FILTER(Core_Data,
+         ISNUMBER(MATCH(Core_Data[Facility_ID], fids_clean, 0)) *
+         (d = prevEOM)
+        ),
+  VSTACK(hdrs, body)
+)
+
+
+
+
+
+
+=LET(
+  fids, Top30_CIT_DowngradeIN_Facilities,
   fids_clean, FILTER(fids, fids<>""),                     /* drop blanks from the pivot list */
   d, Core_Data[End_of_Month_Date],
   currEOM, MAX(d),
