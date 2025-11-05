@@ -8,6 +8,41 @@
   curr,  Curr_EOM,
   prev,  Prev_EOM,
 
+  /* set of IDs in current month */
+  currIDs, UNIQUE(FILTER(acct, d=curr)),
+
+  /* row-level logicals */
+  isPrev, d=prev,
+  isExit, isPrev * (COUNTIF(currIDs, acct)=0),
+
+  /* scope rows to CIT exits (prior month) */
+  mask,   isExit * (bank="L-CIT"),
+
+  fac_exit, FILTER(fac,  mask),
+  bal_exit, FILTER(bal,  mask),
+
+  ufac,   UNIQUE(fac_exit),
+  sums,   MAP(ufac, LAMBDA(f, SUM(IF(fac_exit=f, bal_exit)))),
+  n,      MIN(30, ROWS(ufac)),
+  topFac, IF(n>0, TAKE(SORTBY(ufac, sums, -1), n), ufac),
+
+  IF(ISNUMBER(MATCH([@Facility_ID], topFac, 0)), "Y", "")
+)
+
+
+
+
+
+=LET(
+  d,     Core_Data[End_of_Month_Date],
+  acct,  Core_Data[ACCOUNT_IDENTIFIER],
+  fac,   Core_Data[Facility_ID],
+  bal,   Core_Data[Source_System_Balance],
+  bank,  Core_Data[Bank_Code],
+
+  curr,  Curr_EOM,
+  prev,  Prev_EOM,
+
   /* sets of IDs in each month */
   prevIDs, UNIQUE(FILTER(acct, d=prev)),
 
