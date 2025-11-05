@@ -1,3 +1,12 @@
+=FILTER(Core_Data, Core_Data[Is_Top30_CIT_DowngradeIN]="Y")
+
+=FILTER(Core_Data, Core_Data[Is_Top30_CIT_Exit]="Y")
+
+
+
+
+
+
 Is_Top30_CIT_DowngradeIN
 =IF(COUNTIF(Top30_CIT_DowngradeIN_Facilities,[@Facility_ID])>0,"Y","N")
 Is_Top30_CIT_Exit
