@@ -1,3 +1,27 @@
+PSI Contrib Abs :=
+VAR _psi =
+    CALCULATE (
+        MAX ( RC_PSI_ByDescription[PSI_CONTRIB] ),
+        REMOVEFILTERS ( RC_PSI_ByDescription[RC_DESCRIPTION] )
+    )
+RETURN
+ABS ( _psi )
+
+Monitorable_Flag :=
+VAR _flag =
+    CALCULATE (
+        MAX ( RC_Code_Model_Base[Monitorable_Latest_RC_Selected] ),
+        TREATAS ( VALUES ( RC_ML_Scored[RC_CODE] ), RC_Code_Model_Base[RC_CODE] )
+    )
+RETURN
+IF ( _flag = 1, 1, 0 )
+
+
+
+
+
+
+
 Triage Score (Latest) :=
 VAR _latest = CALCULATE ( MAX ( Dim_Date[MonthEnd] ) )
 
