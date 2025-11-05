@@ -1,3 +1,48 @@
+Public Sub Run_Checks()
+    ' These are examples—tailor to your sheet/columns.
+    Dim wsC As Worksheet: Set wsC = Sheets("Control")
+    Dim errs As Collection: Set errs = New Collection
+
+    On Error Resume Next
+
+    ' 1) Tie: Starting + flows – Ending = 0 by bank (balances)
+    If Application.WorksheetFunction.Sum(Sheets("Bridge_Balances").Range("TieCheckRange")) <> 0 Then _
+        errs.Add "Balance bridge tie check failed."
+
+    ' 2) Tie: Starting + flows – Ending = 0 by bank (counts)
+    If Application.WorksheetFunction.Sum(Sheets("Bridge_Counts").Range("TieCheckRange")) <> 0 Then _
+        errs.Add "Counts bridge tie check failed."
+
+    ' 3) Month-end dates consistent (from query output)
+    ' Example: compare unique curr_eom/prev_eom labels on summary to the params row in base table
+    ' (Implement according to how you surface those fields.)
+
+    ' 4) No blank Facility_ID or Account_Identifier in movement rows
+    If Application.WorksheetFunction.CountIf(Sheets("MoM_Account_Detail").ListObjects(1).ListColumns("Facility_For_Event").DataBodyRange, "") > 0 Then _
+        errs.Add "Blank Facility_For_Event in movement rows."
+
+    On Error GoTo 0
+
+    If errs.Count = 0 Then
+        wsC.Range("B5").Value = "OK (Checks passed)"
+        Call WriteLog("Checks OK")
+        MsgBox "Sanity checks passed.", vbInformation
+    Else
+        Dim s As String, i As Long
+        For i = 1 To errs.Count
+            s = s & "• " & errs(i) & vbCrLf
+        Next i
+        wsC.Range("B5").Value = "⚠️ Issues found"
+        Call WriteLog("Checks issues: " & Replace(s, vbCrLf, " | "))
+        MsgBox "Sanity checks found issues:" & vbCrLf & s, vbExclamation
+    End If
+End Sub
+
+
+
+
+
+
 PSI Contrib Abs :=
 VAR _psi =
     CALCULATE (
