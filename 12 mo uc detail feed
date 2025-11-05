@@ -1,4 +1,62 @@
 =LET(
+  /* --- De-dup Core_Data at Account_Key × EOM --- */
+  d,  --Core_Data[End_of_Month_Date],
+  fac, TEXT(Core_Data[Facility_ID],"@"),
+  acct, TEXT(Core_Data[Account_Key],"@"),
+  ssb, Core_Data[Source_System_Balance],
+  key, acct & "|" & TEXT(d,"yyyy-mm-dd"),
+  keep, MATCH(key,key,0)=SEQUENCE(ROWS(key)),
+  d_u,   FILTER(d,keep),
+  fac_u, FILTER(fac,keep),
+  ssb_u, FILTER(ssb,keep),
+
+  /* --- Parameters (bank/movement) --- */
+  bank, "L-SVB",
+  mov,  "Downgrade IN (ex-Auto)",
+
+  /* --- Month and reviewable facility list --- */
+  curr, MAX(d_u),
+  facRev, IFERROR(
+            UNIQUE(
+              FILTER(
+                TEXT(MoM_Account_Detail[Facility_For_Event],"@"),
+                (TEXT(MoM_Account_Detail[Bank_For_Event],"@")=bank)*
+                (TEXT(MoM_Account_Detail[Movement_Type],"@")=mov)*
+                (N(MoM_Account_Detail[Reviewable_Flag])=1)
+              )
+            ),
+            ""
+         ),
+  cntRev, IF(AND(ROWS(facRev)=1, facRev=""), 0, ROWS(facRev)),
+
+  /* --- Filter Core to curr EOM and those facilities --- */
+  mask,  (d_u=curr)*ISNUMBER(MATCH(fac_u, facRev, 0)),
+  fac_f, IFERROR(FILTER(fac_u,mask), ""),
+  ssb_f, IFERROR(FILTER(ssb_u,mask), ""),
+
+  haveRows, IF(AND(ROWS(fac_f)=1, fac_f=""), 0, 1),
+
+  /* --- Aggregate by Facility and rank --- */
+  ufac,  IF(haveRows=0, "", UNIQUE(fac_f)),
+  sums,  IF(haveRows=0, "", SUMIF(fac_f, ufac, ssb_f)),
+  topFac, IF(haveRows=0, "", TAKE(SORTBY(ufac, sums, -1), MIN(30, ROWS(ufac)))),
+  topSums,IF(haveRows=0, "", TAKE(SORTBY(sums, sums, -1), MIN(30, ROWS(sums)))),
+
+  /* --- Output: informative message OR Top-30 table --- */
+  IF(cntRev=0,
+     "No reviewable facilities found for "&bank&" / "&mov,
+     IF(haveRows=0,
+        "No Core_Data matches at current EOM ("&TEXT(curr,"yyyy-mm-dd")&") for reviewable facilities. Check Facility keys and date types.",
+        VSTACK({"Facility_ID","Total_SSB"}, HSTACK(topFac, topSums))
+     )
+  )
+)
+
+
+
+
+
+=LET(
   /* --- De-dup Core_Data to Account_Key × EOM --- */
   d,  --Core_Data[End_of_Month_Date],
   fac, TEXT(Core_Data[Facility_ID],"@"),
