@@ -1,3 +1,25 @@
+Okay, so we just completed the October Month End process. A few learnings from our post-mortem meeting came up and I'm not opposed to re-working some of the SQL queries and Excel infrastructure. Lessons learned: 
+1) Daniel, Connor, and Eleanor review at the Facility_ID level. 
+2) Casey and Samya review at the CIS_Customer_Number level and the threshold categorizations should take this into account.
+
+I'd still probably like to report the bridges and breakouts at the Facility_ID level if possible, we would need to do a bit of slicing and dicing. But I'm open to suggestions.
+
+Do we need to consider all levels of the Hierarchy for things? The hierarchy in the data is as follows:
+CIS_Customer_Number
+Facility_ID
+Account_Identifier
+Account_Key
+
+I'm not sure the best way to deal with Autochange items, as we have the identifier, RBC_Code = 'R', at the Account_Key grain. 
+
+Can we come up with a smart Netezza SQL query and perhaps some Excel infrastructure if needed, that pulls the appropriate detail for curr month and prev month with all fields we've been pulling in to the Core_Data query,
+all custom columns needed to create the bridges and breakout, and ensure these all tie together from a count/balance perspective. At the end of the day, we should have a cohesive output that can be easily tied to any
+sub-outputs, allows for easy summarization, and allows for detailed drill down to granular levels.
+
+
+
+
+
 /* ========= MoM_Account_Detail (Account_Key grain; facility/CIS-ready) ========= */
 
 WITH latest_curr AS (
