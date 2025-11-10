@@ -1,3 +1,121 @@
+/* ========== QUERY B2: Count Bridge (distinct Facility_For_Event) ========== */
+
+WITH src AS (
+  SELECT
+    Bank_For_Event,
+    Facility_For_Event,
+    CASE WHEN COALESCE(Prev_SSB,0) > 0 THEN 1 ELSE 0 END AS had_prev,
+    CASE WHEN COALESCE(Curr_SSB,0) > 0 THEN 1 ELSE 0 END AS has_curr,
+    CASE WHEN UPPER(COALESCE(Prev_RBC,'')) = 'R' THEN 1 ELSE 0 END AS prev_auto,
+    CASE WHEN UPPER(COALESCE(Curr_RBC,'')) = 'R' THEN 1 ELSE 0 END AS curr_auto
+  FROM MOM_ACCOUNT_DETAIL
+),
+acc AS (
+  SELECT * FROM src
+  UNION ALL
+  SELECT 'ALL' AS Bank_For_Event, Facility_For_Event, had_prev, has_curr, prev_auto, curr_auto
+  FROM src
+),
+sets AS (
+  SELECT
+    Bank_For_Event,
+    COUNT(DISTINCT CASE WHEN had_prev=1 THEN Facility_For_Event END) AS start_fac,
+    COUNT(DISTINCT CASE WHEN has_curr=1 THEN Facility_For_Event END) AS end_fac,
+    COUNT(DISTINCT CASE WHEN has_curr=1 AND curr_auto=1 THEN Facility_For_Event END) AS curr_auto_fac,
+    COUNT(DISTINCT CASE WHEN had_prev=1 AND prev_auto=1 THEN Facility_For_Event END) AS prev_auto_fac,
+    COUNT(DISTINCT CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=0 THEN Facility_For_Event END) AS dn_in_exauto_fac,
+    COUNT(DISTINCT CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=0 THEN Facility_For_Event END) AS exit_exauto_fac
+  FROM acc
+  GROUP BY Bank_For_Event
+),
+lines AS (
+  SELECT Bank_For_Event, 1 AS ord, 'Starting Count' AS line, start_fac::INTEGER AS amount FROM sets
+  UNION ALL
+  SELECT Bank_For_Event, 2, 'Autochange (net)', (curr_auto_fac - prev_auto_fac)::INTEGER FROM sets
+  UNION ALL
+  SELECT Bank_For_Event, 3, 'Downgrade IN (ex-Auto)', dn_in_exauto_fac::INTEGER FROM sets
+  UNION ALL
+  SELECT Bank_For_Event, 4, 'Exit (ex-Auto)', (-exit_exauto_fac)::INTEGER FROM sets
+  UNION ALL
+  SELECT Bank_For_Event, 5, 'Ending Count', end_fac::INTEGER FROM sets
+)
+SELECT Bank_For_Event, line, amount
+FROM lines
+ORDER BY CASE WHEN Bank_For_Event='ALL' THEN 1 ELSE 0 END, Bank_For_Event, ord;
+
+
+
+/* ======= RUN THIS WHOLE BLOCK IF YOU MUST SUBMIT ONCE ======= */
+
+-- >>> Paste Query A here exactly as above (through the final WITH DATA;) <<<
+
+/* Now the Balance Bridge */
+WITH src AS (
+  SELECT
+    Bank_For_Event,
+    Facility_For_Event,
+    Prev_SSB,
+    Curr_SSB,
+    CASE WHEN COALESCE(Prev_SSB,0) > 0 THEN 1 ELSE 0 END AS had_prev,
+    CASE WHEN COALESCE(Curr_SSB,0) > 0 THEN 1 ELSE 0 END AS has_curr,
+    CASE WHEN UPPER(COALESCE(Prev_RBC,'')) = 'R' THEN 1 ELSE 0 END AS prev_auto,
+    CASE WHEN UPPER(COALESCE(Curr_RBC,'')) = 'R' THEN 1 ELSE 0 END AS curr_auto
+  FROM MOM_ACCOUNT_DETAIL
+),
+acc AS (
+  SELECT * FROM src
+  UNION ALL
+  SELECT 'ALL' AS Bank_For_Event, Facility_For_Event, Prev_SSB, Curr_SSB, had_prev, has_curr, prev_auto, curr_auto
+  FROM src
+),
+lines AS (
+  SELECT Bank_For_Event, 1 AS ord, 'Prev Month Non-Accrual Bal' AS line,
+         SUM(COALESCE(Prev_SSB,0))::NUMERIC(38,2) AS amount
+  FROM acc GROUP BY 1
+
+  UNION ALL
+  SELECT Bank_For_Event, 2, 'Downgrade IN (ex-Auto)',
+         SUM(CASE WHEN has_curr=1 AND had_prev=0 AND curr_auto=0
+                  THEN COALESCE(Curr_SSB,0) ELSE 0 END)::NUMERIC(38,2)
+  FROM acc GROUP BY 1
+
+  UNION ALL
+  SELECT Bank_For_Event, 3, 'Exit (ex-Auto)',
+         -SUM(CASE WHEN had_prev=1 AND has_curr=0 AND prev_auto=0
+                   THEN COALESCE(Prev_SSB,0) ELSE 0 END)::NUMERIC(38,2)
+  FROM acc GROUP BY 1
+
+  UNION ALL
+  SELECT Bank_For_Event, 4, 'Autochange (net)',
+         ( SUM(CASE WHEN curr_auto=1 THEN COALESCE(Curr_SSB,0) ELSE 0 END)
+         - SUM(CASE WHEN prev_auto=1 THEN COALESCE(Prev_SSB,0) ELSE 0 END)
+         )::NUMERIC(38,2)
+  FROM acc GROUP BY 1
+
+  UNION ALL
+  SELECT Bank_For_Event, 5, 'Persisting Bal Changes (ex-Auto)',
+         SUM(CASE WHEN had_prev=1 AND has_curr=1 AND curr_auto=0
+                  THEN (COALESCE(Curr_SSB,0)-COALESCE(Prev_SSB,0))
+                  ELSE 0 END)::NUMERIC(38,2)
+  FROM acc GROUP BY 1
+
+  UNION ALL
+  SELECT Bank_For_Event, 6, 'Current Month Bal',
+         SUM(COALESCE(Curr_SSB,0))::NUMERIC(38,2)
+  FROM acc GROUP BY 1
+)
+SELECT Bank_For_Event, line, amount
+FROM lines
+ORDER BY CASE WHEN Bank_For_Event='ALL' THEN 1 ELSE 0 END, Bank_For_Event, ord;
+
+
+
+
+
+
+
+
+
 /* ========== QUERY A: Build MOM_ACCOUNT_DETAIL (no DISTRIBUTE) ========== */
 
 DROP TABLE IF EXISTS MOM_ACCOUNT_DETAIL;
