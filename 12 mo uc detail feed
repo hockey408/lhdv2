@@ -1,3 +1,96 @@
+/* === EOM SSB/GL totals by scope (with/without GL filter, and except), with negatives and status splits === */
+WITH latest_curr AS (
+  SELECT MAX(End_of_Month_Date) AS curr_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+),
+latest_prev AS (
+  SELECT MAX(End_of_Month_Date) AS prev_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, latest_curr
+  WHERE End_of_Month_Date < (SELECT curr_eom FROM latest_curr)
+),
+params AS (
+  SELECT
+    (SELECT curr_eom FROM latest_curr) AS curr_eom,
+    (SELECT prev_eom FROM latest_prev) AS prev_eom,
+    CURRENT_TIMESTAMP                 AS query_run_ts
+),
+base AS (
+  SELECT
+    End_of_Month_Date,
+    Status_Code_Description,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    Source_System_Balance,
+    GL_Balance
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE End_of_Month_Date IN ((SELECT prev_eom FROM params), (SELECT curr_eom FROM params))
+)
+
+/*************** WITH_GL_FILTER (only TL + HFS) ***************/
+SELECT
+  CASE WHEN b.End_of_Month_Date = (SELECT prev_eom FROM params) THEN 'Prev EOM' ELSE 'Curr EOM' END AS Period,
+  b.End_of_Month_Date                                                                                 AS EOM_Date,
+  'WITH_GL_FILTER'                                                                                    AS Scope,
+  CASE WHEN UPPER(COALESCE(b.Status_Code_Description,'')) = 'ACTIVE' THEN 'Active' ELSE 'Non-Active' END AS Status_Group,
+  SUM(b.Source_System_Balance)::NUMERIC(38,2)                                                         AS Total_SSB,
+  SUM(CASE WHEN b.Source_System_Balance < 0 THEN b.Source_System_Balance ELSE 0 END)::NUMERIC(38,2)  AS SSB_Negatives,
+  SUM(b.GL_Balance)::NUMERIC(38,2)                                                                    AS Total_GL_Balance,
+  SUM(CASE WHEN b.GL_Balance < 0 THEN b.GL_Balance ELSE 0 END)::NUMERIC(38,2)                         AS GL_Negatives,
+  COUNT(CASE WHEN b.Source_System_Balance < 0 THEN 1 END)                                            AS Cnt_Neg_SSB_Rows,
+  COUNT(CASE WHEN b.GL_Balance < 0 THEN 1 END)                                                       AS Cnt_Neg_GL_Rows,
+  (SELECT query_run_ts FROM params)                                                                   AS Query_Timestamp
+FROM base b
+WHERE b.GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+GROUP BY 1,2,3,4
+
+UNION ALL
+
+/*************** EXCEPT_GL_FILTER (everything not TL + HFS) ***************/
+SELECT
+  CASE WHEN b.End_of_Month_Date = (SELECT prev_eom FROM params) THEN 'Prev EOM' ELSE 'Curr EOM' END AS Period,
+  b.End_of_Month_Date                                                                                 AS EOM_Date,
+  'EXCEPT_GL_FILTER'                                                                                  AS Scope,
+  CASE WHEN UPPER(COALESCE(b.Status_Code_Description,'')) = 'ACTIVE' THEN 'Active' ELSE 'Non-Active' END AS Status_Group,
+  SUM(b.Source_System_Balance)::NUMERIC(38,2)                                                         AS Total_SSB,
+  SUM(CASE WHEN b.Source_System_Balance < 0 THEN b.Source_System_Balance ELSE 0 END)::NUMERIC(38,2)  AS SSB_Negatives,
+  SUM(b.GL_Balance)::NUMERIC(38,2)                                                                    AS Total_GL_Balance,
+  SUM(CASE WHEN b.GL_Balance < 0 THEN b.GL_Balance ELSE 0 END)::NUMERIC(38,2)                         AS GL_Negatives,
+  COUNT(CASE WHEN b.Source_System_Balance < 0 THEN 1 END)                                            AS Cnt_Neg_SSB_Rows,
+  COUNT(CASE WHEN b.GL_Balance < 0 THEN 1 END)                                                       AS Cnt_Neg_GL_Rows,
+  (SELECT query_run_ts FROM params)                                                                   AS Query_Timestamp
+FROM base b
+WHERE (b.GL_ACCOUNT_HIER_LEVEL_4 NOT IN ('Total Loans','Lns Held for Sale') OR b.GL_ACCOUNT_HIER_LEVEL_4 IS NULL)
+GROUP BY 1,2,3,4
+
+UNION ALL
+
+/*************** NO_GL_FILTER (all rows) ***************/
+SELECT
+  CASE WHEN b.End_of_Month_Date = (SELECT prev_eom FROM params) THEN 'Prev EOM' ELSE 'Curr EOM' END AS Period,
+  b.End_of_Month_Date                                                                                 AS EOM_Date,
+  'NO_GL_FILTER'                                                                                      AS Scope,
+  CASE WHEN UPPER(COALESCE(b.Status_Code_Description,'')) = 'ACTIVE' THEN 'Active' ELSE 'Non-Active' END AS Status_Group,
+  SUM(b.Source_System_Balance)::NUMERIC(38,2)                                                         AS Total_SSB,
+  SUM(CASE WHEN b.Source_System_Balance < 0 THEN b.Source_System_Balance ELSE 0 END)::NUMERIC(38,2)  AS SSB_Negatives,
+  SUM(b.GL_Balance)::NUMERIC(38,2)                                                                    AS Total_GL_Balance,
+  SUM(CASE WHEN b.GL_Balance < 0 THEN b.GL_Balance ELSE 0 END)::NUMERIC(38,2)                         AS GL_Negatives,
+  COUNT(CASE WHEN b.Source_System_Balance < 0 THEN 1 END)                                            AS Cnt_Neg_SSB_Rows,
+  COUNT(CASE WHEN b.GL_Balance < 0 THEN 1 END)                                                       AS Cnt_Neg_GL_Rows,
+  (SELECT query_run_ts FROM params)                                                                   AS Query_Timestamp
+FROM base b
+GROUP BY 1,2,3,4
+
+ORDER BY
+  EOM_Date,
+  CASE Scope
+    WHEN 'WITH_GL_FILTER' THEN 1
+    WHEN 'EXCEPT_GL_FILTER' THEN 2
+    ELSE 3
+  END,
+  CASE Status_Group WHEN 'Active' THEN 1 ELSE 2 END;
+
+
+
+
 /* === NA accounts NOT in ('Total Loans','Lns Held for Sale') for last 2 EOMs, at Account_Key grain === */
 WITH latest_curr AS (
     SELECT MAX(End_of_Month_Date) AS curr_eom
