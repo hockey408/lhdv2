@@ -1,3 +1,13 @@
+= Table.Group(#"Added Custom", {"Facility_Key", "BANK_FOR_EVENT", "MOVEMENT_TYPE", "OWNER_CURR", "OWNER_PREV"},
+  {
+    {"Facility_Prev_SSB", each List.Sum([PREV_SSB]), type nullable number},
+    {"Facility_Curr_SSB", each List.Sum([CURR_SSB]), type nullable number},
+    {"Account_Count", each List.Count(List.Distinct(List.RemoveNulls([Account_Key]))), Int64.Type}
+  }
+)
+
+
+
 = Table.Group(#"Added Custom", {"Facility_Key", "BANK_FOR_EVENT", "MOVEMENT_TYPE", "OWNER_CURR", "OWNER_PREV"}, {{"Facility_Prev_SSB", each List.Sum([PREV_SSB]), type nullable number}, {"Facility_Curr_SSB", each List.Sum([CURR_SSB]), type nullable number}})
 
 
