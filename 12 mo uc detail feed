@@ -1,4 +1,67 @@
 let
+  // Source table from Excel (must be named exactly MoM_Account_Detail)
+  Source = Excel.CurrentWorkbook(){[Name="MoM_Account_Detail"]}[Content],
+
+  // Types (ALL CAPS headers)
+  #"Changed Type" = Table.TransformColumnTypes(Source,{
+      {"ACCOUNT_KEY", type text},
+      {"PREV_FACILITY_ID", type text},
+      {"CURR_FACILITY_ID", type text},
+      {"PREV_SSB", type number},
+      {"CURR_SSB", type number},
+      {"MOVEMENT_TYPE", type text},
+      {"OWNER_CURR", type text},
+      {"OWNER_PREV", type text},
+      {"BANK_FOR_EVENT", type text}
+  }),
+
+  // Facility_Key = CURR_FACILITY_ID if present, else PREV_FACILITY_ID
+  #"Added Facility Key" = Table.AddColumn(#"Changed Type", "FACILITY_KEY", each 
+      if [CURR_FACILITY_ID] <> null and [CURR_FACILITY_ID] <> "" 
+      then [CURR_FACILITY_ID] 
+      else [PREV_FACILITY_ID],
+      type text
+  ),
+
+  // Group to facility/bank/movement/owner; keep nested "ROWS" for safe counting
+  #"Grouped Rows" = Table.Group(#"Added Facility Key",
+      {"FACILITY_KEY","BANK_FOR_EVENT","MOVEMENT_TYPE","OWNER_CURR","OWNER_PREV"},
+      {
+        {"FACILITY_PREV_SSB", each List.Sum([PREV_SSB]), type nullable number},
+        {"FACILITY_CURR_SSB", each List.Sum([CURR_SSB]), type nullable number},
+        {"ROWS", each _, type table}
+      }
+  ),
+
+  // Distinct ACCOUNT_KEY count from nested "ROWS"
+  #"Added ACCOUNT_COUNT" = Table.AddColumn(#"Grouped Rows", "ACCOUNT_COUNT", each 
+      let
+          r = [ROWS],
+          // prefer ALL CAPS, but handle mixed-case just in case
+          colName = if      Table.HasColumns(r, "ACCOUNT_KEY") then "ACCOUNT_KEY"
+                    else if Table.HasColumns(r, "Account_Key") then "Account_Key"
+                    else null,
+          tSel    = if colName = null then #table({}, {}) else Table.SelectColumns(r, {colName}),
+          tNonNil = Table.SelectRows(tSel, each Record.Field(_, colName) <> null and Text.Trim(Text.From(Record.Field(_, colName))) <> ""),
+          tDistinct = Table.Distinct(tNonNil)
+      in
+          Table.RowCount(tDistinct)
+    , Int64.Type),
+
+  // MoM delta
+  #"Added FACILITY_MOM_DELTA" = Table.AddColumn(#"Added ACCOUNT_COUNT", "FACILITY_MOM_DELTA", each [FACILITY_CURR_SSB] - [FACILITY_PREV_SSB], type number),
+
+  // Remove nested table to keep output tidy
+  #"Removed ROWS Column" = Table.RemoveColumns(#"Added FACILITY_MOM_DELTA", {"ROWS"})
+in
+  #"Removed ROWS Column"
+
+
+
+
+
+
+let
   // Pull the Excel table as the source
   Source = Excel.CurrentWorkbook(){[Name="MoM_Account_Detail"]}[Content],
 
