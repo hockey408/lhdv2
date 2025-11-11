@@ -1,3 +1,29 @@
+Starting Count:
+=SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(Facility_Rollup[FACILITY_PREV_SSB]>0)*Facility_Rollup[ACCOUNT_COUNT])
+
+Downgrade IN (ex-Auto):
+=SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="DOWNGRADE IN (EX-AUTO)")+0, Facility_Rollup[ACCOUNT_COUNT])
+
+Exit (ex-Auto):
+=-SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="EXIT (EX-AUTO)")+0, Facility_Rollup[ACCOUNT_COUNT])
+
+Autochange IN:
+=SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="AUTOCHANGE DOWNGRADE IN")+0, Facility_Rollup[ACCOUNT_COUNT])
+
+Autochange EXIT:
+=-SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="AUTOCHANGE EXIT")+0, Facility_Rollup[ACCOUNT_COUNT])
+
+Ending Count:
+=SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(Facility_Rollup[FACILITY_CURR_SSB]>0)*Facility_Rollup[ACCOUNT_COUNT])
+
+Bridge Variance (should be 0):
+=EndingCountCell - (StartingCountCell + DowngradeINCell + ExitCell + AutoINCell + AutoExitCell)
+
+
+
+
+
+
 Starting Balance:
 =SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*Facility_Rollup[FACILITY_PREV_SSB])/1000
 
