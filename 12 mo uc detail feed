@@ -1,3 +1,16 @@
+Autochange Downgrade IN = had_prev=0 AND has_curr=1 AND curr_auto=1
+Autochange Exit = had_prev=1 AND has_curr=0 AND prev_auto=1
+Autochange Persisting Balance Changes = had_prev=1 AND has_curr=1 AND prev_auto=1 AND curr_auto=1 AND Curr_SSB <> Prev_SSB
+Autochange No Change = had_prev=1 AND has_curr=1 AND prev_auto=1 AND curr_auto=1 AND Curr_SSB = Prev_SSB
+Downgrade IN (ex-Auto) = had_prev=0 AND has_curr=1 AND curr_auto=0
+Exit (ex-Auto) = had_prev=1 AND has_curr=0 AND curr_auto=0
+Persisting Balance Changes (ex-Auto) = had_prev=1 AND has_curr=1 AND curr_auto=0 AND Curr_SSB <> Prev_SSB
+No Change (ex-Auto) = had_prev=1 AND has_curr=1 AND curr_auto=0 AND Curr_SSB = Prev_SSB
+
+
+
+
+
 ="Movement_Type rules:
 - Autochange Downgrade IN = had_prev=0 AND has_curr=1 AND curr_auto=1
 - Autochange Exit = had_prev=1 AND has_curr=0 AND prev_auto=1
