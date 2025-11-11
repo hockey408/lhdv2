@@ -1,4 +1,43 @@
 =LET(
+  ids, UNIQUE(INDEX(B26#, ,1)),
+  FILTER(
+    MoM_Account_Detail,
+      ISNUMBER(MATCH(MoM_Account_Detail[CURR_FACILITY_ID], ids, 0)) *
+      (UPPER(TRIM(MoM_Account_Detail[MOVEMENT_TYPE]))="DOWNGRADE IN (EX-AUTO)") *
+      (MoM_Account_Detail[BANK_FOR_EVENT]=$B$1) *
+      (MoM_Account_Detail[REVIEWABLE_FLAG]=1)
+  )
+)
+
+
+
+
+=LET(
+  bank,$B$1,
+  mt,  UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE])),
+  bk,  Facility_Rollup[BANK_FOR_EVENT],
+  own, TRIM(Facility_Rollup[OWNER_CURR]),
+  mat,
+    FILTER(
+      CHOOSE({1,2,3,4},
+        Facility_Rollup[FACILITY_KEY],
+        Facility_Rollup[OWNER_CURR],
+        Facility_Rollup[FACILITY_CURR_SSB]/1000,
+        Facility_Rollup[ACCOUNT_COUNT]
+      ),
+      (bk=bank)*
+      (mt="DOWNGRADE IN (EX-AUTO)")*
+      (UPPER(own)<>"AUTOCHANGE")*
+      (LEFT(UPPER(own),12)<>"NOT COVERED")
+    ),
+  sorted, SORT(mat,3,-1),
+  INDEX(sorted, SEQUENCE(MIN(30, ROWS(sorted))), SEQUENCE(,4))
+)
+
+
+
+
+=LET(
   bank,$B$1,
   ownp,Facility_Rollup[OWNER_PREV],
   keep,(Facility_Rollup[BANK_FOR_EVENT]=bank)*
