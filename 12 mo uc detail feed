@@ -1,3 +1,24 @@
+=LET(
+  t, Facility_Rollup,
+  bank, $B$1,
+  mt, UPPER(TRIM(INDEX(t,,MATCH("MOVEMENT_TYPE",TableColumnNames(t),0)))),
+  bk, INDEX(t,,MATCH("BANK_FOR_EVENT",TableColumnNames(t),0)),
+  keep, (bk=bank)*(mt="DOWNGRADE IN (EX-AUTO)"),
+  sel, FILTER(t, keep),
+  HSTACK(
+    {"Facility_Key","Owner_Curr","Curr_SSB (MM)","Account_Count"},
+    CHOOSECOLS(sel,
+      MATCH("FACILITY_KEY",TableColumnNames(t),0),
+      MATCH("OWNER_CURR",TableColumnNames(t),0),
+      MATCH("FACILITY_CURR_SSB",TableColumnNames(t),0),
+      MATCH("ACCOUNT_COUNT",TableColumnNames(t),0)
+    ) * {1,1,1/1000,1}
+  )
+)
+
+
+
+
 Starting Count:
 =SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(Facility_Rollup[FACILITY_PREV_SSB]>0)*Facility_Rollup[ACCOUNT_COUNT])
 
