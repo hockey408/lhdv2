@@ -26,6 +26,109 @@ base AS (
     FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
     WHERE End_of_Month_Date IN ((SELECT prev_eom FROM params),(SELECT curr_eom FROM params))
       AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+      AND Non_Accrual_Flag = 'Y'
+),
+
+/* -------- Category-level (TL / HFS) -------- */
+by_cat AS (
+    SELECT
+      CASE WHEN b.End_of_Month_Date = (SELECT prev_eom FROM params) THEN 'Prev EOM' ELSE 'Curr EOM' END AS Period,
+      b.End_of_Month_Date                                                           AS EOM_Date,
+      b.GL_ACCOUNT_HIER_LEVEL_4                                                     AS GL_Category,
+      SUM(b.Source_System_Balance)                                                  AS SSB_Total,
+      SUM(CASE WHEN b.Source_System_Balance < 0 THEN b.Source_System_Balance ELSE 0 END) AS SSB_Negatives,
+      SUM(b.GL_Balance)                                                             AS GL_Total,
+      SUM(CASE WHEN b.GL_Balance < 0 THEN b.GL_Balance ELSE 0 END)                  AS GL_Negatives,
+      COUNT(CASE WHEN b.Source_System_Balance < 0 THEN 1 END)                       AS Cnt_Neg_SSB,
+      COUNT(CASE WHEN b.GL_Balance < 0 THEN 1 END)                                  AS Cnt_Neg_GL,
+      SUM(b.Source_System_Balance - b.GL_Balance)                                   AS Diff_SSB_minus_GL,
+      CASE WHEN b.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans' THEN 1
+           WHEN b.GL_ACCOUNT_HIER_LEVEL_4 = 'Lns Held for Sale' THEN 2
+           ELSE 3 END                                                               AS CAT_SORT
+    FROM base b
+    GROUP BY 1,2,3
+),
+
+/* -------- Combined (TL + HFS) per EOM -------- */
+combined AS (
+    SELECT
+      Period,
+      EOM_Date,
+      'ALL (Total Loans + Lns Held for Sale)' AS GL_Category,
+      SUM(SSB_Total)        AS SSB_Total,
+      SUM(SSB_Negatives)    AS SSB_Negatives,
+      SUM(GL_Total)         AS GL_Total,
+      SUM(GL_Negatives)     AS GL_Negatives,
+      SUM(Cnt_Neg_SSB)      AS Cnt_Neg_SSB,
+      SUM(Cnt_Neg_GL)       AS Cnt_Neg_GL,
+      SUM(Diff_SSB_minus_GL) AS Diff_SSB_minus_GL,
+      3 AS CAT_SORT
+    FROM by_cat
+    GROUP BY Period, EOM_Date
+)
+
+SELECT
+  Period,
+  EOM_Date,
+  GL_Category,
+  SSB_Total,
+  SSB_Negatives,
+  GL_Total,
+  GL_Negatives,
+  Cnt_Neg_SSB,
+  Cnt_Neg_GL,
+  Diff_SSB_minus_GL,
+  CAT_SORT
+FROM by_cat
+UNION ALL
+SELECT
+  Period,
+  EOM_Date,
+  GL_Category,
+  SSB_Total,
+  SSB_Negatives,
+  GL_Total,
+  GL_Negatives,
+  Cnt_Neg_SSB,
+  Cnt_Neg_GL,
+  Diff_SSB_minus_GL,
+  CAT_SORT
+FROM combined
+ORDER BY 2, 11;   -- 2 = EOM_Date, 11 = CAT_SORT
+
+
+
+
+
+
+/* === Last 2 EOMs; NA pop; include negatives; compare SSB vs GL === */
+WITH latest_curr AS (
+    SELECT MAX(End_of_Month_Date) AS curr_eom
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+    WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+      AND Non_Accrual_Flag = 'Y'
+),
+latest_prev AS (
+    SELECT MAX(End_of_Month_Date) AS prev_eom
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, latest_curr
+    WHERE End_of_Month_Date < (SELECT curr_eom FROM latest_curr)
+      AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+      AND Non_Accrual_Flag = 'Y'
+),
+params AS (
+    SELECT
+      (SELECT curr_eom FROM latest_curr) AS curr_eom,
+      (SELECT prev_eom FROM latest_prev) AS prev_eom
+),
+base AS (
+    SELECT
+      End_of_Month_Date,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      Source_System_Balance,
+      GL_Balance
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+    WHERE End_of_Month_Date IN ((SELECT prev_eom FROM params),(SELECT curr_eom FROM params))
+      AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
       AND Non_Accrual_Flag = 'Y'            -- keep NA pop
 )
 
