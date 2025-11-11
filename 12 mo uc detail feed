@@ -1,3 +1,18 @@
+="Owner assignment logic:
+Samya = CIT + Business RE Term Loans + CIS_SSB > 500k
+Casey = CIT + (Business Non-RE Term Loans or Business Commitment Draw) + CIS_SSB > 250k
+Not Covered; Under $500k; Samya = same but CIS_SSB <= 500k
+Not Covered; Under $250k; Casey = same but CIS_SSB <= 250k
+Daniel = Contract_Source_System = INFL10
+Eleanor = Bank_Code = L-SVB
+Autochange = RBC_Code = R
+Connor = Bank_Code = L-FCB
+Else = NOT COVERED"
+
+
+
+
+
 Autochange Downgrade IN = had_prev=0 AND has_curr=1 AND curr_auto=1
 Autochange Exit = had_prev=1 AND has_curr=0 AND prev_auto=1
 Autochange Persisting Balance Changes = had_prev=1 AND has_curr=1 AND prev_auto=1 AND curr_auto=1 AND Curr_SSB <> Prev_SSB
