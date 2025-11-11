@@ -1,3 +1,30 @@
+=LET(owner,$B$1,
+ ownCur,MoM_Account_Detail[OWNER_CURR],
+ mvt,MoM_Account_Detail[MOVEMENT_TYPE],
+ rev,MoM_Account_Detail[REVIEWABLE_FLAG],
+ currCIS,MoM_Account_Detail[CURR_CIS_CUSTOMER_NUMBER],
+ currCISTot,MoM_Account_Detail[CURR_CIS_SSB],
+ currFac,MoM_Account_Detail[CURR_FACILITY_ID],
+ facKey,Facility_Rollup[FACILITY_KEY],
+ facCurr,Facility_Rollup[FACILITY_CURR_SSB],
+ rankByCIS,OR(owner="Samya",owner="Casey"),
+ maskCIS,(TRIM(ownCur)=owner)*(UPPER(TRIM(mvt))="DOWNGRADE IN (EX-AUTO)")*(rev=1),
+ cisU,UNIQUE(FILTER(currCIS,maskCIS)),
+ cisTot,IFERROR(SUMIFS(currCISTot,currCIS,cisU),0),
+ topCIS,IF(ROWS(cisU)>0,INDEX(SORT(CHOOSE({1,2},cisU,cisTot),2,-1),SEQUENCE(MIN(30,ROWS(cisU))),1),""),
+ rowsCIS,FILTER(MoM_Account_Detail,ISNUMBER(MATCH(currCIS,topCIS,0))*maskCIS,""),
+ maskFAC,(TRIM(ownCur)=owner)*(UPPER(TRIM(mvt))="DOWNGRADE IN (EX-AUTO)")*(rev=1),
+ facU,UNIQUE(FILTER(currFac,maskFAC)),
+ facAmt,IFERROR(XLOOKUP(facU,facKey,facCurr,0),0),
+ topFAC,IF(ROWS(facU)>0,INDEX(SORT(CHOOSE({1,2},facU,facAmt),2,-1),SEQUENCE(MIN(30,ROWS(facU))),1),""),
+ rowsFAC,FILTER(MoM_Account_Detail,ISNUMBER(MATCH(currFac,topFAC,0))*maskFAC,""),
+ IF(rankByCIS,rowsCIS,rowsFAC)
+)
+
+
+
+
+
 =LET(
  owner,$B$1,
  tM,MoM_Account_Detail,
