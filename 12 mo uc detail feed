@@ -1,4 +1,27 @@
 =LET(
+ owner,$B$1,
+ ownFR,TRIM(Facility_Rollup[OWNER_CURR]),
+ mtFR,UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE])),
+ facFR,Facility_Rollup[FACILITY_KEY],
+ currFR,Facility_Rollup[FACILITY_CURR_SSB],
+ fac_f,FILTER(facFR,(ownFR=owner)*(mtFR="DOWNGRADE IN (EX-AUTO)")),
+ curr_f,FILTER(currFR,(ownFR=owner)*(mtFR="DOWNGRADE IN (EX-AUTO)")),
+ k,MIN(30,ROWS(fac_f)),
+ sorted,SORT(CHOOSE({1,2},fac_f,curr_f),2,-1),
+ top_fac,IF(k>0,INDEX(sorted,SEQUENCE(k),1),""),
+ ownMD,TRIM(MoM_Account_Detail[OWNER_CURR]),
+ mtMD,UPPER(TRIM(MoM_Account_Detail[MOVEMENT_TYPE])),
+ curFacMD,MoM_Account_Detail[CURR_FACILITY_ID],
+ IFERROR(
+   FILTER(MoM_Account_Detail,ISNUMBER(MATCH(curFacMD,top_fac,0))*(ownMD=owner)*(mtMD="DOWNGRADE IN (EX-AUTO)")),
+   ""
+ )
+)
+
+
+
+
+=LET(
   owner, $B$1,
   mt,   UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE])),
   own,  TRIM(Facility_Rollup[OWNER_CURR]),
