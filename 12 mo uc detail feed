@@ -1,4 +1,27 @@
 =LET(
+  bank,$B$1,
+  mt,UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE])),
+  bk,Facility_Rollup[BANK_FOR_EVENT],
+  rows,
+    FILTER(
+      HSTACK(
+        Facility_Rollup[FACILITY_KEY],
+        Facility_Rollup[OWNER_CURR],
+        Facility_Rollup[FACILITY_CURR_SSB],
+        Facility_Rollup[ACCOUNT_COUNT]
+      ),
+      (bk=bank)*(mt="DOWNGRADE IN (EX-AUTO)")
+    ),
+  VSTACK(
+    {"Facility_Key","Owner_Curr","Curr_SSB (MM)","Account_Count"},
+    rows*{1,1,1/1000,1}
+  )
+)
+
+
+
+
+=LET(
   t, Facility_Rollup,
   bank, $B$1,
   mt, UPPER(TRIM(INDEX(t,,MATCH("MOVEMENT_TYPE",TableColumnNames(t),0)))),
