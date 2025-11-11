@@ -1,3 +1,37 @@
+/* NA SSB by STATUS_CODE_DESCRIPTION for previous month end (TL + HFS only) */
+WITH latest_curr AS (
+  SELECT MAX(End_of_Month_Date) AS curr_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE Non_Accrual_Flag = 'Y'
+    AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+),
+latest_prev AS (
+  SELECT MAX(End_of_Month_Date) AS prev_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, latest_curr
+  WHERE End_of_Month_Date < (SELECT curr_eom FROM latest_curr)
+    AND Non_Accrual_Flag = 'Y'
+    AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+),
+params AS (
+  SELECT
+    (SELECT prev_eom FROM latest_prev) AS prev_eom,
+    CURRENT_TIMESTAMP                 AS query_run_ts
+)
+SELECT
+  (SELECT prev_eom FROM params)                              AS EOM_Date,
+  COALESCE(Status_Code_Description, '<<NULL/UNKNOWN>>')      AS Status_Code_Description,
+  SUM(Source_System_Balance)::NUMERIC(38,2)                  AS Total_SSB,
+  (SELECT query_run_ts FROM params)                          AS Query_Timestamp
+FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+  AND Non_Accrual_Flag = 'Y'
+  AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+GROUP BY COALESCE(Status_Code_Description, '<<NULL/UNKNOWN>>')
+ORDER BY Total_SSB DESC;
+
+
+
+
 /* === EOM SSB/GL totals by scope (with/without GL filter, and except), with negatives and status splits === */
 WITH latest_curr AS (
   SELECT MAX(End_of_Month_Date) AS curr_eom
