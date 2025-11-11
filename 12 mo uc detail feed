@@ -1,5 +1,29 @@
 =LET(
  owner,$B$1,
+ ownpFR,TRIM(Facility_Rollup[OWNER_PREV]),
+ mtFR,UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE])),
+ facFR,Facility_Rollup[FACILITY_KEY],
+ prevFR,Facility_Rollup[FACILITY_PREV_SSB],
+ fac_f,FILTER(facFR,(ownpFR=owner)*(mtFR="EXIT (EX-AUTO)")),
+ prev_f,FILTER(prevFR,(ownpFR=owner)*(mtFR="EXIT (EX-AUTO)")),
+ k,MIN(30,ROWS(fac_f)),
+ sorted,SORT(CHOOSE({1,2},fac_f,prev_f),2,-1),
+ top_fac,IF(k>0,INDEX(sorted,SEQUENCE(k),1),""),
+ ownpMD,TRIM(MoM_Account_Detail[OWNER_PREV]),
+ mtMD,UPPER(TRIM(MoM_Account_Detail[MOVEMENT_TYPE])),
+ prevFacMD,MoM_Account_Detail[PREV_FACILITY_ID],
+ IFERROR(
+   FILTER(MoM_Account_Detail,ISNUMBER(MATCH(prevFacMD,top_fac,0))*(ownpMD=owner)*(mtMD="EXIT (EX-AUTO)")),
+   ""
+ )
+)
+
+
+
+
+
+=LET(
+ owner,$B$1,
  ownFR,TRIM(Facility_Rollup[OWNER_CURR]),
  mtFR,UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE])),
  facFR,Facility_Rollup[FACILITY_KEY],
