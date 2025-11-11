@@ -1,3 +1,35 @@
+/* NA totals by month end (no GL_ACCOUNT_HIER_LEVEL_4 filter, include negatives) */
+WITH latest_curr AS (
+    SELECT MAX(End_of_Month_Date) AS curr_eom
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+    WHERE Non_Accrual_Flag = 'Y'
+),
+latest_prev AS (
+    SELECT MAX(End_of_Month_Date) AS prev_eom
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, latest_curr
+    WHERE End_of_Month_Date < (SELECT curr_eom FROM latest_curr)
+      AND Non_Accrual_Flag = 'Y'
+),
+params AS (
+    SELECT
+      (SELECT curr_eom FROM latest_curr) AS curr_eom,
+      (SELECT prev_eom FROM latest_prev) AS prev_eom,
+      CURRENT_TIMESTAMP AS query_run_ts
+)
+SELECT
+    End_of_Month_Date                                        AS EOM_Date,
+    SUM(Source_System_Balance)::NUMERIC(38,2)               AS Total_SSB,
+    SUM(GL_Balance)::NUMERIC(38,2)                          AS Total_GL_Balance,
+    (SELECT query_run_ts FROM params)                       AS Query_Timestamp
+FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+WHERE End_of_Month_Date IN ((SELECT prev_eom FROM params),(SELECT curr_eom FROM params))
+  AND Non_Accrual_Flag = 'Y'     -- NA pop
+GROUP BY End_of_Month_Date
+ORDER BY EOM_Date;
+
+
+
+
 /* === Last 2 EOMs; NA pop; include negatives; compare SSB vs GL === */
 WITH latest_curr AS (
     SELECT MAX(End_of_Month_Date) AS curr_eom
