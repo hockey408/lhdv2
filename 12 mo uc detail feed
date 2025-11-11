@@ -1,3 +1,28 @@
+Starting Balance:
+=SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(Facility_Rollup[PREV_SSB]>0)*Facility_Rollup[PREV_SSB])/1000
+
+Downgrade IN (ex-Auto):
+=SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="DOWNGRADE IN (EX-AUTO)")*Facility_Rollup[CURR_SSB])/1000
+
+Exit (ex-Auto):
+=-SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="EXIT (EX-AUTO)")*Facility_Rollup[PREV_SSB])/1000
+
+Autochange Downgrade IN:
+=SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="AUTOCHANGE DOWNGRADE IN")*Facility_Rollup[CURR_SSB])/1000
+
+Autochange Exit:
+=-SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="AUTOCHANGE EXIT")*Facility_Rollup[PREV_SSB])/1000
+
+Persisting Balance Changes (ex-Auto):
+=SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="PERSISTING BALANCE CHANGES (EX-AUTO)")*(Facility_Rollup[CURR_SSB]-Facility_Rollup[PREV_SSB]))/1000
+
+Ending Balance:
+=SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$1)*(Facility_Rollup[CURR_SSB]>0)*Facility_Rollup[CURR_SSB])/1000
+
+
+
+
+
 Starting_Count:
 =SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$5)*(Facility_Rollup[PREV_SSB]>0)*Facility_Rollup[ACCOUNT_COUNT])
 
