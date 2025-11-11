@@ -1,3 +1,18 @@
+="Movement_Type rules:
+- Autochange Downgrade IN = had_prev=0 AND has_curr=1 AND curr_auto=1
+- Autochange Exit = had_prev=1 AND has_curr=0 AND prev_auto=1
+- Autochange Persisting Balance Changes = had_prev=1 AND has_curr=1 AND prev_auto=1 AND curr_auto=1 AND Curr_SSB != Prev_SSB
+- Autochange No Change = same as above except balance unchanged
+- Downgrade IN (ex-Auto) = had_prev=0 AND has_curr=1 AND NOT auto
+- Exit (ex-Auto) = had_prev=1 AND has_curr=0 AND NOT auto
+- Persisting Balance Changes (ex-Auto) = had_prev=1 AND has_curr=1 AND NOT auto AND Curr_SSB != Prev_SSB
+- No Change (ex-Auto) = same but balance unchanged"
+
+
+
+
+
+
 =LET(
  owner,$B$1,
  ownPrev,MoM_Account_Detail[OWNER_PREV],
