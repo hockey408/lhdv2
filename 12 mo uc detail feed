@@ -1,5 +1,40 @@
 =LET(
   bank, $B$1,
+  mt,  UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE])),
+  bk,  Facility_Rollup[BANK_FOR_EVENT],
+  fac, Facility_Rollup[FACILITY_KEY],
+  curr,Facility_Rollup[FACILITY_CURR_SSB],
+
+  /* Filter Facility_Rollup to this bank + Dg-In(ex-Auto) */
+  fac_f,  FILTER(fac,  (bk=bank)*(mt="DOWNGRADE IN (EX-AUTO)")),
+  curr_f, FILTER(curr, (bk=bank)*(mt="DOWNGRADE IN (EX-AUTO)")),
+
+  /* Sort by Curr SSB desc and take top 30 facility keys */
+  top_fac, IFERROR(
+              INDEX(
+                SORT(CHOOSE({1,2}, fac_f, curr_f), 2, -1),
+                SEQUENCE(MIN(30, ROWS(fac_f))), 1
+              ),
+              ""
+           ),
+
+  /* Pull ALL columns from MoM_Account_Detail for those facilities (curr side) */
+  FILTER(
+    MoM_Account_Detail,
+    ISNUMBER(MATCH(MoM_Account_Detail[CURR_FACILITY_ID], top_fac, 0)) *
+    (UPPER(TRIM(MoM_Account_Detail[MOVEMENT_TYPE]))="DOWNGRADE IN (EX-AUTO)") *
+    (MoM_Account_Detail[BANK_FOR_EVENT]=bank),
+    "No matching current-month account rows"
+  )
+)
+
+
+
+
+
+
+=LET(
+  bank, $B$1,
   ids, IFERROR(UNIQUE(INDEX(B26#, ,1)), ""),
   IF(OR(ids="", ISREF(B26#)=FALSE),
      "Waiting for Top-30 list…",
