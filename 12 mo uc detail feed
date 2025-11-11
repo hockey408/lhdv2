@@ -1,3 +1,8 @@
+= Table.Group(#"Added Custom", {"Facility_Key", "BANK_FOR_EVENT", "MOVEMENT_TYPE", "OWNER_CURR", "OWNER_PREV"}, {{"Facility_Prev_SSB", each List.Sum([PREV_SSB]), type nullable number}, {"Facility_Curr_SSB", each List.Sum([CURR_SSB]), type nullable number}})
+
+
+
+
 let
     t  = [Rows],                             // <-- if your nested column isn't named "Rows", change it here
     t1 = Table.SelectColumns(t, {"Account_Key"}),
