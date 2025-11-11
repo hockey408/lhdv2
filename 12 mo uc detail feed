@@ -1,3 +1,94 @@
+/* === NA accounts NOT in ('Total Loans','Lns Held for Sale') for last 2 EOMs, at Account_Key grain === */
+WITH latest_curr AS (
+    SELECT MAX(End_of_Month_Date) AS curr_eom
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+    WHERE Non_Accrual_Flag = 'Y'
+),
+latest_prev AS (
+    SELECT MAX(End_of_Month_Date) AS prev_eom
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, latest_curr
+    WHERE End_of_Month_Date < (SELECT curr_eom FROM latest_curr)
+      AND Non_Accrual_Flag = 'Y'
+),
+params AS (
+    SELECT
+      (SELECT curr_eom FROM latest_curr) AS curr_eom,
+      (SELECT prev_eom FROM latest_prev) AS prev_eom,
+      CURRENT_TIMESTAMP AS query_run_ts
+),
+base AS (
+    SELECT
+      End_of_Month_Date,
+      Account_Key,
+      Account_Identifier,
+      Facility_ID,
+      CIS_Customer_Number,
+      Account_Name,
+      Contract_Source_System,
+      PROD_HIER_LEVEL_5,
+      Status_Code_Description,
+      GL_ACCOUNT_HIER_LEVEL_4,
+      RBC_Code,
+      GL_ACCOUNT_CODE,
+      Borrower_Risk_Rating,
+      PD_Grade,
+      Days_Past_Due,
+      Non_Accrual_Flag,
+      Source_System_Balance,
+      GL_Balance,
+      Available_Balance
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+    WHERE End_of_Month_Date IN ((SELECT prev_eom FROM params),(SELECT curr_eom FROM params))
+      AND Non_Accrual_Flag = 'Y'
+      AND (GL_ACCOUNT_HIER_LEVEL_4 NOT IN ('Total Loans','Lns Held for Sale') OR GL_ACCOUNT_HIER_LEVEL_4 IS NULL)
+)
+/* collapse to 1 row per Account_Key per month */
+SELECT
+    (SELECT query_run_ts FROM params)                               AS Query_Timestamp,
+    b.End_of_Month_Date                                             AS End_of_Month_Date,
+    MAX(b.Account_Name)                                             AS Account_Name,
+    MAX(b.Contract_Source_System)                                   AS Contract_Source_System,
+    MAX(b.CIS_Customer_Number)                                      AS CIS_Customer_Number,
+    MAX(b.Facility_ID)                                              AS Facility_ID,
+    MAX(b.Account_Identifier)                                       AS Account_Identifier,
+    b.Account_Key                                                   AS Account_Key,
+    MAX(b.Status_Code_Description)                                  AS Status_Code_Description,
+    MAX(b.GL_ACCOUNT_HIER_LEVEL_4)                                  AS GL_ACCOUNT_HIER_LEVEL_4,
+    SUM(b.Source_System_Balance)::NUMERIC(38,2)                     AS Source_System_Balance,
+    SUM(b.GL_Balance)::NUMERIC(38,2)                                AS GL_Balance,
+    MAX(b.Available_Balance)::NUMERIC(38,2)                         AS Available_Balance,
+    MAX(b.Borrower_Risk_Rating)                                     AS Borrower_Risk_Rating,
+    MAX(b.PD_Grade)                                                 AS PD_Grade,
+    MAX(b.Days_Past_Due)                                            AS Days_Past_Due,
+    'Y'                                                             AS Non_Accrual_Flag,
+    MAX(b.PROD_HIER_LEVEL_5)                                        AS PROD_HIER_LEVEL_5,
+    MAX(b.RBC_Code)                                                 AS RBC_Code,
+    MAX(b.GL_ACCOUNT_CODE)                                          AS GL_ACCOUNT_CODE,
+    /* Bank_Code mapping */
+    CASE
+      WHEN MAX(b.Contract_Source_System) IN
+           ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN')                         THEN 'L-SVB'
+      WHEN MAX(b.Contract_Source_System) = 'ALL'
+           AND MAX(b.GL_ACCOUNT_CODE) IN
+           ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+            '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+            '1100001','1142067','1042886','1043008')                                                        THEN 'L-SVB'
+      WHEN MAX(b.Contract_Source_System) IN
+           ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO')                           THEN 'L-FCB'
+      WHEN MAX(b.Contract_Source_System) IN
+           ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN','INFL05','INFL05-EXCPTN','INFL10','INFL10-EXCPTN',
+            'LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001','SBO001-EXCPTN','STKY01','STKY01-EXCPTN',
+            'STRAO1','STRAO1-EXCPTN','STRAT1','STRAT1-EXCPTN')                                              THEN 'L-CIT'
+      ELSE 'NULL-Need to Research'
+    END                                                             AS Bank_Code
+FROM base b
+GROUP BY b.End_of_Month_Date, b.Account_Key
+ORDER BY End_of_Month_Date, Bank_Code, Account_Key;
+
+
+
+
+
 /* NA totals by month end (no GL_ACCOUNT_HIER_LEVEL_4 filter, include negatives) */
 WITH latest_curr AS (
     SELECT MAX(End_of_Month_Date) AS curr_eom
