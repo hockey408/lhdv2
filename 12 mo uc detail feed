@@ -1,5 +1,23 @@
 =LET(
   bank,$B$1,
+  keep,(Facility_Rollup[BANK_FOR_EVENT]=bank)*
+       (UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="DOWNGRADE IN (EX-AUTO)"),
+  FILTER(
+    CHOOSE({1,2,3,4},
+      Facility_Rollup[FACILITY_KEY],
+      Facility_Rollup[OWNER_CURR],
+      Facility_Rollup[FACILITY_CURR_SSB]/1000,
+      Facility_Rollup[ACCOUNT_COUNT]
+    ),
+    keep
+  )
+)
+
+
+
+
+=LET(
+  bank,$B$1,
   mt,UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE])),
   bk,Facility_Rollup[BANK_FOR_EVENT],
   rows,
