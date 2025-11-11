@@ -1,3 +1,55 @@
+#"Grouped Rows" =
+    Table.Group(
+        #"Added Custom",
+        {"Facility_Key","BANK_FOR_EVENT","MOVEMENT_TYPE","OWNER_CURR","OWNER_PREV"},
+        {
+            {"Facility_Prev_SSB", each List.Sum([PREV_SSB]), type nullable number},
+            {"Facility_Curr_SSB", each List.Sum([CURR_SSB]), type nullable number},
+            {"Rows", each _, type table}     // <— nested table for safe counting
+        }
+    )
+
+
+#"Added Account_Count" =
+    Table.AddColumn(
+        #"Grouped Rows", "Account_Count",
+        each
+            let
+                r = [Rows],
+                colName =
+                    if Table.HasColumns(r, "Account_Key") then "Account_Key"
+                    else if Table.HasColumns(r, "ACCOUNT_KEY") then "ACCOUNT_KEY"
+                    else null,
+                t =
+                    if colName = null
+                    then #table({}, {})                               // empty table
+                    else Table.SelectColumns(r, {colName}),
+                tDistinct = Table.Distinct(t)
+            in
+                Table.RowCount(tDistinct),
+        Int64.Type
+    ),
+
+
+#"Added Delta" =
+    Table.AddColumn(
+        #"Added Account_Count",
+        "Facility_MoM_Delta",
+        each [Facility_Curr_SSB] - [Facility_Prev_SSB],
+        type number
+    ),
+
+#"Removed Rows Column" =
+    Table.RemoveColumns(#"Added Delta", {"Rows"})
+
+
+
+
+
+
+
+
+
 = Table.Group(#"Added Custom", {"Facility_Key", "BANK_FOR_EVENT", "MOVEMENT_TYPE", "OWNER_CURR", "OWNER_PREV"},
   {
     {"Facility_Prev_SSB", each List.Sum([PREV_SSB]), type nullable number},
