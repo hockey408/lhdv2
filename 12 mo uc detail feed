@@ -1,3 +1,69 @@
+/* ===== Downgrade IN — BALANCE breakout (by Bank + ALL) ===== */
+WITH src AS (
+  SELECT
+    Bank_For_Event                                       AS bank,
+    Facility_For_Event                                   AS fac,
+    Prev_SSB, Curr_SSB,
+    /* event flags */
+    CASE WHEN COALESCE(Prev_SSB,0)=0 AND COALESCE(Curr_SSB,0)>0 THEN 1 ELSE 0 END AS is_di_total,
+    CASE WHEN UPPER(COALESCE(Curr_RBC,''))='R' THEN 1 ELSE 0 END                  AS curr_auto,
+    /* owner-at-event (current month for DI) */
+    Owner_Curr
+  FROM MOM_ACCOUNT_DETAIL
+),
+acc AS (
+  /* add ALL bucket */
+  SELECT * FROM src
+  UNION ALL
+  SELECT 'ALL' AS bank, fac, Prev_SSB, Curr_SSB, is_di_total, curr_auto, Owner_Curr
+  FROM src
+),
+lines AS (
+  /* Total DI (includes auto + ex-auto) — use current-month balance */
+  SELECT bank, 1 AS ord, 'Total Downgrade IN' AS line,
+         SUM(CASE WHEN is_di_total=1 THEN COALESCE(Curr_SSB,0) ELSE 0 END)::NUMERIC(38,2) AS amount
+  FROM acc GROUP BY bank
+
+  UNION ALL
+  /* Autochange DI */
+  SELECT bank, 2, 'Autochange (DI)',
+         SUM(CASE WHEN is_di_total=1 AND curr_auto=1
+                  THEN COALESCE(Curr_SSB,0) ELSE 0 END)::NUMERIC(38,2)
+  FROM acc GROUP BY bank
+
+  UNION ALL
+  /* Not Covered (DI, ex-Auto) */
+  SELECT bank, 3, 'Not Covered; Under $250k; Casey (ex-Auto)',
+         SUM(CASE WHEN is_di_total=1 AND curr_auto=0
+                       AND Owner_Curr='Not Covered; Under $250k; Casey'
+                  THEN COALESCE(Curr_SSB,0) ELSE 0 END)::NUMERIC(38,2)
+  FROM acc GROUP BY bank
+
+  UNION ALL
+  SELECT bank, 4, 'Not Covered; Under $500k; Samya (ex-Auto)',
+         SUM(CASE WHEN is_di_total=1 AND curr_auto=0
+                       AND Owner_Curr='Not Covered; Under $500k; Samya'
+                  THEN COALESCE(Curr_SSB,0) ELSE 0 END)::NUMERIC(38,2)
+  FROM acc GROUP BY bank
+
+  UNION ALL
+  /* Reviewable DI balance = ex-Auto DI minus the two Not Covered buckets */
+  SELECT bank, 5, 'Reviewable DI Balance',
+         SUM(CASE WHEN is_di_total=1 AND curr_auto=0
+                       AND Owner_Curr NOT IN ('Not Covered; Under $250k; Casey',
+                                              'Not Covered; Under $500k; Samya')
+                  THEN COALESCE(Curr_SSB,0) ELSE 0 END)::NUMERIC(38,2)
+  FROM acc GROUP BY bank
+)
+SELECT bank AS Bank_Code, line, amount
+FROM lines
+ORDER BY CASE WHEN bank='ALL' THEN 1 ELSE 0 END, bank, ord;
+
+
+
+
+
+
 /* ========== QUERY B2: Count Bridge (distinct Facility_For_Event) ========== */
 
 WITH src AS (
