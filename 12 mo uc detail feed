@@ -1,3 +1,24 @@
+Starting_Count:
+=SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$5)*(Facility_Rollup[PREV_SSB]>0)*Facility_Rollup[ACCOUNT_COUNT])
+
+DowngradeIN_Count:
+=SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$5)*(UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="DOWNGRADE IN (EX-AUTO)")*Facility_Rollup[ACCOUNT_COUNT])
+
+Exit_Count:
+=-SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$5)*(UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="EXIT (EX-AUTO)")*Facility_Rollup[ACCOUNT_COUNT])
+
+AutoIN_Count:
+=SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$5)*(UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="AUTOCHANGE DOWNGRADE IN")*Facility_Rollup[ACCOUNT_COUNT])
+
+AutoExit_Count:
+=-SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$5)*(UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="AUTOCHANGE EXIT")*Facility_Rollup[ACCOUNT_COUNT])
+
+Ending_Count:
+=SUMPRODUCT((Facility_Rollup[BANK_FOR_EVENT]=$B$5)*(Facility_Rollup[CURR_SSB]>0)*Facility_Rollup[ACCOUNT_COUNT])
+
+
+
+
 =(
   /* Auto Downgrade IN: use CURRENT SSB */
   SUMPRODUCT( (UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="AUTOCHANGE DOWNGRADE IN") *
