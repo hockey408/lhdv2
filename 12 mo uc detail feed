@@ -1,3 +1,14 @@
+let
+    t  = [Rows],                             // <-- if your nested column isn't named "Rows", change it here
+    t1 = Table.SelectColumns(t, {"Account_Key"}),
+    t2 = Table.SelectRows(t1, each [Account_Key] <> null and Text.Trim(Text.From([Account_Key])) <> ""),
+    t3 = Table.Distinct(t2)
+in
+    Table.RowCount(t3)
+
+
+
+
 /* =================== Query #2: MoM_Account_Detail (ODBC) =================== */
 /* Auto-picks latest EOM with NA>0 data and the prior EOM, account-grain output */
 
