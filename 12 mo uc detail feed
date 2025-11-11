@@ -1,5 +1,27 @@
 =LET(
   bank,$B$1,
+  own,Facility_Rollup[OWNER_CURR],
+  keep,(Facility_Rollup[BANK_FOR_EVENT]=bank)*
+       (UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="DOWNGRADE IN (EX-AUTO)")*
+       (UPPER(TRIM(own))<>"AUTOCHANGE")*
+       (LEFT(UPPER(TRIM(own)),12)<>"NOT COVERED"),
+  FILTER(
+    CHOOSE({1,2,3,4},
+      Facility_Rollup[FACILITY_KEY],
+      Facility_Rollup[OWNER_CURR],
+      Facility_Rollup[FACILITY_CURR_SSB]/1000,
+      Facility_Rollup[ACCOUNT_COUNT]
+    ),
+    keep
+  )
+)
+
+
+
+
+
+=LET(
+  bank,$B$1,
   keep,(Facility_Rollup[BANK_FOR_EVENT]=bank)*
        (UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE]))="DOWNGRADE IN (EX-AUTO)"),
   FILTER(
