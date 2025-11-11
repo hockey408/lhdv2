@@ -1,4 +1,28 @@
 =LET(
+  bank, $B$1,
+  ids, IFERROR(UNIQUE(INDEX(B26#, ,1)), ""),
+  IF(OR(ids="", ISREF(B26#)=FALSE),
+     "Waiting for Top-30 list…",
+     LET(
+       rows,
+         FILTER(
+           MoM_Account_Detail,
+             ISNUMBER(MATCH(MoM_Account_Detail[CURR_FACILITY_ID], ids, 0)) *
+             (UPPER(TRIM(MoM_Account_Detail[MOVEMENT_TYPE]))="DOWNGRADE IN (EX-AUTO)") *
+             (MoM_Account_Detail[BANK_FOR_EVENT]=bank) *
+             (IFERROR(MoM_Account_Detail[REVIEWABLE_FLAG],1)=1)
+         ,
+         "No matching current-month account rows"
+         ),
+       rows
+     )
+  )
+)
+
+
+
+
+=LET(
   ids, UNIQUE(INDEX(B26#, ,1)),
   FILTER(
     MoM_Account_Detail,
