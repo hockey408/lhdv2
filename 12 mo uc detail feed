@@ -1,3 +1,27 @@
+=(
+  SUMIFS(Facility_Rollup[FACILITY_CURR_SSB], Facility_Rollup[MOVEMENT_TYPE], "*AUTOCHANGE DOWNGRADE IN*") +
+  SUMIFS(Facility_Rollup[FACILITY_CURR_SSB], Facility_Rollup[MOVEMENT_TYPE], "*AUTOCHANGE PERSISTING BALANCE CHANGES*") +
+  SUMIFS(Facility_Rollup[FACILITY_CURR_SSB], Facility_Rollup[MOVEMENT_TYPE], "*AUTOCHANGE NO CHANGE*")
+ -
+  SUMIFS(Facility_Rollup[FACILITY_PREV_SSB], Facility_Rollup[MOVEMENT_TYPE], "*AUTOCHANGE EXIT*")
+) / 1000
+
+=SUMIFS(
+    Facility_Rollup[FACILITY_MOM_DELTA],
+    Facility_Rollup[MOVEMENT_TYPE], "*PERSISTING BALANCE CHANGES (EX-AUTO)*"
+) / 1000
+
+=SUMIFS(
+    Facility_Rollup[FACILITY_MOM_DELTA],
+    Facility_Rollup[MOVEMENT_TYPE], "*NO CHANGE (EX-AUTO)*"
+) / 1000
+
+
+
+
+
+
+
 let
   // Source table from Excel (must be named exactly MoM_Account_Detail)
   Source = Excel.CurrentWorkbook(){[Name="MoM_Account_Detail"]}[Content],
