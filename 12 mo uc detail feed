@@ -1,5 +1,34 @@
 =LET(
  owner,$B$1,
+ tM,MoM_Account_Detail,
+ tF,Facility_Rollup,
+ rankByCIS,OR(owner="Samya",owner="Casey"),
+
+ /* ---- CIS-ranked branch (Samya/Casey) ---- */
+ maskCIS,(TRIM(tM[OWNER_CURR])=owner)*(UPPER(TRIM(tM[MOVEMENT_TYPE]))="DOWNGRADE IN (EX-AUTO)")*(tM[REVIEWABLE_FLAG]=1),
+ cisU,UNIQUE(FILTER(tM[CURR_CIS_CUSTOMER_NUMBER],maskCIS)),
+ cisTot,IFERROR(SUMIFS(tM[CURR_CIS_SSB],tM[CURR_CIS_CUSTOMER_NUMBER],cisU),0),
+ topCIS,IF(ROWS(cisU)>0,INDEX(SORT(CHOOSE({1,2},cisU,cisTot),2,-1),SEQUENCE(MIN(30,ROWS(cisU))),1),""),
+
+ rowsCIS,FILTER(tM,ISNUMBER(MATCH(tM[CURR_CIS_CUSTOMER_NUMBER],topCIS,0))*maskCIS,""),
+
+ /* ---- Facility-ranked branch (other owners) ---- */
+ maskFAC,(TRIM(tM[OWNER_CURR])=owner)*(UPPER(TRIM(tM[MOVEMENT_TYPE]))="DOWNGRADE IN (EX-AUTO)")*(tM[REVIEWABLE_FLAG]=1),
+ facU,UNIQUE(FILTER(tM[CURR_FACILITY_ID],maskFAC)),
+ facAmt,IFERROR(XLOOKUP(facU,tF[FACILITY_KEY],tF[FACILITY_CURR_SSB],0),0),
+ topFAC,IF(ROWS(facU)>0,INDEX(SORT(CHOOSE({1,2},facU,facAmt),2,-1),SEQUENCE(MIN(30,ROWS(facU))),1),""),
+
+ rowsFAC,FILTER(tM,ISNUMBER(MATCH(tM[CURR_FACILITY_ID],topFAC,0))*maskFAC,""),
+
+ IF(rankByCIS,rowsCIS,rowsFAC)
+)
+
+
+
+
+
+=LET(
+ owner,$B$1,
  ownpFR,TRIM(Facility_Rollup[OWNER_PREV]),
  mtFR,UPPER(TRIM(Facility_Rollup[MOVEMENT_TYPE])),
  facFR,Facility_Rollup[FACILITY_KEY],
