@@ -1,3 +1,31 @@
+/* ===== MoM_Account_Detail (incl. negatives, charge-offs, status) @ ACCOUNT_KEY grain ===== */
+
+WITH latest_curr AS (
+  SELECT MAX(End_of_Month_Date) AS curr_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE Non_Accrual_Flag = 'Y'
+),
+latest_prev AS (
+  SELECT MAX(End_of_Month_Date) AS prev_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, latest_curr
+  WHERE End_of_Month_Date < (SELECT curr_eom FROM latest_curr)
+    AND Non_Accrual_Flag = 'Y'
+),
+params AS (
+  SELECT
+    (SELECT curr_eom FROM latest_curr) AS curr_eom,
+    (SELECT prev_eom FROM latest_prev) AS prev_eom,
+    CURRENT_TIMESTAMP                 AS query_run_ts
+),
+
+/* 1) Bank map + normalize keys; keep NA pop; DO NOT filter SSB>0 (include negatives/zeros) */
+
+
+
+
+
+
+
 📘 Stakeholder Feedback Loop – Standard Operating Procedure (SOP)
 
 Version: 1.0
