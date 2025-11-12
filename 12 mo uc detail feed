@@ -1,3 +1,14 @@
+Abs Z Resid (Sum, Latest) :=
+VAR lm = MAX( Dim_Date[MonthEnd] )
+RETURN
+CALCULATE (
+    SUMX ( RC_Code_Model_Base, ABS ( RC_Code_Model_Base[Z_RESID] ) ),
+    RC_Code_Model_Base[MONTH_END] = lm
+)
+
+
+
+
 Abs MoM Change (Latest) :=
 CALCULATE(
     SUMX(
