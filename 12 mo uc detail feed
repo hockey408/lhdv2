@@ -6,6 +6,37 @@ CALCULATE (
     RC_Code_Model_Base[MONTH_END] = lm
 )
 
+Abs Z Resid (Avg EW, Latest) :=
+VAR lm   = MAX( Dim_Date[MonthEnd] )
+VAR t    = FILTER ( RC_Code_Model_Base, RC_Code_Model_Base[MONTH_END] = lm )
+VAR wtot = SUMX ( t, RC_Code_Model_Base[ACTUAL] )
+RETURN
+DIVIDE (
+    SUMX ( t, ABS ( RC_Code_Model_Base[Z_RESID] ) * RC_Code_Model_Base[ACTUAL] ),
+    wtot
+)
+
+Abs MoM Z $ (Sum, Latest) :=
+VAR lm = MAX( Dim_Date[MonthEnd] )
+RETURN
+CALCULATE (
+    SUMX ( RC_Code_Model_Base, ABS ( RC_Code_Model_Base[Z_MOM_ABS] ) ),
+    RC_Code_Model_Base[MONTH_END] = lm
+)
+
+Abs MoM Z $ (Avg EW, Latest) :=
+VAR lm   = MAX( Dim_Date[MonthEnd] )
+VAR t    = FILTER ( RC_Code_Model_Base, RC_Code_Model_Base[MONTH_END] = lm )
+VAR wtot = SUMX ( t, RC_Code_Model_Base[ACTUAL] )
+RETURN
+DIVIDE (
+    SUMX ( t, ABS ( RC_Code_Model_Base[Z_MOM_ABS] ) * RC_Code_Model_Base[ACTUAL] ),
+    wtot
+)
+
+
+
+
 
 
 
