@@ -1,3 +1,19 @@
+Abs MoM Change (Latest) :=
+CALCULATE(
+    SUMX(
+        RC_Code_Model_Base,
+        ABS( RC_Code_Model_Base[MOM_ABS] )
+    ),
+    FILTER(
+        RC_Code_Model_Base,
+        RC_Code_Model_Base[MONTH_END] = MAX( RC_Code_Model_Base[MONTH_END] )
+    )
+)
+
+
+
+
+
 Abs Residual (Latest) :=
 CALCULATE(
     SUMX(
