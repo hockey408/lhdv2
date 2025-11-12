@@ -1,3 +1,19 @@
+Abs Residual (Latest) :=
+CALCULATE(
+    SUMX(
+        RC_Code_Model_Base,
+        ABS( RC_Code_Model_Base[RESID] )
+    ),
+    FILTER(
+        RC_Code_Model_Base,
+        RC_Code_Model_Base[MONTH_END] = MAX( RC_Code_Model_Base[MONTH_END] )
+    )
+)
+
+
+
+
+
 /* ===== MoM_Account_Detail (incl. negatives, charge-offs, status) @ ACCOUNT_KEY grain ===== */
 
 WITH latest_curr AS (
