@@ -13,6 +13,21 @@ IF (
 
 
 
+PI Breach (Latest) :=
+VAR lm =
+    CALCULATE ( MAX ( RC_Code_Model_Base[MONTH_END] ), ALL ( RC_Code_Model_Base ) )
+VAR a  = CALCULATE ( MAX ( RC_Code_Model_Base[ACTUAL] ),   RC_Code_Model_Base[MONTH_END] = lm )
+VAR lo = CALCULATE ( MAX ( RC_Code_Model_Base[PI_LO] ),     RC_Code_Model_Base[MONTH_END] = lm )
+VAR hi = CALCULATE ( MAX ( RC_Code_Model_Base[PI_HI] ),     RC_Code_Model_Base[MONTH_END] = lm )
+RETURN
+IF (
+    ISBLANK ( a ) || ISBLANK ( lo ) || ISBLANK ( hi ),
+    BLANK (),
+    IF ( a < lo || a > hi, 1, 0 )
+)
+
+
+
 RC_DESCRIPTION
 Actual
 Forecast
