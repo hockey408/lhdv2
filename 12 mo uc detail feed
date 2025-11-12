@@ -1,4 +1,15 @@
 Abs Z Resid (Latest) :=
+VAR lm =
+    CALCULATE ( MAX ( RC_Code_Model_Base[MONTH_END] ), ALL ( RC_Code_Model_Base ) )
+RETURN
+CALCULATE (
+    ABS ( MAX ( RC_Code_Model_Base[Z_RESID] ) ),
+    RC_Code_Model_Base[MONTH_END] = lm
+)
+
+
+
+Abs Z Resid (Latest) :=
 VAR lm = CALCULATE ( MAX ( RC_Code_Model_Base[MONTH_END] ), ALL ( RC_Code_Model_Base ) )
 RETURN
 CALCULATE (
