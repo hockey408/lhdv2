@@ -1,3 +1,17 @@
+RC_DESCRIPTION
+Actual
+Forecast
+Abs Residual
+Abs MoM Change
+Composite Anomaly Score
+Abs MoM %
+Severity
+Variance Class
+Abs Z Resid
+Abs MoM Z $ Change
+
+
+
 Abs MoM Z $ Change (Latest) :=
 VAR lm =
     CALCULATE (
