@@ -1,3 +1,177 @@
+📘 Stakeholder Feedback Loop – Standard Operating Procedure (SOP)
+
+Version: 1.0
+Owner: Credit Reporting Manager (You)
+Effective Date: January 2026
+Review Cadence: Annual
+Applies To: Credit Reporting, Accounting, Loan Operations, Data Engineering, Lending, and Portfolio Reporting stakeholders.
+
+⸻
+
+1. Purpose
+
+To establish a structured, repeatable, and measurable feedback loop with core stakeholders that continuously improves reconciliation workflows, reduces operational friction, increases data accuracy, and enhances service delivery.
+
+This SOP creates consistent rhythms for data intake, review, prioritization, execution, and communication of workflow improvements.
+
+⸻
+
+2. Objectives
+	•	Increase stakeholder alignment and transparency
+	•	Surface issues earlier through structured channels
+	•	Reduce reconciliation cycle time and rework
+	•	Improve service delivery and responsiveness
+	•	Create measurable KPIs around stakeholder satisfaction
+	•	Support 2026 department goals through continuous improvement
+
+⸻
+
+3. Stakeholder Groups
+
+Feedback is collected from the following internal partners:
+	•	Accounting
+	•	Loan Operations / Servicing
+	•	Data Engineering / ETL Teams
+	•	Tech / Systems
+	•	Lending Leadership
+	•	Portfolio Reporting & Analytics
+	•	Business Line Controllers
+	•	Risk & Credit Administration (as needed)
+
+⸻
+
+4. Operating Rhythm
+
+4.1 Quarterly Feedback Survey
+	•	Distributed automatically using Microsoft Forms or Google Forms
+	•	Deployed on the 5th business day of each new quarter
+	•	Open for 7 business days
+	•	Results automatically load into Power BI
+	•	Summary delivered during the first monthly sync of each quarter
+
+4.2 Monthly Cross-Functional Sync (20–25 min)
+
+Purpose: Rapid alignment on reconciliation issues & improvement progress
+Agenda:
+	1.	Top anomalies for the month
+	2.	Issues or blockers from stakeholders
+	3.	Review of active improvement items
+	4.	Upcoming changes / dependencies
+	5.	Action items + owners
+
+⸻
+
+5. Feedback Intake Channels
+
+Feedback is collected through three sources:
+
+5.1 Quarterly Survey
+
+Primary structured mechanism for measurable insights
+Data collected:
+	•	Satisfaction rating (1–5)
+	•	Pain points
+	•	Source-system issues
+	•	Upstream/downstream workflow concerns
+	•	Suggestions for enhancements
+
+5.2 Continuous “Issue Ticket” Intake
+
+Created via:
+	•	Microsoft Form
+	•	Teams Channel
+	•	Notion/Jira/Planner entry
+
+Fields included:
+	•	Problem
+	•	Stakeholder group
+	•	Impact severity
+	•	Examples or evidence
+	•	Suggested fix
+	•	Urgency
+
+5.3 Monthly Sync Discussions
+
+Operational feedback delivered verbally and documented as action items.
+
+⸻
+
+6. Improvement Lifecycle
+
+All feedback flows through a visible pipeline:
+
+1. Intake →
+2. Categorize (data issue, workflow, communication, upstream dependency) →
+3. Score (impact x effort) →
+4. Prioritize in next roadmap cycle →
+5. Assign owners →
+6. Resolve →
+7. Validate →
+8. Close with stakeholder confirmation
+
+Closed items are stored in a “Resolved Improvements” SharePoint folder for audit and transparency.
+
+⸻
+
+7. Roles & Responsibilities
+
+Credit Reporting Team (Owner)
+	•	Administers surveys
+	•	Maintains Power BI dashboard
+	•	Facilitates monthly syncs
+	•	Categorizes and prioritizes issues
+	•	Maintains improvement pipeline
+	•	Provides monthly/quarterly summaries to leadership
+
+Stakeholders (Participants)
+	•	Provide survey input
+	•	Attend syncs when invited
+	•	Submit workflow/issues tickets
+	•	Validate fixes or improvements
+
+Leadership (Sponsors)
+	•	Aligns priorities
+	•	Clears cross-functional roadblocks
+	•	Communicates support
+
+⸻
+
+8. KPIs & Success Metrics
+	•	Quarterly satisfaction score (baseline goal ≥ 4.0/5)
+	•	Reconciliation cycle-time reduction
+	•	% of anomalies resolved within SLA
+	•	of workflow refinements implemented
+	•	of data quality issues resolved upstream
+	•	Participation rate in quarterly surveys
+	•	SLA responsiveness to ticket submissions
+
+⸻
+
+9. Escalation Path
+
+If a blocker cannot be resolved through the standard monthly sync flow:
+	1.	Team Lead escalation
+	2.	Department Director escalation
+	3.	Cross-functional leadership review at the quarterly meeting
+
+⸻
+
+10. Documentation Requirements
+
+Stored in SharePoint:
+	•	Quarterly survey results
+	•	Monthly sync notes
+	•	Issue/ticket backlog
+	•	Resolved items log
+	•	Power BI dashboard link
+	•	Annual SOP review
+
+
+
+
+
+
+
 Foster Stakeholder Collaboration Through Feedback Loops
 Create structured feedback mechanism with key stakeholders to continually refine reconciliation workflows and improved service delivery.
 
