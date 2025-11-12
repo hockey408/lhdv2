@@ -1,3 +1,20 @@
+with_flags AS (
+  SELECT
+    j.*,
+    CASE WHEN j.Prev_SSB IS NULL THEN 0 ELSE 1 END AS had_prev,
+    CASE WHEN j.Curr_SSB IS NULL THEN 0 ELSE 1 END AS has_curr,
+    CASE WHEN UPPER(COALESCE(j.Prev_RBC,'')) = 'R' THEN 1 ELSE 0 END AS prev_auto,
+    CASE WHEN UPPER(COALESCE(j.Curr_RBC,'')) = 'R' THEN 1 ELSE 0 END AS curr_auto,
+    CASE WHEN COALESCE(j.Curr_CO_MTD,0) > 0 THEN 1 ELSE 0 END AS Curr_CO_MTD_Flag,
+    CASE WHEN COALESCE(j.Prev_CO_MTD,0) > 0 THEN 1 ELSE 0 END AS Prev_CO_MTD_Flag,
+    CASE WHEN COALESCE(j.Curr_CO_ITD,0) > COALESCE(j.Prev_CO_ITD,0) THEN 1 ELSE 0 END AS CO_Since_Prior_Flag
+  FROM joined j
+)
+
+
+
+
+
 /* ===== MoM_Account_Detail (incl. negatives, charge-offs, status) @ ACCOUNT_KEY grain ===== */
 
 WITH latest_curr AS (
