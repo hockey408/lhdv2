@@ -1,6 +1,23 @@
 ML Anomaly Score (Latest) :=
 VAR lm =
     CALCULATE (
+        MAX ( RC_ML_Scored[MONTH_END] ),
+        ALL ( RC_ML_Scored )
+    )
+RETURN
+CALCULATE (
+    MAX ( RC_ML_Scored[Anomaly_Score_0_100] ),
+    RC_ML_Scored[MONTH_END] = lm,
+    TREATAS ( VALUES ( RC_Code_Model_Base[RC_DESCRIPTION] ),
+              RC_ML_Scored[RC_DESCRIPTION] )
+)
+
+
+
+
+ML Anomaly Score (Latest) :=
+VAR lm =
+    CALCULATE (
         MAX ( Dim_Date[MonthEnd] ),
         ALL ( Dim_Date )
     )
