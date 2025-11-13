@@ -1,3 +1,19 @@
+ML Anomaly Score (Latest) :=
+VAR lm =
+    CALCULATE (
+        MAX ( Dim_Date[MonthEnd] ),
+        ALL ( Dim_Date )
+    )
+RETURN
+CALCULATE (
+    MAX ( RC_ML_Scored[Anomaly_Score_0_100] ),
+    RC_ML_Scored[MONTH_END] = lm
+)
+
+
+
+
+
 Movement_Type_Logc:
 "Autochange Downgrade IN = had_prev=0 AND has_curr=1 AND curr_auto=1
 Autochange Exit = had_prev=1 AND has_curr=0 AND prev_auto=1
