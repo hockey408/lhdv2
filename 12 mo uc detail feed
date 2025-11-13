@@ -1,3 +1,42 @@
+Movement_Type_Logc:
+"Autochange Downgrade IN = had_prev=0 AND has_curr=1 AND curr_auto=1
+Autochange Exit = had_prev=1 AND has_curr=0 AND prev_auto=1
+Autochange Persisting Balance Changes = had_prev=1 AND has_curr=1 AND prev_auto=1 AND curr_auto=1 AND Curr_SSB <> Prev_SSB
+Autochange No Change = had_prev=1 AND has_curr=1 AND prev_auto=1 AND curr_auto=1 AND Curr_SSB = Prev_SSB
+Downgrade IN (ex-Auto) = had_prev=0 AND has_curr=1 AND curr_auto=0
+Exit (ex-Auto) = had_prev=1 AND has_curr=0 AND curr_auto=0
+Persisting Balance Changes (ex-Auto) = had_prev=1 AND has_curr=1 AND curr_auto=0 AND Curr_SSB <> Prev_SSB
+No Change (ex-Auto) = had_prev=1 AND has_curr=1 AND curr_auto=0 AND Curr_SSB = Prev_SSB"
+
+Owner_Logic
+"Samya = CIT + Business RE Term Loans + CIS_SSB > 500k
+Casey = CIT + (Business Non-RE Term Loans or Business Commitment Draw) + CIS_SSB > 250k
+Not Covered; Under $500k; Samya = same but CIS_SSB <= 500k
+Not Covered; Under $250k; Casey = same but CIS_SSB <= 250k
+Daniel = Contract_Source_System = INFL10
+Eleanor = Bank_Code = L-SVB
+Autochange = RBC_Code = R
+Connor = Bank_Code = L-FCB
+Else = NOT COVERED"""
+
+Reviewable_Logic:
+AND Owner_Curr not in ('Autochange','NOT COVERED','Not Covered; Under...')
+
+Hierarchy_Logic
+CIS_Customer_Number > Facility_ID > Account_Identifier > Account_Key
+
+Bridge_Logic
+"Starting = SUM Prev_SSB
+Auto_net = Auto_In - Auto_Out + Auto_Persist_Delta
+Downgrade_IN = SUM Curr_SSB where Movement_Type='Downgrade IN (ex-Auto)'
+Exit = - SUM Prev_SSB where Movement_Type='Exit (ex-Auto)'
+Persisting = SUM MoM_Delta where persisting (ex-Auto)
+Ending = SUM Curr_SSB"
+
+
+
+
+
 This survey supports our 2026 goal of strengthening stakeholder collaboration and improving reconciliation workflows. Your input directly helps refine processes, increase data accuracy, and reduce friction across teams. Estimated time: 3–5 minutes.
 
 
