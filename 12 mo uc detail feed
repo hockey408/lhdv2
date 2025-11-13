@@ -1,3 +1,8 @@
+This survey supports our 2026 goal of strengthening stakeholder collaboration and improving reconciliation workflows. Your input directly helps refine processes, increase data accuracy, and reduce friction across teams. Estimated time: 3–5 minutes.
+
+
+
+
 with_flags AS (
   SELECT
     j.*,
