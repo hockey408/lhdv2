@@ -1,3 +1,81 @@
+SECTION | FIELD NAME | LOGIC / DEFINITION | EXCEL EXAMPLE
+Parameters & Identity | QUERY_RUN_TIMESTAMP | Timestamp when query ran | (from SQL)
+Parameters & Identity | CURR_EOM | Latest EOM with NA population | (from SQL)
+Parameters & Identity | PREV_EOM | Prior EOM < CURR_EOM with NA pop | (from SQL)
+Parameters & Identity | ACCOUNT_KEY | Unique lowest grain identifier | From source extract
+Parameters & Identity | PREV_ACCOUNT_IDENTIFIER | Identifier at prev EOM | Blank if missing
+Parameters & Identity | CURR_ACCOUNT_IDENTIFIER | Identifier at curr EOM | Blank if missing
+
+Hierarchy & Core | PREV_CIS | CIS for prev EOM | 
+Hierarchy & Core | CURR_CIS | CIS for curr EOM | 
+Hierarchy & Core | PREV_FACILITY_ID | Facility_ID at prev EOM |
+Hierarchy & Core | CURR_FACILITY_ID | Facility_ID at curr EOM |
+Hierarchy & Core | CIS_FOR_EVENT | CIS used for reporting | =IF([@has_curr]=1,[@CURR_CIS],[@PREV_CIS])
+Hierarchy & Core | FACILITY_FOR_EVENT | Facility_ID used for reporting | =IF([@has_curr]=1,[@CURR_FACILITY_ID],[@PREV_FACILITY_ID])
+Hierarchy & Core | Bank_For_Event | Bank_Code used for reporting | =IF([@has_curr]=1,[@CURR_BANK_CODE],[@PREV_BANK_CODE])
+
+Names & Descriptors | PREV_CSS | Prev contract source system |
+Names & Descriptors | CURR_CSS | Curr contract source system |
+Names & Descriptors | PREV_PROD5 | Prev product hierarchy |
+Names & Descriptors | CURR_PROD5 | Curr product hierarchy |
+Names & Descriptors | PREV_RBC | Prev RBC code |
+Names & Descriptors | CURR_RBC | Curr RBC code |
+Names & Descriptors | PREV_Bank_Code | Mapped bank code | 
+Names & Descriptors | CURR_Bank_Code | Mapped bank code |
+Names & Descriptors | PREV_Status | Status_Code_Description prev |
+Names & Descriptors | CURR_Status | Status_Code_Description curr |
+
+Balances & Chargeoffs | PREV_SSB | Prev source system balance | 
+Balances & Chargeoffs | CURR_SSB | Curr source system balance |
+Balances & Chargeoffs | MoM_Delta | Curr_SSB – Prev_SSB | =[@CURR_SSB]-[@PREV_SSB]
+Balances & Chargeoffs | SSB_FOR_EVENT | Event-side balance | =IF([@has_curr]=1,[@CURR_SSB],[@PREV_SSB])
+Balances & Chargeoffs | Curr_GL_Balance | GL_Balance curr |
+Balances & Chargeoffs | Prev_GL_Balance | GL_Balance prev |
+Balances & Chargeoffs | Curr_CO_MTD | Charge-off month-to-date curr |
+Balances & Chargeoffs | Prev_CO_MTD | Charge-off month-to-date prev |
+Balances & Chargeoffs | Curr_CO_ITD | Charge-off inception-to-date curr |
+Balances & Chargeoffs | Prev_CO_ITD | Charge-off inception-to-date prev |
+Balances & Chargeoffs | CO_Since_Prior_Flag | Charge-off occurred after prev | =IF([@Curr_CO_ITD]>[@Prev_CO_ITD],1,0)
+
+Presence Flags | had_prev | 1 if exposure existed prev EOM | =IF(ISBLANK([@PREV_SSB]),0,1)
+Presence Flags | has_curr | 1 if exposure existed curr EOM | =IF(ISBLANK([@CURR_SSB]),0,1)
+Presence Flags | prev_auto | 1 if Prev RBC = 'R' | =IF(UPPER([@PREV_RBC])="R",1,0)
+Presence Flags | curr_auto | 1 if Curr RBC = 'R' | =IF(UPPER([@CURR_RBC])="R",1,0)
+
+Movement_Type | Autochange Downgrade IN | had_prev=0 AND has_curr=1 AND curr_auto=1 |
+Movement_Type | Autochange Exit | had_prev=1 AND has_curr=0 AND prev_auto=1 |
+Movement_Type | Autochange Persisting Balance Changes | had_prev=1 AND has_curr=1 AND prev_auto=1 AND curr_auto=1 AND Curr_SSB<>Prev_SSB |
+Movement_Type | Autochange No Change | had_prev=1 AND has_curr=1 AND prev_auto=1 AND curr_auto=1 AND Curr_SSB=Prev_SSB |
+Movement_Type | Downgrade IN (ex-Auto) | had_prev=0 AND has_curr=1 AND curr_auto=0 |
+Movement_Type | Exit (ex-Auto) | had_prev=1 AND has_curr=0 AND prev_auto=0 |
+Movement_Type | Persisting Balance Changes (ex-Auto) | had_prev=1 AND has_curr=1 AND curr_auto=0 AND Curr_SSB<>Prev_SSB |
+Movement_Type | No Change (ex-Auto) | had_prev=1 AND has_curr=1 AND curr_auto=0 AND Curr_SSB=Prev_SSB |
+
+Owner Logic | Samya | CIT + Business RE + Curr_CIS_SSB > 500k |
+Owner Logic | Casey | CIT + Business Non-RE/Draw + Curr_CIS_SSB > 250k |
+Owner Logic | Not Covered; Under $500k; Samya | Samya conditions but Curr_CIS_SSB <= 500k |
+Owner Logic | Not Covered; Under $250k; Casey | Casey conditions but Curr_CIS_SSB <= 250k |
+Owner Logic | Daniel | CURR_CSS='INFL10' |
+Owner Logic | Eleanor | CURR_BANK_CODE='L-SVB' |
+Owner Logic | Autochange | CURR_RBC='R' |
+Owner Logic | Connor | CURR_BANK_CODE='L-FCB' |
+Owner Logic | NOT COVERED | All other cases |
+
+Reviewable_Flag | Reviewable = 1 when ALL true | Movement_Type is Downgrade IN (ex-Auto) or Exit (ex-Auto) | =IF(AND([@is_right_type],[conditions]),1,0)
+Reviewable_Flag | Condition 1 | Movement is reviewable type |
+Reviewable_Flag | Condition 2 | Event-side SSB > 0 |
+Reviewable_Flag | Condition 3 | Not Autochange and not under-threshold | thresholds applied at CIS-level |
+
+CIS-Level Fields | Curr_CIS_SSB | Curr CIS-level total NA balance | 
+CIS-Level Fields | Prev_CIS_SSB | Prev CIS-level total NA balance |
+
+Row Inclusion | Valid Row Rule | Keep row if Prev_SSB <> 0 OR Curr_SSB <> 0 | =IF(AND([@PREV_SSB]=0,[@CURR_SSB]=0),0,1)
+
+
+
+
+
+
 ML Anomaly Score (Latest) :=
 VAR lm =
     CALCULATE (
