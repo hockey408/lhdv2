@@ -1,3 +1,19 @@
+=UNIQUE(
+  FILTER(
+    MoM_Account_Detail[FACILITY_FOR_EVENT],
+    MoM_Account_Detail[REVIEWABLE_FLAG]=1
+  )
+)
+
+=SUMIFS(
+  MoM_Account_Detail[SSB_FOR_EVENT],
+  MoM_Account_Detail[FACILITY_FOR_EVENT], A2:A2#,
+  MoM_Account_Detail[REVIEWABLE_FLAG], 1
+)
+
+
+
+
 =LET(
   data,    MoM_Account_Detail,
   fac,     data[FACILITY_FOR_EVENT],
