@@ -1,3 +1,71 @@
+let
+    // 1) Bring in the MoM_Account_Detail table from Excel
+    Source = Excel.CurrentWorkbook(){[Name="MoM_Account_Detail"]}[Content],
+
+    // 2) Make sure key columns are typed correctly
+    #"Changed Type" = Table.TransformColumnTypes(
+        Source,
+        {
+            {"ACCOUNT_KEY",        type text},
+            {"BANK_FOR_EVENT",     type text},
+            {"FACILITY_FOR_EVENT", type text},
+            {"MOVEMENT_TYPE",      type text},
+            {"OWNER_CURR",         type text},
+            {"OWNER_PREV",         type text},
+            {"PREV_SSB",           type number},
+            {"CURR_SSB",           type number}
+        }
+    ),
+
+    // 3) Define a facility key (can just reuse FACILITY_FOR_EVENT)
+    #"Added Facility Key" = Table.AddColumn(
+        #"Changed Type",
+        "FACILITY_KEY",
+        each [FACILITY_FOR_EVENT],
+        type text
+    ),
+
+    // 4) Group to facility level + movement + owners + bank
+    #"Grouped Rows" = Table.Group(
+        #"Added Facility Key",
+        {"FACILITY_KEY", "BANK_FOR_EVENT", "MOVEMENT_TYPE", "OWNER_CURR", "OWNER_PREV"},
+        {
+            {"FACILITY_PREV_SSB", each List.Sum([PREV_SSB]), type nullable number},
+            {"FACILITY_CURR_SSB", each List.Sum([CURR_SSB]), type nullable number},
+            {"ACCOUNT_COUNT",     each Table.RowCount(_),    Int64.Type}
+        }
+    ),
+
+    // 5) Compute facility-level MoM delta (this is what the bridge should use)
+    #"Added FACILITY_MOM_DELTA" = Table.AddColumn(
+        #"Grouped Rows",
+        "FACILITY_MOM_DELTA",
+        each Number.From( [FACILITY_CURR_SSB] - [FACILITY_PREV_SSB] ),
+        type number
+    ),
+
+    // 6) Reorder columns for sanity
+    #"Reordered Columns" = Table.ReorderColumns(
+        #"Added FACILITY_MOM_DELTA",
+        {
+            "FACILITY_KEY",
+            "BANK_FOR_EVENT",
+            "MOVEMENT_TYPE",
+            "OWNER_CURR",
+            "OWNER_PREV",
+            "FACILITY_PREV_SSB",
+            "FACILITY_CURR_SSB",
+            "FACILITY_MOM_DELTA",
+            "ACCOUNT_COUNT"
+        }
+    )
+in
+    #"Reordered Columns"
+
+
+
+
+
 A5:  "Starting Balance"
 A6:  "Negative Balance – New"
 A7:  "Negative Balance – Persisting"
