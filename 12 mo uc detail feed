@@ -1,3 +1,67 @@
+let
+    Source = Excel.CurrentWorkbook(){[Name="MoM_Account_Detail"]}[Content],
+
+    #"Changed Type" = Table.TransformColumnTypes(
+        Source,
+        {
+            {"ACCOUNT_KEY", type text},
+            {"BANK_FOR_EVENT", type text},
+            {"FACILITY_FOR_EVENT", type text},
+            {"MOVEMENT_TYPE", type text},
+            {"OWNER_CURR", type text},
+            {"OWNER_PREV", type text},
+            {"PREV_SSB", type number},
+            {"CURR_SSB", type number}
+        }
+    ),
+
+    #"Added Facility Key" = Table.AddColumn(
+        #"Changed Type",
+        "FACILITY_KEY",
+        each [FACILITY_FOR_EVENT],
+        type text
+    ),
+
+    #"Added Facility_MoM_Delta" = Table.AddColumn(
+        #"Added Facility Key",
+        "SSB_MOM_DELTA",
+        each Number.From( [CURR_SSB] - [PREV_SSB] ),
+        type number
+    ),
+
+    #"Grouped Rows" = Table.Group(
+        #"Added Facility_MoM_Delta",
+        {"FACILITY_KEY", "BANK_FOR_EVENT", "MOVEMENT_TYPE", "OWNER_CURR", "OWNER_PREV"},
+        {
+            {"FACILITY_PREV_SSB", each List.Sum([PREV_SSB]), type nullable number},
+            {"FACILITY_CURR_SSB", each List.Sum([CURR_SSB]), type nullable number},
+            {"FACILITY_MOM_DELTA", each List.Sum([SSB_MOM_DELTA]), type nullable number},
+            {"ACCOUNT_COUNT", each Table.RowCount(_), Int64.Type}
+        }
+    ),
+
+    #"Reordered Columns" = Table.ReorderColumns(
+        #"Grouped Rows",
+        {
+            "FACILITY_KEY",
+            "BANK_FOR_EVENT",
+            "MOVEMENT_TYPE",
+            "OWNER_CURR",
+            "OWNER_PREV",
+            "FACILITY_PREV_SSB",
+            "FACILITY_CURR_SSB",
+            "FACILITY_MOM_DELTA",
+            "ACCOUNT_COUNT"
+        }
+    )
+
+in
+    #"Reordered Columns"
+
+
+
+
+
 /* =========================================================
    MoM_Account_Detail  @ ACCOUNT_KEY grain
    - Latest two EOMs
