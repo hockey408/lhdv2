@@ -1,6 +1,25 @@
 =UNIQUE(
   FILTER(
     MoM_Account_Detail[FACILITY_FOR_EVENT],
+    (MoM_Account_Detail[REVIEWABLE_FLAG]=1) *
+    (
+      (MoM_Account_Detail[MOVEMENT_TYPE]=$B$2) *
+      (
+        IF($B$2="Exit (ex-Auto)",
+           MoM_Account_Detail[OWNER_PREV]=$B$1,
+           MoM_Account_Detail[OWNER_CURR]=$B$1
+        )
+      )
+    )
+  )
+)
+
+
+
+
+=UNIQUE(
+  FILTER(
+    MoM_Account_Detail[FACILITY_FOR_EVENT],
     MoM_Account_Detail[REVIEWABLE_FLAG]=1
   )
 )
