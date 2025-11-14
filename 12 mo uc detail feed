@@ -1,3 +1,135 @@
+/* ===== NA Flag Hierarchy Consistency @ latest EOM ===== */
+/* For each ACCOUNT_KEY with NA='Y', show if ACCT_ID / FACILITY / CIS have mixed flags,
+   and report SSB where flag='Y' vs flag<>'Y' at each level. */
+
+WITH latest_curr AS (
+  SELECT MAX(End_of_Month_Date) AS curr_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE Non_Accrual_Flag IS NOT NULL
+),
+
+/* 1) Base pop for latest EOM, with GL filters + non-zero SSB */
+base AS (
+  SELECT
+    End_of_Month_Date,
+    UPPER(TRIM(CIS_Customer_Number)) AS CIS_Customer_Number,
+    UPPER(TRIM(Facility_ID))         AS Facility_ID,
+    UPPER(TRIM(Account_Identifier))  AS Account_Identifier,
+    UPPER(TRIM(Account_Key))         AS Account_Key,
+    Non_Accrual_Flag,
+    Source_System_Balance
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM latest_curr)
+    AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+    AND Source_System_Balance <> 0
+),
+
+/* 2) Account_Identifier-level flag + Y / non-Y SSB */
+acctid_level AS (
+  SELECT
+    End_of_Month_Date,
+    Account_Identifier,
+    MAX(CASE WHEN Non_Accrual_Flag = 'Y' THEN 1 ELSE 0 END) AS any_y,
+    MAX(CASE WHEN Non_Accrual_Flag <> 'Y' OR Non_Accrual_Flag IS NULL
+             THEN 1 ELSE 0 END)                             AS any_not_y,
+    SUM(CASE WHEN Non_Accrual_Flag = 'Y'
+             THEN Source_System_Balance ELSE 0 END)         AS acctid_ssb_y,
+    SUM(CASE WHEN Non_Accrual_Flag <> 'Y' OR Non_Accrual_Flag IS NULL
+             THEN Source_System_Balance ELSE 0 END)         AS acctid_ssb_not_y
+  FROM base
+  GROUP BY End_of_Month_Date, Account_Identifier
+),
+
+/* 3) Facility-level flag + Y / non-Y SSB */
+facility_level AS (
+  SELECT
+    End_of_Month_Date,
+    Facility_ID,
+    MAX(CASE WHEN Non_Accrual_Flag = 'Y' THEN 1 ELSE 0 END) AS any_y,
+    MAX(CASE WHEN Non_Accrual_Flag <> 'Y' OR Non_Accrual_Flag IS NULL
+             THEN 1 ELSE 0 END)                             AS any_not_y,
+    SUM(CASE WHEN Non_Accrual_Flag = 'Y'
+             THEN Source_System_Balance ELSE 0 END)         AS facility_ssb_y,
+    SUM(CASE WHEN Non_Accrual_Flag <> 'Y' OR Non_Accrual_Flag IS NULL
+             THEN Source_System_Balance ELSE 0 END)         AS facility_ssb_not_y
+  FROM base
+  GROUP BY End_of_Month_Date, Facility_ID
+),
+
+/* 4) CIS-level flag + Y / non-Y SSB */
+cis_level AS (
+  SELECT
+    End_of_Month_Date,
+    CIS_Customer_Number,
+    MAX(CASE WHEN Non_Accrual_Flag = 'Y' THEN 1 ELSE 0 END) AS any_y,
+    MAX(CASE WHEN Non_Accrual_Flag <> 'Y' OR Non_Accrual_Flag IS NULL
+             THEN 1 ELSE 0 END)                             AS any_not_y,
+    SUM(CASE WHEN Non_Accrual_Flag = 'Y'
+             THEN Source_System_Balance ELSE 0 END)         AS cis_ssb_y,
+    SUM(CASE WHEN Non_Accrual_Flag <> 'Y' OR Non_Accrual_Flag IS NULL
+             THEN Source_System_Balance ELSE 0 END)         AS cis_ssb_not_y
+  FROM base
+  GROUP BY End_of_Month_Date, CIS_Customer_Number
+)
+
+/* 5) Final: Y rows at ACCOUNT_KEY grain where any level is mixed */
+SELECT
+  b.End_of_Month_Date,
+  b.CIS_Customer_Number,
+  b.Facility_ID,
+  b.Account_Identifier,
+  b.Account_Key,
+  b.Non_Accrual_Flag,
+  b.Source_System_Balance,
+
+  /* Account_Identifier level */
+  CASE
+    WHEN a.any_y = 1 AND a.any_not_y = 1 THEN 'MISMATCH' ELSE 'OK'
+  END AS Account_Identifier_Flag_Consistency,
+  a.acctid_ssb_y      AS AccountIdentifier_SSB_Y,
+  a.acctid_ssb_not_y  AS AccountIdentifier_SSB_NotY,
+
+  /* Facility level */
+  CASE
+    WHEN f.any_y = 1 AND f.any_not_y = 1 THEN 'MISMATCH' ELSE 'OK'
+  END AS Facility_Flag_Consistency,
+  f.facility_ssb_y    AS Facility_SSB_Y,
+  f.facility_ssb_not_y AS Facility_SSB_NotY,
+
+  /* CIS level */
+  CASE
+    WHEN c.any_y = 1 AND c.any_not_y = 1 THEN 'MISMATCH' ELSE 'OK'
+  END AS CIS_Flag_Consistency,
+  c.cis_ssb_y         AS CIS_SSB_Y,
+  c.cis_ssb_not_y     AS CIS_SSB_NotY
+
+FROM base b
+LEFT JOIN acctid_level  a
+  ON  a.End_of_Month_Date   = b.End_of_Month_Date
+  AND a.Account_Identifier  = b.Account_Identifier
+LEFT JOIN facility_level f
+  ON  f.End_of_Month_Date   = b.End_of_Month_Date
+  AND f.Facility_ID         = b.Facility_ID
+LEFT JOIN cis_level      c
+  ON  c.End_of_Month_Date       = b.End_of_Month_Date
+  AND c.CIS_Customer_Number     = b.CIS_Customer_Number
+WHERE
+  b.Non_Accrual_Flag = 'Y'   -- only rows where AK is flagged NA
+  AND (
+        (a.any_y = 1 AND a.any_not_y = 1)   -- mixed flags at Account_Identifier
+     OR (f.any_y = 1 AND f.any_not_y = 1)   -- mixed flags at Facility
+     OR (c.any_y = 1 AND c.any_not_y = 1)   -- mixed flags at CIS
+      )
+ORDER BY
+  b.End_of_Month_Date,
+  b.CIS_Customer_Number,
+  b.Facility_ID,
+  b.Account_Identifier,
+  b.Account_Key;
+
+
+
+
 /* ===== Non_Accrual_Flag hierarchy consistency check ===== */
 /* Finds NA='Y' rows where higher levels (Acct_ID, Facility, CIS) are mixed Y / non-Y */
 
