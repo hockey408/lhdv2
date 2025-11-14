@@ -1,3 +1,64 @@
+A5:  "Starting Balance"
+A6:  "Negative Balance – New"
+A7:  "Negative Balance – Persisting"
+A8:  "Negative Balance – Exit"
+A9:  "Autochange Downgrade IN"
+A10: "Autochange Exit"
+A11: "Autochange Persisting Balance Changes"
+A12: "Autochange No Change"
+A13: "Downgrade IN (ex-Auto)"
+A14: "Exit (ex-Auto)"
+A15: "Persisting Balance Changes (ex-Auto)"
+A16: "No Change (ex-Auto)"
+A17: "Ending Balance"
+
+
+
+B5:
+=SUMIFS(Facility_Rollup[FACILITY_PREV_SSB], Facility_Rollup[BANK_FOR_EVENT], B$4)/1000
+
+B6:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], B$4, Facility_Rollup[MOVEMENT_TYPE], "Negative Balance – New")/1000
+
+B7:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], B$4, Facility_Rollup[MOVEMENT_TYPE], "Negative Balance – Persisting")/1000
+
+B8:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], B$4, Facility_Rollup[MOVEMENT_TYPE], "Negative Balance – Exit")/1000
+
+B9:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], B$4, Facility_Rollup[MOVEMENT_TYPE], "Autochange Downgrade IN")/1000
+
+B10:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], B$4, Facility_Rollup[MOVEMENT_TYPE], "Autochange Exit")/1000
+
+B11:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], B$4, Facility_Rollup[MOVEMENT_TYPE], "Autochange Persisting Balance Changes")/1000
+
+B12:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], B$4, Facility_Rollup[MOVEMENT_TYPE], "Autochange No Change")/1000
+
+B13:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], B$4, Facility_Rollup[MOVEMENT_TYPE], "Downgrade IN (ex-Auto)")/1000
+
+B14:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], B$4, Facility_Rollup[MOVEMENT_TYPE], "Exit (ex-Auto)")/1000
+
+B15:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], B$4, Facility_Rollup[MOVEMENT_TYPE], "Persisting Balance Changes (ex-Auto)")/1000
+
+B16:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], B$4, Facility_Rollup[MOVEMENT_TYPE], "No Change (ex-Auto)")/1000
+
+B17:
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB], Facility_Rollup[BANK_FOR_EVENT], B$4)/1000
+
+
+
+
+
+
+
 let
     Source = Excel.CurrentWorkbook(){[Name="MoM_Account_Detail"]}[Content],
 
