@@ -1,4 +1,21 @@
 =LET(
+  data,   MoM_Account_Detail,
+  fac,    data[FACILITY_FOR_EVENT],
+  ssb,    data[SSB_FOR_EVENT],
+  uniqFac, UNIQUE(fac),
+  facTot, BYROW(uniqFac, LAMBDA(f, SUMIFS(ssb, fac, f))),
+  sorted, SORTBY(
+             CHOOSE({1,2}, uniqFac, facTot),
+             facTot, -1
+          ),
+  TAKE(sorted, 30)
+)
+
+
+
+
+
+=LET(
   data,   Facility_Rollup,
   owner,  $B$1,
   filtered,
