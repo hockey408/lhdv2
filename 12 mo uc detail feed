@@ -1,4 +1,19 @@
 =LET(
+  data,    MoM_Account_Detail,
+  fac,     data[FACILITY_FOR_EVENT],
+  ssb,     data[SSB_FOR_EVENT],
+  uniqFac, UNIQUE(fac),
+  facTot,  SUMIFS(ssb, fac, uniqFac),
+  combo,   CHOOSE({1,2}, uniqFac, facTot),
+  sorted,  SORTBY(combo, INDEX(combo,,2), -1),
+  n,       MIN(30, ROWS(sorted)),
+  INDEX(sorted, SEQUENCE(n), {1,2})
+)
+
+
+
+
+=LET(
   data,   MoM_Account_Detail,
   fac,    data[FACILITY_FOR_EVENT],
   ssb,    data[SSB_FOR_EVENT],
