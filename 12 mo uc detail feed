@@ -1,3 +1,63 @@
+B6:
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB],
+        Facility_Rollup[BANK_FOR_EVENT], B$4,
+        Facility_Rollup[MOVEMENT_TYPE], "Negative Balance – New")/1000
+
+B7:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],
+        Facility_Rollup[BANK_FOR_EVENT], B$4,
+        Facility_Rollup[MOVEMENT_TYPE], "Negative Balance – Persisting")/1000
+
+B8:
+=-SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],
+         Facility_Rollup[BANK_FOR_EVENT], B$4,
+         Facility_Rollup[MOVEMENT_TYPE], "Negative Balance – Exit")/1000
+
+B9:
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB],
+        Facility_Rollup[BANK_FOR_EVENT], B$4,
+        Facility_Rollup[MOVEMENT_TYPE], "Autochange Downgrade IN")/1000
+
+B10:
+=-SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],
+         Facility_Rollup[BANK_FOR_EVENT], B$4,
+         Facility_Rollup[MOVEMENT_TYPE], "Autochange Exit")/1000
+
+B11:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],
+        Facility_Rollup[BANK_FOR_EVENT], B$4,
+        Facility_Rollup[MOVEMENT_TYPE], "Autochange Persisting Balance Changes")/1000
+
+B12:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],
+        Facility_Rollup[BANK_FOR_EVENT], B$4,
+        Facility_Rollup[MOVEMENT_TYPE], "Autochange No Change")/1000
+
+
+B13:
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB],
+        Facility_Rollup[BANK_FOR_EVENT], B$4,
+        Facility_Rollup[MOVEMENT_TYPE], "Downgrade IN (ex-Auto)")/1000
+
+B14:
+=-SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],
+         Facility_Rollup[BANK_FOR_EVENT], B$4,
+         Facility_Rollup[MOVEMENT_TYPE], "Exit (ex-Auto)")/1000
+
+B15:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],
+        Facility_Rollup[BANK_FOR_EVENT], B$4,
+        Facility_Rollup[MOVEMENT_TYPE], "Persisting Balance Changes (ex-Auto)")/1000
+
+B16:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],
+        Facility_Rollup[BANK_FOR_EVENT], B$4,
+        Facility_Rollup[MOVEMENT_TYPE], "No Change (ex-Auto)")/1000
+
+
+
+
+
 let
     // 1) Bring in the MoM_Account_Detail table from Excel
     Source = Excel.CurrentWorkbook(){[Name="MoM_Account_Detail"]}[Content],
