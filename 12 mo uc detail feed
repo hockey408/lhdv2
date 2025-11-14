@@ -1,3 +1,26 @@
+=LET(
+  data,   Facility_Rollup,
+  owner,  $B$1,
+  filtered,
+    FILTER(
+      data,
+      (data[OWNER_CURR]=owner) *
+      (data[MOVEMENT_TYPE]="Downgrade IN (ex-Auto)") *
+      (data[FACILITY_CURR_SSB]>0)
+    ),
+  sorted,
+    SORTBY(
+      filtered,
+      filtered[FACILITY_CURR_SSB], -1
+    ),
+  top30,
+    TAKE(sorted, 30),
+  INDEX(top30[FACILITY_KEY], SEQUENCE(ROWS(top30)), 1)
+)
+
+
+
+
 B6:
 =SUMIFS(Facility_Rollup[FACILITY_CURR_SSB],
         Facility_Rollup[BANK_FOR_EVENT], B$4,
