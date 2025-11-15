@@ -8,6 +8,18 @@
 
 
 
+
+
+=LET(
+  eng,  Top30_Engine!$A$2:$D$9999,
+  own,  $B$1,
+  mov,  $B$2,
+  filt, FILTER(eng, (INDEX(eng,,1)=own)*(INDEX(eng,,2)=mov)),
+  SORT(filt, 4, -1)
+)
+
+
+
 =LET(
   eng,  $A$5#,
   facCol, 3,  /* FACILITY_FOR_EVENT is 3rd column of eng spill */
