@@ -1,4 +1,21 @@
 =LET(
+  eng,  $A$5#,
+  facCol, 3,  /* FACILITY_FOR_EVENT is 3rd column of eng spill */
+  facList, INDEX(eng,,facCol),
+  topFac,  INDEX(facList, SEQUENCE(MIN(30, ROWS(facList))), 1),
+  FILTER(
+    MoM_Account_Detail,
+    ISNUMBER(MATCH(MoM_Account_Detail[FACILITY_FOR_EVENT], topFac, 0)) *
+    (MoM_Account_Detail[REVIEWABLE_FLAG]=1) *
+    (MoM_Account_Detail[MOVEMENT_TYPE]=$B$2) *
+    (MoM_Account_Detail[OWNER_FOR_EVENT]=$B$1)
+  )
+)
+
+
+
+
+=LET(
   eng,  Top30_Engine!$A$2:$D$9999,
   own,  $B$1,
   mov,  $B$2,
