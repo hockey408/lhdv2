@@ -15,6 +15,37 @@
 )
 
 
+=SUMIFS(
+  MoM_Account_Detail[SSB_FOR_EVENT],
+  MoM_Account_Detail[OWNER_FOR_EVENT], A2:A2#,
+  MoM_Account_Detail[MOVEMENT_TYPE],   B2:B2#,
+  MoM_Account_Detail[FACILITY_FOR_EVENT], C2:C2#,
+  MoM_Account_Detail[REVIEWABLE_FLAG], 1
+)
+
+
+
+
+
+
+
+=UNIQUE(
+  FILTER(
+    CHOOSE(
+      {1,2,3},
+      MoM_Account_Detail[OWNER_FOR_EVENT],
+      MoM_Account_Detail[MOVEMENT_TYPE],
+      MoM_Account_Detail[FACILITY_FOR_EVENT]
+    ),
+    (MoM_Account_Detail[REVIEWABLE_FLAG]=1) *
+    (
+      (MoM_Account_Detail[MOVEMENT_TYPE]="Downgrade IN (ex-Auto)") +
+      (MoM_Account_Detail[MOVEMENT_TYPE]="Exit (ex-Auto)")
+    )
+  )
+)
+
+
 
 
 
