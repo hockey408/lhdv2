@@ -1,4 +1,44 @@
 =LET(
+  topBlock, $R$51#,                 /* the Exit Top30 spill */
+  topFacilities, INDEX(topBlock,,3),
+
+  FILTER(
+    CHOOSE(
+      {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15},
+      MoM_Account_Detail[PREV_ACCOUNT_NAME],
+      MoM_Account_Detail[PREV_CIS],
+      MoM_Account_Detail[FACILITY_FOR_EVENT],       /* same, facility key for event */
+      MoM_Account_Detail[PREV_ACCOUNT_IDENTIFIER],
+      MoM_Account_Detail[ACCOUNT_KEY],
+      MoM_Account_Detail[PREV_BANK_CODE],
+      MoM_Account_Detail[PREV_CSS],
+      MoM_Account_Detail[PREV_GL_HIER4],
+      MoM_Account_Detail[PREV_PROD5],
+      MoM_Account_Detail[PREV_STATUS_CODE],
+      MoM_Account_Detail[PREV_RBC],
+      MoM_Account_Detail[PREV_SSB],                 /* previous month SSB = correct for Exit */
+      MoM_Account_Detail[PREV_GL_BAL],              /* previous GL */
+      MoM_Account_Detail[MOVEMENT_TYPE],
+      MoM_Account_Detail[OWNER_FOR_EVENT]
+    ),
+
+    ISNUMBER(
+      MATCH(
+        MoM_Account_Detail[FACILITY_FOR_EVENT],
+        topFacilities,
+        0
+      )
+    )
+    * (MoM_Account_Detail[REVIEWABLE_FLAG]=1)
+    * (MoM_Account_Detail[MOVEMENT_TYPE]="Exit (ex-Auto)")
+    * (MoM_Account_Detail[OWNER_FOR_EVENT]=$R$10)
+  )
+)
+
+
+
+
+=LET(
   topBlock, $R$14#,
   topFacilities, INDEX(topBlock,,3),
   FILTER(
