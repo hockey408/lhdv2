@@ -1,3 +1,40 @@
+Starting_Balance (k):
+=SUMIFS(Facility_Rollup[FACILITY_PREV_SSB], Facility_Rollup[BANK_FOR_EVENT], $B$1) / 1000
+
+Autochange_NET (k):
+=(
+   SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], $B$1, Facility_Rollup[MOVEMENT_TYPE], "Autochange Downgrade IN")
+ + SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], $B$1, Facility_Rollup[MOVEMENT_TYPE], "Autochange Exit")
+ + SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA], Facility_Rollup[BANK_FOR_EVENT], $B$1, Facility_Rollup[MOVEMENT_TYPE], "Autochange Persisting Balance Changes")
+) / 1000
+
+Persisting_Delta_exAuto (k):
+=SUMIFS(
+   Facility_Rollup[FACILITY_MOM_DELTA],
+   Facility_Rollup[BANK_FOR_EVENT], $B$1,
+   Facility_Rollup[MOVEMENT_TYPE], "Persisting Balance Changes (ex-Auto)"
+) / 1000
+
+Downgrade_IN_exAuto (k):
+=SUMIFS(
+   Facility_Rollup[FACILITY_MOM_DELTA],
+   Facility_Rollup[BANK_FOR_EVENT], $B$1,
+   Facility_Rollup[MOVEMENT_TYPE], "Downgrade IN (ex-Auto)"
+) / 1000
+
+Exit_exAuto (k):
+=SUMIFS(
+   Facility_Rollup[FACILITY_MOM_DELTA],
+   Facility_Rollup[BANK_FOR_EVENT], $B$1,
+   Facility_Rollup[MOVEMENT_TYPE], "Exit (ex-Auto)"
+) / 1000
+
+Ending_Balance (k):
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB], Facility_Rollup[BANK_FOR_EVENT], $B$1) / 1000
+
+
+
+
 =SUMIFS(
   Facility_Rollup[FACILITY_CURR_SSB],
   Facility_Rollup[MOVEMENT_TYPE],"Downgrade IN (ex-Auto)"
