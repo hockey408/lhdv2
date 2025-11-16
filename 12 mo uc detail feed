@@ -1,3 +1,51 @@
+=LET(
+  eng, Top30_Engine!$A$2:$D$10000,
+  own, $B$1,
+  mov, $B$2,
+  sub, FILTER(
+        eng,
+        (INDEX(eng,,1)=own) * (INDEX(eng,,2)=mov)
+      ),
+  TAKE(SORT(sub,4,-1), 30)
+)
+
+
+=LET(
+  topBlock, $X$5#,
+  topFacilities, INDEX(topBlock,,3),   /* 3rd col of X5#: FACILITY_FOR_EVENT */
+  FILTER(
+    CHOOSE(
+      {1,2,3,4,5,6,7,8,9,10},
+      MoM_Account_Detail[ACCOUNT_KEY],
+      MoM_Account_Detail[FACILITY_FOR_EVENT],
+      MoM_Account_Detail[CIS_FOR_EVENT],
+      MoM_Account_Detail[MOVEMENT_TYPE],
+      MoM_Account_Detail[OWNER_FOR_EVENT],
+      MoM_Account_Detail[SSB_FOR_EVENT],
+      MoM_Account_Detail[MOM_DELTA],
+      MoM_Account_Detail[CURR_PROD5],
+      MoM_Account_Detail[CURR_BANK_CODE],
+      MoM_Account_Detail[REVIEWABLE_FLAG]
+    ),
+    ISNUMBER(
+      MATCH(
+        MoM_Account_Detail[FACILITY_FOR_EVENT],
+        topFacilities,
+        0
+      )
+    )
+    * (MoM_Account_Detail[REVIEWABLE_FLAG]=1)
+    * (MoM_Account_Detail[MOVEMENT_TYPE]=$B$2)
+    * (MoM_Account_Detail[OWNER_FOR_EVENT]=$B$1)
+  )
+)
+
+
+
+
+
+
+
 =SORT(
   FILTER(
     Top30_Engine[[FACILITY_FOR_EVENT]:[Total_Reviewable_SSB]],
