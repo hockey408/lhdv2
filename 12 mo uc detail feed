@@ -1,3 +1,15 @@
+=SUMIFS(
+  MoM_Account_Detail[SSB_FOR_EVENT],
+  MoM_Account_Detail[OWNER_FOR_EVENT], $R$10,
+  MoM_Account_Detail[MOVEMENT_TYPE],   $R$11,
+  MoM_Account_Detail[REVIEWABLE_FLAG], 1
+)/1000000
+
+
+
+
+
+
 =LET(
   topBlock, $R$51#,                 /* the Exit Top30 spill */
   topFacilities, INDEX(topBlock,,3),
