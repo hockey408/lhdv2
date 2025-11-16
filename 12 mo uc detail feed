@@ -1,3 +1,26 @@
+=SUMIFS(
+  Facility_Rollup[FACILITY_CURR_SSB],
+  Facility_Rollup[MOVEMENT_TYPE],"Downgrade IN (ex-Auto)"
+)
+
+=SUMIFS(
+  Facility_Rollup[FACILITY_PREV_SSB],
+  Facility_Rollup[MOVEMENT_TYPE],"Exit (ex-Auto)"
+)
+
+=SUM(Top30_AllOwners[FACILITY_SSB])
+
+=F4 /
+ SUMIFS(
+   MoM_Account_Detail[SSB_FOR_EVENT],
+   MoM_Account_Detail[REVIEWABLE_FLAG],1
+ )
+
+
+
+
+
+
 =LET(
   topBlock, $R$51#,                          /* Top 30 Exit facilities spill */
   topFacilities, INDEX(topBlock,,3),
