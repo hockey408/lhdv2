@@ -1,3 +1,25 @@
+Top 30 Total SSB:
+=(SUM(INDEX($R$12#,0,4))/1000)
+
+Total Reviewable SSB:
+=SUMIFS(
+  MoM_Account_Detail[SSB_FOR_EVENT],
+  MoM_Account_Detail[OWNER_FOR_EVENT], $R$8,
+  MoM_Account_Detail[MOVEMENT_TYPE],   $R$9,
+  MoM_Account_Detail[REVIEWABLE_FLAG], 1
+)/1000
+
+% Coverage:
+=C4/C5
+
+
+
+
+
+
+
+
+
 =SUMIFS(
   MoM_Account_Detail[SSB_FOR_EVENT],
   MoM_Account_Detail[OWNER_FOR_EVENT], $R$10,
