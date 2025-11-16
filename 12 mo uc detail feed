@@ -1,4 +1,49 @@
 =LET(
+  topBlock, $R$51#,                          /* Top 30 Exit facilities spill */
+  topFacilities, INDEX(topBlock,,3),
+
+  detailCols,
+    CHOOSE(
+      {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15},
+      MoM_Account_Detail[PREV_ACCOUNT_NAME],        /* 1 */
+      MoM_Account_Detail[PREV_CIS],                 /* 2 */
+      MoM_Account_Detail[FACILITY_FOR_EVENT],       /* 3 */
+      MoM_Account_Detail[PREV_ACCOUNT_IDENTIFIER],  /* 4 */
+      MoM_Account_Detail[ACCOUNT_KEY],              /* 5 */
+      MoM_Account_Detail[PREV_BANK_CODE],           /* 6 */
+      MoM_Account_Detail[PREV_CSS],                 /* 7 */
+      MoM_Account_Detail[PREV_GL_HIER4],            /* 8 */
+      MoM_Account_Detail[PREV_PROD5],               /* 9 */
+      MoM_Account_Detail[PREV_STATUS_CODE],         /* 10 */
+      MoM_Account_Detail[PREV_RBC],                 /* 11 */
+      MoM_Account_Detail[PREV_SSB],                 /* 12 ← sort by this */
+      MoM_Account_Detail[PREV_GL_BAL],              /* 13 */
+      MoM_Account_Detail[MOVEMENT_TYPE],            /* 14 */
+      MoM_Account_Detail[OWNER_FOR_EVENT]           /* 15 */
+    ),
+
+  filtered,
+    FILTER(
+      detailCols,
+      ISNUMBER(
+        MATCH(
+          MoM_Account_Detail[FACILITY_FOR_EVENT],
+          topFacilities,
+          0
+        )
+      )
+      * (MoM_Account_Detail[REVIEWABLE_FLAG]=1)
+      * (MoM_Account_Detail[MOVEMENT_TYPE]="Exit (ex-Auto)")
+      * (MoM_Account_Detail[OWNER_FOR_EVENT]=$R$10)
+    ),
+
+  SORT(filtered, 12, -1)   /* sort by Prev_SSB desc */
+)
+
+
+
+
+=LET(
   topBlock, $R$14#,
   topFacilities, INDEX(topBlock,,3),
   detailCols,
