@@ -1,3 +1,16 @@
+=SORT(
+  FILTER(
+    Top30_Engine[[FACILITY_FOR_EVENT]:[Total_Reviewable_SSB]],
+    (Top30_Engine[OWNER_FOR_EVENT]=$B$1)*
+    (Top30_Engine[MOVEMENT_TYPE]=$B$2)
+  ),
+  2,-1
+)
+
+
+
+
+
 =IFERROR(
   TAKE(
     SORTBY(
