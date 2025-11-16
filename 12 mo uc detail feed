@@ -1,3 +1,22 @@
+Starting Balance
+Negative Balance – New
+Negative Balance – Persisting
+Negative Balance – Exit
+Autochange Downgrade IN
+Autochange Exit
+Autochange Persisting Balance Changes
+Autochange No Change
+Downgrade IN (ex-Auto)
+Exit (ex-Auto)
+Persisting Balance Changes (ex-Auto)
+No Change (ex-Auto)
+Ending Balance
+
+
+
+
+
+
 Starting_Balance (k):
 =SUMIFS(Facility_Rollup[FACILITY_PREV_SSB], Facility_Rollup[BANK_FOR_EVENT], $B$1) / 1000
 
