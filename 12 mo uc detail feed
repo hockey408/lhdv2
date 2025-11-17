@@ -1,3 +1,41 @@
+/* === Anchor query: total NA SSB + GL by latest two EOMs (incl. negatives) === */
+
+WITH latest_curr AS (
+    SELECT MAX(End_of_Month_Date) AS curr_eom
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+    WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+      AND Non_Accrual_Flag = 'Y'
+),
+latest_prev AS (
+    SELECT MAX(End_of_Month_Date) AS prev_eom
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, latest_curr
+    WHERE End_of_Month_Date < (SELECT curr_eom FROM latest_curr)
+      AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+      AND Non_Accrual_Flag = 'Y'
+),
+params AS (
+    SELECT
+        (SELECT curr_eom FROM latest_curr) AS curr_eom,
+        (SELECT prev_eom FROM latest_prev) AS prev_eom
+)
+
+SELECT
+    End_of_Month_Date,
+    SUM(Source_System_Balance) AS Total_SSB,
+    SUM(GL_Balance)           AS Total_GL_Balance
+FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+WHERE GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+  AND Non_Accrual_Flag = 'Y'
+  AND End_of_Month_Date IN (
+        (SELECT curr_eom FROM params),
+        (SELECT prev_eom FROM params)
+      )
+GROUP BY End_of_Month_Date
+ORDER BY End_of_Month_Date;
+
+
+
+
 =SUM(
   SUMIFS(
     Facility_Rollup[FACILITY_PREV_SSB],
