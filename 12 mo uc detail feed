@@ -1,3 +1,53 @@
+let
+    // Start from the existing MoM_Account_Detail query
+    Source = #"MoM_Account_Detail",
+
+    // Make sure the SSB columns are numeric
+    #"Changed Type" = Table.TransformColumnTypes(
+        Source,
+        {
+            {"PREV_SSB", type number},
+            {"CURR_SSB", type number}
+        }
+    ),
+
+    // For compatibility with your old layout, create FACILITY_KEY from FACILITY_FOR_EVENT
+    #"Renamed Columns" = Table.RenameColumns(
+        #"Changed Type",
+        {{"FACILITY_FOR_EVENT", "FACILITY_KEY"}}
+    ),
+
+    // Group to facility level (by facility + bank + movement + owners)
+    #"Grouped Rows" = Table.Group(
+        #"Renamed Columns",
+        {"FACILITY_KEY", "BANK_FOR_EVENT", "MOVEMENT_TYPE", "OWNER_CURR", "OWNER_PREV"},
+        {
+            // Sum of prev SSB at facility level
+            {"FACILITY_PREV_SSB", each List.Sum([PREV_SSB]), type number},
+
+            // Sum of curr SSB at facility level
+            {"FACILITY_CURR_SSB", each List.Sum([CURR_SSB]), type number},
+
+            // Distinct count of account_keys under the facility
+            {"ACCOUNT_COUNT", each List.Count(List.Distinct([ACCOUNT_KEY])), Int64.Type}
+        }
+    ),
+
+    // Add facility-level MoM delta
+    #"Added FACILITY_MOM_DELTA" = Table.AddColumn(
+        #"Grouped Rows",
+        "FACILITY_MOM_DELTA",
+        each [FACILITY_CURR_SSB] - [FACILITY_PREV_SSB],
+        type number
+    )
+
+in
+    #"Added FACILITY_MOM_DELTA"
+
+
+
+
+
 WITH latest_curr AS (
   SELECT MAX(End_of_Month_Date) AS curr_eom
   FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
