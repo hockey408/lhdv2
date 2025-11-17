@@ -1,3 +1,50 @@
+=VSTACK(
+  {"Bridge Line Item","Formula (Thousands)"},
+  {"Starting Balance",SUMIFS(Facility_Rollup[Facility_Prev_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8)/1000},
+  {"Negative Balance – New",SUMIFS(Facility_Rollup[Facility_Curr_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Negative Balance – New")/1000},
+  {"Negative Balance – Persisting",
+    (
+      SUMIFS(Facility_Rollup[Facility_Curr_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Negative Balance – Persisting")
+      -SUMIFS(Facility_Rollup[Facility_Prev_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Negative Balance – Persisting")
+    )/1000
+  },
+  {"Negative Balance – Exit",
+    -SUMIFS(Facility_Rollup[Facility_Prev_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Negative Balance – Exit")/1000
+  },
+  {"Autochange Downgrade IN",
+    SUMIFS(Facility_Rollup[Facility_Curr_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Autochange Downgrade IN")/1000
+  },
+  {"Autochange Exit",
+    -SUMIFS(Facility_Rollup[Facility_Prev_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Autochange Exit")/1000
+  },
+  {"Autochange Persisting Balance Changes",
+    (
+      SUMIFS(Facility_Rollup[Facility_Curr_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Autochange Persisting Balance Changes")
+      -SUMIFS(Facility_Rollup[Facility_Prev_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Autochange Persisting Balance Changes")
+    )/1000
+  },
+  {"Autochange No Change",0},
+  {"Downgrade IN (ex-Auto)",
+    SUMIFS(Facility_Rollup[Facility_Curr_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Downgrade IN (ex-Auto)")/1000
+  },
+  {"Exit (ex-Auto)",
+    -SUMIFS(Facility_Rollup[Facility_Prev_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Exit (ex-Auto)")/1000
+  },
+  {"Persisting Balance Changes (ex-Auto)",
+    (
+      SUMIFS(Facility_Rollup[Facility_Curr_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Persisting Balance Changes (ex-Auto)")
+      -SUMIFS(Facility_Rollup[Facility_Prev_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Persisting Balance Changes (ex-Auto)")
+    )/1000
+  },
+  {"No Change (ex-Auto)",0},
+  {"Ending Balance",
+    SUMIFS(Facility_Rollup[Facility_Curr_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8)/1000
+  }
+)
+
+
+
+
 Starting Balance (Prev month total):
 =SUMIFS(
   Facility_Rollup[Facility_Prev_SSB],
