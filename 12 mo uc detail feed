@@ -1,3 +1,30 @@
+Starting Balance:
+=SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8)/1000
+
+Autochange Downgrade IN:
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Autochange Downgrade IN")/1000
+
+Autochange Exit:
+=-SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Autochange Exit")/1000
+
+Autochange Persisting Balance Changes:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Autochange Persisting Balance Changes")/1000
+
+Downgrade IN (ex-Auto):
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Downgrade IN (ex-Auto)")/1000
+
+Exit (ex-Auto):
+=-SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Exit (ex-Auto)")/1000
+
+Persisting Balance Changes (ex-Auto):
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Persisting Balance Changes (ex-Auto)")/1000
+
+Ending Balance:
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8)/1000
+
+
+
+
 let
     // Start from the existing MoM_Account_Detail query
     Source = #"MoM_Account_Detail",
