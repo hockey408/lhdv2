@@ -1,3 +1,14 @@
+=SUM(
+  SUMIFS(
+    Facility_Rollup[FACILITY_PREV_SSB],
+    Facility_Rollup[MOVEMENT_TYPE], {"Exit (ex-Auto)","Autochange Exit"},
+    Facility_Rollup[FACILITY_PREV_SSB], ">0"
+  )
+)
+
+
+
+
 C22 – Starting Count (distinct facilities with prev SSB ≠ 0 in this bank):
 =LET(
   idx, (Facility_Rollup[BANK_FOR_EVENT]=C$8)*(Facility_Rollup[FACILITY_PREV_SSB]<>0),
