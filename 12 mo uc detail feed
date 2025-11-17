@@ -1,3 +1,60 @@
+C10 – Starting Balance:
+=SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],
+        Facility_Rollup[BANK_FOR_EVENT], C$8)/1000
+
+C11 – Autochange Downgrade IN:
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB],
+        Facility_Rollup[BANK_FOR_EVENT], C$8,
+        Facility_Rollup[MOVEMENT_TYPE], "Autochange Downgrade IN")/1000
+
+C12 – Autochange Exit:
+=-SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],
+         Facility_Rollup[BANK_FOR_EVENT], C$8,
+         Facility_Rollup[MOVEMENT_TYPE], "Autochange Exit")/1000
+
+C13 – Autochange Persisting Balance Changes:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],
+        Facility_Rollup[BANK_FOR_EVENT], C$8,
+        Facility_Rollup[MOVEMENT_TYPE], "Autochange Persisting Balance Changes")/1000
+
+C14 – Downgrade IN (ex-Auto) – Positive:
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB],
+        Facility_Rollup[BANK_FOR_EVENT], C$8,
+        Facility_Rollup[MOVEMENT_TYPE], "Downgrade IN (ex-Auto)",
+        Facility_Rollup[FACILITY_CURR_SSB], ">0")/1000
+
+C15 – Downgrade IN (ex-Auto) – Negative:
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB],
+        Facility_Rollup[BANK_FOR_EVENT], C$8,
+        Facility_Rollup[MOVEMENT_TYPE], "Downgrade IN (ex-Auto)",
+        Facility_Rollup[FACILITY_CURR_SSB], "<0")/1000
+
+C16 – Exit (ex-Auto) – Positive:
+=-SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],
+         Facility_Rollup[BANK_FOR_EVENT], C$8,
+         Facility_Rollup[MOVEMENT_TYPE], "Exit (ex-Auto)",
+         Facility_Rollup[FACILITY_PREV_SSB], ">0")/1000
+
+C17 – Exit (ex-Auto) – Negative:
+=-SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],
+         Facility_Rollup[BANK_FOR_EVENT], C$8,
+         Facility_Rollup[MOVEMENT_TYPE], "Exit (ex-Auto)",
+         Facility_Rollup[FACILITY_PREV_SSB], "<0")/1000
+
+C18 – Persisting Balance Changes (ex-Auto):
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],
+        Facility_Rollup[BANK_FOR_EVENT], C$8,
+        Facility_Rollup[MOVEMENT_TYPE], "Persisting Balance Changes (ex-Auto)")/1000
+
+C19 – Ending Balance:
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB],
+        Facility_Rollup[BANK_FOR_EVENT], C$8)/1000
+
+
+
+
+
+
 Starting Balance:
 =SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8)/1000
 
