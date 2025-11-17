@@ -1,3 +1,42 @@
+C22 – Starting Count (facilities with any prev SSB in this bank):
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT], C$8,
+  Facility_Rollup[FACILITY_PREV_SSB], "<>0"
+)
+
+C23 – Autochange Downgrade IN (facility count):
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT], C$8,
+  Facility_Rollup[MOVEMENT_TYPE], "Autochange Downgrade IN"
+)
+
+C24 – Autochange Exit (facility count):
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT], C$8,
+  Facility_Rollup[MOVEMENT_TYPE], "Autochange Exit"
+)
+
+C25 – Downgrade IN (ex-Auto) (facility count):
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT], C$8,
+  Facility_Rollup[MOVEMENT_TYPE], "Downgrade IN (ex-Auto)"
+)
+
+C26 – Exit (ex-Auto) (facility count):
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT], C$8,
+  Facility_Rollup[MOVEMENT_TYPE], "Exit (ex-Auto)"
+)
+
+C27 – Ending Count (facilities with any curr SSB in this bank):
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT], C$8,
+  Facility_Rollup[FACILITY_CURR_SSB], "<>0"
+)
+
+
+
+
 C10 – Starting Balance:
 =SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],
         Facility_Rollup[BANK_FOR_EVENT], C$8)/1000
