@@ -1,3 +1,21 @@
+WITH latest_curr AS (
+  SELECT MAX(End_of_Month_Date) AS curr_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE Non_Accrual_Flag = 'Y'
+    AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+)
+SELECT
+  SUM(t.Source_System_Balance) AS anchor_curr_ssb
+FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB t
+JOIN latest_curr d
+  ON t.End_of_Month_Date = d.curr_eom
+WHERE t.Non_Accrual_Flag = 'Y'
+  AND t.GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale');
+
+
+
+
+
 -- ANCHOR: current EOM non-accrual SSB
 WITH latest_curr AS (
   SELECT MAX(End_of_Month_Date) AS curr_eom
