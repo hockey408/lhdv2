@@ -1,3 +1,55 @@
+C22 – Starting Count (distinct facilities with prev SSB ≠ 0 in this bank):
+=LET(
+  idx, (Facility_Rollup[BANK_FOR_EVENT]=C$8)*(Facility_Rollup[FACILITY_PREV_SSB]<>0),
+  fac, FILTER(Facility_Rollup[FACILITY_KEY], idx),
+  ROWS(UNIQUE(fac))
+)
+
+C23 – Autochange Downgrade IN (distinct facilities):
+=LET(
+  idx, (Facility_Rollup[BANK_FOR_EVENT]=C$8)*
+       (Facility_Rollup[MOVEMENT_TYPE]="Autochange Downgrade IN"),
+  fac, FILTER(Facility_Rollup[FACILITY_KEY], idx),
+  ROWS(UNIQUE(fac))
+)
+
+C24 – Downgrade IN (ex-Auto) (distinct facilities):
+=LET(
+  idx, (Facility_Rollup[BANK_FOR_EVENT]=C$8)*
+       (Facility_Rollup[MOVEMENT_TYPE]="Downgrade IN (ex-Auto)"),
+  fac, FILTER(Facility_Rollup[FACILITY_KEY], idx),
+  ROWS(UNIQUE(fac))
+)
+
+C25 – Autochange Exit (distinct facilities):
+=LET(
+  idx, (Facility_Rollup[BANK_FOR_EVENT]=C$8)*
+       (Facility_Rollup[MOVEMENT_TYPE]="Autochange Exit"),
+  fac, FILTER(Facility_Rollup[FACILITY_KEY], idx),
+  ROWS(UNIQUE(fac))
+)
+
+C26 – Exit (ex-Auto) (distinct facilities):
+=LET(
+  idx, (Facility_Rollup[BANK_FOR_EVENT]=C$8)*
+       (Facility_Rollup[MOVEMENT_TYPE]="Exit (ex-Auto)"),
+  fac, FILTER(Facility_Rollup[FACILITY_KEY], idx),
+  ROWS(UNIQUE(fac))
+)
+
+C27 – Ending Count (distinct facilities with curr SSB ≠ 0 in this bank):
+=LET(
+  idx, (Facility_Rollup[BANK_FOR_EVENT]=C$8)*(Facility_Rollup[FACILITY_CURR_SSB]<>0),
+  fac, FILTER(Facility_Rollup[FACILITY_KEY], idx),
+  ROWS(UNIQUE(fac))
+)
+
+C28 – Check (Start + Ins – Outs – End):
+= C22 + C23 + C24 - C25 - C26 - C27
+
+
+
+
 C22 – Starting Count (facilities with any prev SSB in this bank):
 =COUNTIFS(
   Facility_Rollup[BANK_FOR_EVENT], C$8,
