@@ -1,3 +1,39 @@
+Starting Balance:
+=SUMIFS(MoM_Account_Detail[PREV_SSB],MoM_Account_Detail[BANK_FOR_EVENT],$B$1)/1000
+
+Negative Balance – New:
+=SUMIFS(MoM_Account_Detail[MOM_DELTA],MoM_Account_Detail[BANK_FOR_EVENT],$B$1,MoM_Account_Detail[MOVEMENT_TYPE],"Negative Balance – New")/1000
+
+Negative Balance – Persisting:
+=SUMIFS(MoM_Account_Detail[MOM_DELTA],MoM_Account_Detail[BANK_FOR_EVENT],$B$1,MoM_Account_Detail[MOVEMENT_TYPE],"Negative Balance – Persisting")/1000
+
+Negative Balance – Exit:
+=SUMIFS(MoM_Account_Detail[MOM_DELTA],MoM_Account_Detail[BANK_FOR_EVENT],$B$1,MoM_Account_Detail[MOVEMENT_TYPE],"Negative Balance – Exit")/1000
+
+Autochange Downgrade IN:
+=SUMIFS(MoM_Account_Detail[MOM_DELTA],MoM_Account_Detail[BANK_FOR_EVENT],$B$1,MoM_Account_Detail[MOVEMENT_TYPE],"Autochange Downgrade IN")/1000
+
+Autochange Exit:
+=SUMIFS(MoM_Account_Detail[MOM_DELTA],MoM_Account_Detail[BANK_FOR_EVENT],$B$1,MoM_Account_Detail[MOVEMENT_TYPE],"Autochange Exit")/1000
+
+Autochange Persisting Balance Changes:
+=SUMIFS(MoM_Account_Detail[MOM_DELTA],MoM_Account_Detail[BANK_FOR_EVENT],$B$1,MoM_Account_Detail[MOVEMENT_TYPE],"Autochange Persisting Balance Changes")/1000
+
+Downgrade IN (ex-Auto):
+=SUMIFS(MoM_Account_Detail[MOM_DELTA],MoM_Account_Detail[BANK_FOR_EVENT],$B$1,MoM_Account_Detail[MOVEMENT_TYPE],"Downgrade IN (ex-Auto)")/1000
+
+Exit (ex-Auto):
+=SUMIFS(MoM_Account_Detail[MOM_DELTA],MoM_Account_Detail[BANK_FOR_EVENT],$B$1,MoM_Account_Detail[MOVEMENT_TYPE],"Exit (ex-Auto)")/1000
+
+Persisting Balance Changes (ex-Auto):
+=SUMIFS(MoM_Account_Detail[MOM_DELTA],MoM_Account_Detail[BANK_FOR_EVENT],$B$1,MoM_Account_Detail[MOVEMENT_TYPE],"Persisting Balance Changes (ex-Auto)")/1000
+
+Ending Balance:
+=SUMIFS(MoM_Account_Detail[CURR_SSB],MoM_Account_Detail[BANK_FOR_EVENT],$B$1)/1000
+
+
+
+
 =SUMIFS(
   MoM_Account_Detail[SSB_FOR_EVENT],
   MoM_Account_Detail[BANK_FOR_EVENT], $B$1
