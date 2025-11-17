@@ -1,3 +1,44 @@
+--- FACILITY COUNT BRIDGE FORMULAS (BY BANK) ---
+
+C30   Starting Facility Count:
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT], C$8,
+  Facility_Rollup[Facility_Prev_SSB], "<>"&0
+)
+
+C31   Autochange Downgrade IN – Facility Count:
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT], C$8,
+  Facility_Rollup[MOVEMENT_TYPE], "Autochange Downgrade IN"
+)
+
+C32   Downgrade IN (ex-Auto) – Facility Count:
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT], C$8,
+  Facility_Rollup[MOVEMENT_TYPE], "Downgrade IN (ex-Auto)"
+)
+
+C33   Autochange Exit – Facility Count:
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT], C$8,
+  Facility_Rollup[MOVEMENT_TYPE], "Autochange Exit"
+)
+
+C34   Exit (ex-Auto) – Facility Count:
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT], C$8,
+  Facility_Rollup[MOVEMENT_TYPE], "Exit (ex-Auto)"
+)
+
+C35   Ending Facility Count:
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT], C$8,
+  Facility_Rollup[Facility_Curr_SSB], "<>"&0
+)
+
+
+
+
 --- BALANCE BRIDGE FORMULAS (BY BANK) ---
 
 C12   Starting Balance:
