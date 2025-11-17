@@ -1,3 +1,11 @@
+=SUMIFS(
+  MoM_Account_Detail[SSB_FOR_EVENT],
+  MoM_Account_Detail[BANK_FOR_EVENT], $B$1
+) / 1000
+
+
+
+
 Starting Balance
 Negative Balance – New
 Negative Balance – Persisting
