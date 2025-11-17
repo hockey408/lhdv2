@@ -1,3 +1,42 @@
+Starting Facility Count:
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT],C8,
+  Facility_Rollup[FACILITY_PREV_SSB],"<>"&0
+)
+
+Autochange Downgrade IN – Facility Count:
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT],C8,
+  Facility_Rollup[MOVEMENT_TYPE],"Autochange Downgrade IN"
+)
+
+Downgrade IN (ex-Auto) – Facility Count:
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT],C8,
+  Facility_Rollup[MOVEMENT_TYPE],"Downgrade IN (ex-Auto)"
+)
+
+Autochange Exit – Facility Count:
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT],C8,
+  Facility_Rollup[MOVEMENT_TYPE],"Autochange Exit"
+)
+
+Exit (ex-Auto) – Facility Count:
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT],C8,
+  Facility_Rollup[MOVEMENT_TYPE],"Exit (ex-Auto)"
+)
+
+Ending Facility Count:
+=COUNTIFS(
+  Facility_Rollup[BANK_FOR_EVENT],C8,
+  Facility_Rollup[FACILITY_CURR_SSB],"<>"&0
+)
+
+
+
+
 Starting Balance:
 =SUMIFS(MoM_Account_Detail[PREV_SSB],MoM_Account_Detail[BANK_FOR_EVENT],$B$1)/1000
 
