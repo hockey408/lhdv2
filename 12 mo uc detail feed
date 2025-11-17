@@ -1,3 +1,12 @@
+=SUMIFS(MoM_Account_Detail[SSB_FOR_EVENT],
+        MoM_Account_Detail[OWNER_FOR_EVENT], "Connor",
+        MoM_Account_Detail[MOVEMENT_TYPE], "Downgrade IN (ex-Auto)",
+        MoM_Account_Detail[REVIEWABLE_FLAG], 1)
+
+
+
+
+
 /* === Anchor query: total NA SSB + GL by latest two EOMs (incl. negatives) === */
 
 WITH latest_curr AS (
