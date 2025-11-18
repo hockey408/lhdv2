@@ -1,3 +1,7 @@
+identify the charge offs by the risk / pd rating. if it was there last month and gone this month, is the risk rating this month a charge off risk rating? if so then we can track these exits to the charged off section
+
+
+
 =IF($A5="Other",
    SUMIFS(
      MoM_Account_Detail[Prev_CO_MTD],
