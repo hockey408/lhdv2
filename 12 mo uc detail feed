@@ -1,3 +1,13 @@
+=SUMIFS(
+  MoM_Account_Detail[Prev_CO_MTD],
+  MoM_Account_Detail[Bank_For_Event], $C$2,
+  MoM_Account_Detail[MOVEMENT_TYPE], "Exit (ex-Auto)"
+)
+
+
+
+
+
 =IF(
   $C$3="",
   SUMIFS(
