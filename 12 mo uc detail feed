@@ -1,3 +1,151 @@
+/* ================================================================
+   RC Drilldown – Account-Level Flow & Movement Classification
+   - Focuses on one RC (by code) for a chosen current month-end
+   - Compares prior month vs current month by ACCOUNT_IDENTIFIER
+   - Classifies:
+       * NEW_TO_RC       (prev not this RC, curr = this RC)
+       * CLOSED_FROM_RC  (prev = this RC, curr missing)
+       * TRANSFER_IN     (prev other RC, curr = this RC)
+       * TRANSFER_OUT    (prev = this RC, curr other RC)
+       * BALANCE_CHANGE_IN_RC (prev = curr = this RC, exposure changed)
+       * NO_CHANGE_IN_RC (prev = curr = this RC, exposure unchanged)
+   - Shows where transfers came from / went to (prev_rc_code, curr_rc_code)
+   ================================================================= */
+
+WITH params AS (
+    SELECT
+        DATE '2025-09-30'::DATE AS curr_me,       -- <<< set current month-end here
+        '1234'::VARCHAR(50)    AS target_rc      -- <<< set target RC_CODE here
+),
+
+/* 1) Prior-month snapshot at account level */
+prev_base AS (
+    SELECT
+        CAST(l.END_OF_MONTH_DATE AS DATE)              AS month_end,
+        l.Account_Identifier,
+        l.RC_CODE                                      AS prev_rc_code,
+        SUM(l.SOURCE_SYSTEM_BALANCE)::FLOAT8           AS prev_exposure
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB l
+    CROSS JOIN params p
+    WHERE l.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+      AND CAST(l.END_OF_MONTH_DATE AS DATE) = ADD_MONTHS(p.curr_me, -1)
+    GROUP BY CAST(l.END_OF_MONTH_DATE AS DATE),
+             l.Account_Identifier,
+             l.RC_CODE
+),
+
+/* 2) Current-month snapshot at account level */
+curr_base AS (
+    SELECT
+        CAST(l.END_OF_MONTH_DATE AS DATE)              AS month_end,
+        l.Account_Identifier,
+        l.RC_CODE                                      AS curr_rc_code,
+        SUM(l.SOURCE_SYSTEM_BALANCE)::FLOAT8           AS curr_exposure
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB l
+    CROSS JOIN params p
+    WHERE l.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+      AND CAST(l.END_OF_MONTH_DATE AS DATE) = p.curr_me
+    GROUP BY CAST(l.END_OF_MONTH_DATE AS DATE),
+             l.Account_Identifier,
+             l.RC_CODE
+),
+
+/* 3) Full outer join by account to see before/after state */
+joined AS (
+    SELECT
+        COALESCE(prv.Account_Identifier, cur.Account_Identifier) AS Account_Identifier,
+        prv.prev_rc_code,
+        cur.curr_rc_code,
+        prv.prev_exposure,
+        cur.curr_exposure
+    FROM prev_base prv
+    FULL OUTER JOIN curr_base cur
+      ON prv.Account_Identifier = cur.Account_Identifier
+),
+
+/* 4) Focus only on accounts touching the target RC in either period */
+scoped AS (
+    SELECT
+        j.Account_Identifier,
+        j.prev_rc_code,
+        j.curr_rc_code,
+        j.prev_exposure,
+        j.curr_exposure,
+        COALESCE(j.curr_exposure,0.0) - COALESCE(j.prev_exposure,0.0) AS delta_exposure,
+        p.curr_me,
+        p.target_rc
+    FROM joined j
+    CROSS JOIN params p
+    WHERE
+        (j.prev_rc_code = p.target_rc OR j.curr_rc_code = p.target_rc)
+),
+
+/* 5) Movement classification */
+classified AS (
+    SELECT
+        Account_Identifier,
+        prev_rc_code,
+        curr_rc_code,
+        prev_exposure,
+        curr_exposure,
+        delta_exposure,
+        curr_me                                   AS curr_month_end,
+        target_rc,
+
+        CASE
+            WHEN prev_rc_code IS NULL
+                 AND curr_rc_code = target_rc
+            THEN 'NEW_TO_RC'
+
+            WHEN prev_rc_code = target_rc
+                 AND curr_rc_code IS NULL
+            THEN 'CLOSED_FROM_RC'
+
+            WHEN prev_rc_code <> target_rc
+                 AND curr_rc_code = target_rc
+            THEN 'TRANSFER_IN'
+
+            WHEN prev_rc_code = target_rc
+                 AND curr_rc_code IS NOT NULL
+                 AND curr_rc_code <> target_rc
+            THEN 'TRANSFER_OUT'
+
+            WHEN prev_rc_code = target_rc
+                 AND curr_rc_code = target_rc
+                 AND COALESCE(prev_exposure,0.0) <> COALESCE(curr_exposure,0.0)
+            THEN 'BALANCE_CHANGE_IN_RC'
+
+            WHEN prev_rc_code = target_rc
+                 AND curr_rc_code = target_rc
+                 AND COALESCE(prev_exposure,0.0) = COALESCE(curr_exposure,0.0)
+            THEN 'NO_CHANGE_IN_RC'
+
+            ELSE 'OTHER'
+        END AS movement_type
+    FROM scoped
+)
+
+SELECT
+    target_rc                      AS rc_code_in_focus,
+    curr_month_end                 AS month_end,
+    movement_type,
+    Account_Identifier,
+    prev_rc_code,
+    curr_rc_code,
+    prev_exposure,
+    curr_exposure,
+    delta_exposure
+FROM classified
+WHERE movement_type <> 'OTHER'
+ORDER BY
+    movement_type,
+    ABS(delta_exposure) DESC,
+    Account_Identifier;
+
+
+
+
+
 =SUMIFS(
   MoM_Account_Detail[Curr_CO_MTD],
   MoM_Account_Detail[Bank_For_Event], C8
