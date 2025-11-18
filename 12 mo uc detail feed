@@ -1,3 +1,89 @@
+with_flags AS (
+  SELECT
+    j.*,
+
+    /* presence flags */
+    CASE WHEN j.Prev_SSB IS NULL THEN 0 ELSE 1 END AS had_prev,
+    CASE WHEN j.Curr_SSB IS NULL THEN 0 ELSE 1 END AS has_curr,
+
+    /* autochange flags */
+    CASE WHEN UPPER(COALESCE(j.Prev_RBC,'')) = 'R' THEN 1 ELSE 0 END AS prev_auto,
+    CASE WHEN UPPER(COALESCE(j.Curr_RBC,'')) = 'R' THEN 1 ELSE 0 END AS curr_auto,
+
+    /* charge-off flags (using CO_MTD only) */
+    CASE WHEN COALESCE(j.Curr_CO_MTD,0) > 0 THEN 1 ELSE 0 END AS Curr_CO_Flag,
+    CASE WHEN COALESCE(j.Prev_CO_MTD,0) > 0 THEN 1 ELSE 0 END AS Prev_CO_Flag,
+    CASE
+      WHEN COALESCE(j.Curr_CO_MTD,0) > 0
+        OR COALESCE(j.Prev_CO_MTD,0) > 0
+      THEN 1 ELSE 0
+    END AS CO_Any_Flag,
+
+    /* sign flags for negatives */
+    CASE
+      WHEN COALESCE(j.Prev_SSB,0) > 0 THEN  1
+      WHEN COALESCE(j.Prev_SSB,0) < 0 THEN -1
+      ELSE 0
+    END AS Prev_Sign,
+    CASE
+      WHEN COALESCE(j.Curr_SSB,0) > 0 THEN  1
+      WHEN COALESCE(j.Curr_SSB,0) < 0 THEN -1
+      ELSE 0
+    END AS Curr_Sign,
+
+    /* charge-off type at account level */
+    CASE
+      /* full CO: current CO_MTD > 0 and account effectively leaves NA or goes to zero */
+      WHEN COALESCE(j.Curr_CO_MTD,0) > 0
+           AND COALESCE(j.Curr_SSB,0) = 0
+           AND COALESCE(j.Prev_SSB,0) <> 0
+        THEN 'Full Chargeoff (Exit)'
+
+      /* partial CO: current CO_MTD > 0 but balance remains non-zero */
+      WHEN COALESCE(j.Curr_CO_MTD,0) > 0
+           AND COALESCE(j.Curr_SSB,0) <> 0
+        THEN 'Partial Chargeoff (Still Active)'
+
+      /* persisting CO: prior month had CO_MTD, no new CO this month, still non-zero balance */
+      WHEN COALESCE(j.Prev_CO_MTD,0) > 0
+           AND COALESCE(j.Curr_CO_MTD,0) = 0
+           AND COALESCE(j.Curr_SSB,0) <> 0
+        THEN 'Persisting Chargeoff (Prior Month)'
+
+      ELSE NULL
+    END AS CO_Type,
+
+    /* negative behavior classification (for bridge reconciliation) */
+    CASE
+      WHEN j.had_prev = 0 AND j.has_curr = 1 AND COALESCE(j.Curr_SSB,0) < 0
+        THEN 'Neg Add'
+
+      WHEN j.had_prev = 1 AND j.has_curr = 0 AND COALESCE(j.Prev_SSB,0) < 0
+        THEN 'Neg Exit'
+
+      WHEN j.had_prev = 1 AND j.has_curr = 1
+           AND COALESCE(j.Prev_SSB,0) > 0
+           AND COALESCE(j.Curr_SSB,0) < 0
+        THEN 'Neg Pos→Neg'
+
+      WHEN j.had_prev = 1 AND j.has_curr = 1
+           AND COALESCE(j.Prev_SSB,0) < 0
+           AND COALESCE(j.Curr_SSB,0) > 0
+        THEN 'Neg Neg→Pos'
+
+      WHEN j.had_prev = 1 AND j.has_curr = 1
+           AND COALESCE(j.Prev_SSB,0) < 0
+           AND COALESCE(j.Curr_SSB,0) < 0
+        THEN 'Neg Neg→Neg'
+
+      ELSE NULL
+    END AS Neg_Class
+
+  FROM joined j
+),
+
+
+
 /* ================================================================
    RC Drilldown – Account-Level Flow & Movement Classification
    - Focuses on one RC (by code) for a chosen current month-end
