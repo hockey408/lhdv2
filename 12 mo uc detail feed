@@ -84,6 +84,46 @@ with_flags AS (
 
 
 
+
+  /* is this Exit driven by a chargeoff (any CO_MTD in prev or curr)? */
+  CASE
+    WHEN Movement_Type IN ('Exit (ex-Auto)','Autochange Exit')
+         AND (Curr_CO_Flag = 1 OR Prev_CO_Flag = 1)
+      THEN 1
+    ELSE 0
+  END AS Exit_Is_CO_Flag,
+
+  /* more granular CO attribution for Exit rows */
+  CASE
+    WHEN Movement_Type IN ('Exit (ex-Auto)','Autochange Exit')
+         AND Curr_CO_Flag = 1
+         AND COALESCE(Prev_SSB,0) <> 0
+         AND COALESCE(Curr_SSB,0) = 0
+      THEN 'Exit – Full CO (MTD>0, now zero)'
+
+    WHEN Movement_Type IN ('Exit (ex-Auto)','Autochange Exit')
+         AND Curr_CO_Flag = 1
+         AND COALESCE(Curr_SSB,0) <> 0
+      THEN 'Exit – Partial CO (still balance)'
+
+    WHEN Movement_Type IN ('Exit (ex-Auto)','Autochange Exit')
+         AND Curr_CO_Flag = 0
+         AND Prev_CO_Flag = 1
+      THEN 'Exit – Prior CO (Prev MTD>0, no new)'
+
+    WHEN Movement_Type IN ('Exit (ex-Auto)','Autochange Exit')
+         AND Curr_CO_Flag = 0
+         AND Prev_CO_Flag = 0
+      THEN 'Exit – Non-CO Driver'
+
+    ELSE NULL
+  END AS Exit_CO_Attribution,
+
+
+
+
+
+
 /* ================================================================
    RC Drilldown – Account-Level Flow & Movement Classification
    - Focuses on one RC (by code) for a chosen current month-end
