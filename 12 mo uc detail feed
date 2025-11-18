@@ -1,3 +1,36 @@
+=SUMIFS(
+  MoM_Account_Detail[Curr_CO_MTD],
+  MoM_Account_Detail[Bank_For_Event], C8
+)
+
+=SUMIFS(
+  MoM_Account_Detail[SSB_For_Event],
+  MoM_Account_Detail[Bank_For_Event], C8
+)
+
+
+=IF(C10=0,0,C9/C10)
+
+=SUMIFS(
+  MoM_Account_Detail[SSB_For_Event],
+  MoM_Account_Detail[Bank_For_Event], C8,
+  MoM_Account_Detail[MOVEMENT_TYPE], "Exit (ex-Auto)"
+)
+
+=IF(
+  <Exit_SSB_Cell>=0,
+  0,
+  SUMIFS(MoM_Account_Detail[Prev_CO_MTD],
+         MoM_Account_Detail[Bank_For_Event],C8,
+         MoM_Account_Detail[MOVEMENT_TYPE],"Exit (ex-Auto)")
+  / <Exit_SSB_Cell>
+)
+
+
+
+
+
+
 B20:
 =SUMIFS(
   MoM_Account_Detail[Curr_CO_MTD],
