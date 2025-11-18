@@ -1,3 +1,12 @@
+=FILTER(
+  MoM_Account_Detail,
+  (MoM_Account_Detail[CO_Any_Curr_Flag]=1) *
+  (MoM_Account_Detail[Bank_For_Event]=$C$2)
+)
+
+
+
+
 =SUMIFS(
   MoM_Account_Detail[Curr_CO_MTD],
   MoM_Account_Detail[Bank_For_Event], $C$2,
