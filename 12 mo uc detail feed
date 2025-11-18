@@ -1,3 +1,41 @@
+=IF($A5="Other",
+   SUMIFS(
+     MoM_Account_Detail[Prev_CO_MTD],
+     MoM_Account_Detail[Prev_CO_MTD], "<>0",
+     MoM_Account_Detail[Prev_Bank_Code], "<>",
+     "L-SVB",
+     MoM_Account_Detail[Prev_Bank_Code], "<>", "L-FCB",
+     MoM_Account_Detail[Prev_Bank_Code], "<>", "L-CIT"
+   ),
+   SUMIFS(
+     MoM_Account_Detail[Prev_CO_MTD],
+     MoM_Account_Detail[Prev_Bank_Code], $A5,
+     MoM_Account_Detail[Prev_CO_MTD], "<>0"
+   )
+)
+
+=IF($A5="Other",
+   SUMIFS(
+     MoM_Account_Detail[Curr_CO_MTD],
+     MoM_Account_Detail[Curr_CO_MTD], "<>0",
+     MoM_Account_Detail[Curr_Bank_Code], "<>", "L-SVB",
+     MoM_Account_Detail[Curr_Bank_Code], "<>", "L-FCB",
+     MoM_Account_Detail[Curr_Bank_Code], "<>", "L-CIT"
+   ),
+   SUMIFS(
+     MoM_Account_Detail[Curr_CO_MTD],
+     MoM_Account_Detail[Curr_Bank_Code], $A5,
+     MoM_Account_Detail[Curr_CO_MTD], "<>0"
+   )
+)
+
+
+
+
+
+
+
+
 Sub Refresh_All_And_Recalc()
     Application.Calculation = xlCalculationManual
     ThisWorkbook.RefreshAll
