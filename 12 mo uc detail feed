@@ -1,3 +1,38 @@
+=LET(
+  data,
+    CHOOSE(
+      {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15},
+      MoM_Account_Detail[CURR_ACCOUNT_NAME],
+      MoM_Account_Detail[CIS_FOR_EVENT],
+      MoM_Account_Detail[FACILITY_FOR_EVENT],
+      MoM_Account_Detail[CURR_ACCOUNT_IDENTIFIER],
+      MoM_Account_Detail[ACCOUNT_KEY],
+      MoM_Account_Detail[CURR_BANK_CODE],
+      MoM_Account_Detail[CURR_CSS],
+      MoM_Account_Detail[CURR_GL_HIER4],
+      MoM_Account_Detail[CURR_PROD5],
+      MoM_Account_Detail[CURR_STATUS_CODE],
+      MoM_Account_Detail[CURR_RBC],
+      MoM_Account_Detail[SSB_FOR_EVENT],
+      MoM_Account_Detail[CURR_GL_BAL],
+      MoM_Account_Detail[MOVEMENT_TYPE],
+      MoM_Account_Detail[OWNER_FOR_EVENT]
+    ),
+  filt,
+    (MoM_Account_Detail[CO_Any_Curr_Flag]=1)*
+    (MoM_Account_Detail[Bank_For_Event]=$C$2),
+  FILTER(data,filt)
+)
+
+
+
+
+
+
+
+
+
+
 =FILTER(
   MoM_Account_Detail,
   (MoM_Account_Detail[CO_Any_Curr_Flag]=1) *
