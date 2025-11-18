@@ -1,3 +1,20 @@
+=IF(
+  $C$3="",
+  SUMIFS(
+    MoM_Account_Detail[Curr_CO_MTD],
+    MoM_Account_Detail[Bank_For_Event], $C$2
+  ),
+  SUMIFS(
+    MoM_Account_Detail[Curr_CO_MTD],
+    MoM_Account_Detail[Bank_For_Event], $C$2,
+    MoM_Account_Detail[MOVEMENT_TYPE], $C$3
+  )
+)
+
+
+
+
+
 /* ===== Charge-Off Satellite Extract (CO_MTD-only) ===== */
 
 WITH latest_curr AS (
