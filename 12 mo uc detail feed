@@ -1,3 +1,97 @@
+/* ===== Charge-Off Satellite Extract (CO_MTD-only) ===== */
+
+WITH latest_curr AS (
+  SELECT MAX(End_of_Month_Date) AS curr_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE Non_Accrual_Flag = 'Y'
+),
+latest_prev AS (
+  SELECT MAX(End_of_Month_Date) AS prev_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, latest_curr
+  WHERE End_of_Month_Date < (SELECT curr_eom FROM latest_curr)
+    AND Non_Accrual_Flag = 'Y'
+),
+params AS (
+  SELECT
+    (SELECT curr_eom FROM latest_curr) AS curr_eom,
+    (SELECT prev_eom FROM latest_prev) AS prev_eom
+),
+
+base AS (
+  SELECT
+    End_of_Month_Date,
+    Account_Key,
+    Facility_ID,
+    CIS_Customer_Number,
+    Bank_Code,
+    Source_System_Balance AS SSB,
+    GL_Balance,
+    Non_Accrual_Flag,
+    SOURCE_SYSTEM_CHARGE_OFF_MTD AS CO_MTD
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE End_of_Month_Date IN ((SELECT prev_eom FROM params),(SELECT curr_eom FROM params))
+    AND Non_Accrual_Flag = 'Y'
+),
+
+prev_norm AS (
+  SELECT
+    Account_Key,
+    MAX(Facility_ID) AS Prev_Facility_ID,
+    MAX(CIS_Customer_Number) AS Prev_CIS,
+    MAX(Bank_Code) AS Prev_Bank_Code,
+    SUM(SSB) AS Prev_SSB,
+    SUM(CO_MTD) AS Prev_CO_MTD
+  FROM base
+  WHERE End_of_Month_Date = (SELECT prev_eom FROM params)
+  GROUP BY Account_Key
+),
+
+curr_norm AS (
+  SELECT
+    Account_Key,
+    MAX(Facility_ID) AS Curr_Facility_ID,
+    MAX(CIS_Customer_Number) AS Curr_CIS,
+    MAX(Bank_Code) AS Curr_Bank_Code,
+    SUM(SSB) AS Curr_SSB,
+    SUM(CO_MTD) AS Curr_CO_MTD
+  FROM base
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM params)
+  GROUP BY Account_Key
+)
+
+SELECT
+  COALESCE(c.Account_Key, p.Account_Key) AS Account_Key,
+
+  /* previous month */
+  p.Prev_Facility_ID,
+  p.Prev_CIS,
+  p.Prev_Bank_Code,
+  p.Prev_SSB,
+  p.Prev_CO_MTD,
+
+  /* current month */
+  c.Curr_Facility_ID,
+  c.Curr_CIS,
+  c.Curr_Bank_Code,
+  c.Curr_SSB,
+  c.Curr_CO_MTD,
+
+  /* core flags */
+  CASE WHEN COALESCE(c.Curr_CO_MTD,0) > 0 THEN 1 ELSE 0 END AS ChargeOff_Flag,
+  CASE WHEN COALESCE(p.Prev_CO_MTD,0) > 0 AND COALESCE(c.Curr_SSB,0) = 0 THEN 1 ELSE 0 END AS ChargeOff_Exit_Flag,
+
+  /* negative classes */
+  CASE WHEN COALESCE(c.Curr_SSB,0) < 0 AND COALESCE(c.Curr_CO_MTD,0)=0 THEN 1 ELSE 0 END AS Neg_Balance_Flag,
+  CASE WHEN COALESCE(c.Curr_SSB,0) < 0 AND COALESCE(c.Curr_CO_MTD,0)>0 THEN 1 ELSE 0 END AS Neg_Balance_CO_Flag
+
+FROM curr_norm c
+FULL OUTER JOIN prev_norm p
+ON c.Account_Key = p.Account_Key;
+
+
+
+
+
 identify the charge offs by the risk / pd rating. if it was there last month and gone this month, is the risk rating this month a charge off risk rating? if so then we can track these exits to the charged off section
 
 
