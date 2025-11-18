@@ -1,3 +1,41 @@
+B20:
+=SUMIFS(
+  MoM_Account_Detail[Curr_CO_MTD],
+  MoM_Account_Detail[Bank_For_Event], $C$2,
+  MoM_Account_Detail[MOVEMENT_TYPE], "Downgrade IN (ex-Auto)"
+)
+
+B21:
+=SUMIFS(
+  MoM_Account_Detail[Prev_CO_MTD],
+  MoM_Account_Detail[Bank_For_Event], $C$2,
+  MoM_Account_Detail[MOVEMENT_TYPE], "Exit (ex-Auto)"
+)
+
+B22:
+=SUMIFS(
+  MoM_Account_Detail[Curr_CO_MTD],
+  MoM_Account_Detail[Bank_For_Event], $C$2,
+  MoM_Account_Detail[MOVEMENT_TYPE], "Persisting Balance Changes (ex-Auto)"
+)
+
+B23:
+=SUMIFS(
+  MoM_Account_Detail[Curr_CO_MTD],
+  MoM_Account_Detail[Bank_For_Event], $C$2,
+  MoM_Account_Detail[OWNER_FOR_EVENT], "Autochange"
+)
+
+B24:
+=SUMIFS(
+  MoM_Account_Detail[Curr_CO_MTD],
+  MoM_Account_Detail[Bank_For_Event], $C$2
+)
+
+
+
+
+
 =LET(
   data,
     CHOOSE(
