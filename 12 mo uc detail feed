@@ -1,3 +1,14 @@
+Sub Refresh_All_And_Recalc()
+    Application.Calculation = xlCalculationManual
+    ThisWorkbook.RefreshAll
+    Application.CalculateFull
+    Application.Calculation = xlCalculationAutomatic
+    MsgBox "Data and calculations refreshed.", vbInformation
+End Sub
+
+
+
+
 =SUMIFS(MoM_Account_Detail[SSB_FOR_EVENT],
         MoM_Account_Detail[OWNER_FOR_EVENT], "Connor",
         MoM_Account_Detail[MOVEMENT_TYPE], "Downgrade IN (ex-Auto)",
