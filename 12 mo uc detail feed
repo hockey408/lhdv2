@@ -1,3 +1,32 @@
+=IF(
+  OR(
+    MoM_Account_Detail[@MOVEMENT_TYPE]="Exit (ex-Auto)",
+    MoM_Account_Detail[@MOVEMENT_TYPE]="Autochange Exit"
+  ),
+  IF(
+    MoM_Account_Detail[@CURR_CO_MTD] > 0,
+      IF(
+        AND(
+          MoM_Account_Detail[@CURR_SSB]=0,
+          MoM_Account_Detail[@PREV_SSB]<>0
+        ),
+        "Exit – Full CO (MTD>0, now zero)",
+        "Exit – Partial CO (MTD>0, still balance)"
+      ),
+      IF(
+        MoM_Account_Detail[@PREV_CO_MTD] > 0,
+        "Exit – Prior CO (Prev MTD>0, no new)",
+        "Exit – Non-CO Driver"
+      )
+  ),
+  ""
+)
+
+
+
+
+
+
 /* ===== Query 1: MoM_Account_Detail (incl. negatives, charge-offs, status) @ ACCOUNT_KEY grain ===== */
 
 WITH latest_curr AS (
