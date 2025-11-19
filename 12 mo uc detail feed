@@ -1,3 +1,8 @@
+=--(AND([@[CURR_CO_MTD]]>0, [@[CURR_SSB]]=0))
+
+
+
+
 =IF(
   OR(
     [@Movement_Type]="Exit (ex-Auto)",
