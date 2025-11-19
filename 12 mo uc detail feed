@@ -1,5 +1,25 @@
 =IF(
   OR(
+    [@Movement_Type]="Exit (ex-Auto)",
+    [@Movement_Type]="Autochange Exit"
+  ),
+  IF(
+    [@Prev_CO_MTD] > 0,
+    IF(
+      ABS([@Prev_CO_MTD]) >= 0.9 * ABS([@Prev_SSB]),
+      "Exit – Full-ish CO (Prev CO ≈ Prev SSB)",
+      "Exit – Partial CO (Prev CO < Prev SSB)"
+    ),
+    "Exit – Non-CO Driver"
+  ),
+  ""
+)
+
+
+
+
+=IF(
+  OR(
     MoM_Account_Detail[@MOVEMENT_TYPE]="Exit (ex-Auto)",
     MoM_Account_Detail[@MOVEMENT_TYPE]="Autochange Exit"
   ),
