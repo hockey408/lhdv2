@@ -1,3 +1,59 @@
+=SUMIFS(MoM_Account_Detail[Curr_CO_MTD],
+        MoM_Account_Detail[Curr_CO_MTD],">0"
+       )/1000
+
+=COUNTIFS(MoM_Account_Detail[Curr_CO_MTD],">0")
+
+=SUMIFS(MoM_Account_Detail[Prev_SSB],
+        MoM_Account_Detail[Exit_Is_CO_Flag],1
+       )/1000
+
+=COUNTIFS(MoM_Account_Detail[Exit_Is_CO_Flag],1)
+
+=COUNTIFS(MoM_Account_Detail[Exit_CO_Attribution],"*Full*")
+
+=COUNTIFS(MoM_Account_Detail[Exit_CO_Attribution],"*Partial*")
+
+=SUMIFS(MoM_Account_Detail[Curr_CO_MTD],
+        MoM_Account_Detail[Movement_Type],"Downgrade IN (ex-Auto)",
+        MoM_Account_Detail[Curr_CO_MTD],">0"
+       )/1000
+
+=COUNTIFS(MoM_Account_Detail[Movement_Type],"Downgrade IN (ex-Auto)",
+          MoM_Account_Detail[Curr_CO_MTD],">0"
+         )
+
+
+=SUMIFS(MoM_Account_Detail[Curr_SSB],
+        MoM_Account_Detail[Prev_CO_MTD_Flag],1,
+        MoM_Account_Detail[Curr_CO_MTD_Flag],0,
+        MoM_Account_Detail[Curr_SSB],"<>0"
+       )/1000
+
+=COUNTIFS(MoM_Account_Detail[Prev_CO_MTD_Flag],1,
+          MoM_Account_Detail[Curr_CO_MTD_Flag],0,
+          MoM_Account_Detail[Curr_SSB],"<>0"
+         )
+
+=SUMIFS(MoM_Account_Detail[SSB_For_Event],
+        MoM_Account_Detail[Negative_Flag],1
+       )/1000
+
+=COUNTIFS(MoM_Account_Detail[Negative_Flag],1)
+
+=COUNTIFS(MoM_Account_Detail[Negative_Flip_Flag],1)
+
+=COUNTIFS(MoM_Account_Detail[Negative_Class],"*New*")
+
+
+
+
+
+
+
+
+
+
 =TEXTJOIN(CHAR(10),TRUE,
 "--- BALANCE BRIDGE FORMULAS (IN THOUSANDS, BANK HEADERS IN C$2) ---",
 "",
