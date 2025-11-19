@@ -1,3 +1,45 @@
+--- BALANCE BRIDGE FORMULAS (in thousands) ---
+
+Starting Balance (non-negative):
+=SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[FACILITY_NEGATIVE_FLAG],0)/1000
+
+Autochange Downgrade IN:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Autochange Downgrade IN",Facility_Rollup[FACILITY_NEGATIVE_FLAG],0)/1000
+
+Autochange Exit:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Autochange Exit",Facility_Rollup[FACILITY_NEGATIVE_FLAG],0)/1000
+
+Autochange Persisting Balance Changes:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Autochange Persisting Balance Changes",Facility_Rollup[FACILITY_NEGATIVE_FLAG],0)/1000
+
+Downgrade IN (ex-Auto):
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Downgrade IN (ex-Auto)",Facility_Rollup[FACILITY_NEGATIVE_FLAG],0)/1000
+
+Exit (ex-Auto):
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Exit (ex-Auto)",Facility_Rollup[FACILITY_NEGATIVE_FLAG],0)/1000
+
+Persisting Balance Changes (ex-Auto):
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[MOVEMENT_TYPE],"Persisting Balance Changes (ex-Auto)",Facility_Rollup[FACILITY_NEGATIVE_FLAG],0)/1000
+
+Ending Balance (non-negative):
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[FACILITY_NEGATIVE_FLAG],0)/1000
+
+
+--- NEGATIVE SATELLITE (optional reconciliation block) ---
+
+Opening Negative Balance:
+=SUMIFS(Facility_Rollup[FACILITY_PREV_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[FACILITY_NEGATIVE_FLAG],1)/1000
+
+Net Negative Delta:
+=SUMIFS(Facility_Rollup[FACILITY_MOM_DELTA],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[FACILITY_NEGATIVE_FLAG],1)/1000
+
+Closing Negative Balance:
+=SUMIFS(Facility_Rollup[FACILITY_CURR_SSB],Facility_Rollup[BANK_FOR_EVENT],C$8,Facility_Rollup[FACILITY_NEGATIVE_FLAG],1)/1000
+
+
+
+
+
 let
     // 1) Pull MoM_Account_Detail from the workbook
     Source =
