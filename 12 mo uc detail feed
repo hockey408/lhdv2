@@ -1,3 +1,93 @@
+let
+    // 1) Pull MoM_Account_Detail from the workbook
+    Source =
+        Excel.CurrentWorkbook(){[Name = "MoM_Account_Detail"]}[Content],
+
+    // 2) Make sure key numeric columns are typed as numbers
+    #"Changed Type" =
+        Table.TransformColumnTypes(
+            Source,
+            {
+                {"PREV_SSB", type number},
+                {"CURR_SSB", type number},
+                {"MOM_DELTA", type number},
+                {"NEGATIVE_FLAG", Int64.Type},
+                {"NEGATIVE_FLIP_FLAG", Int64.Type}
+            }
+        ),
+
+    // 3) Create a facility key (by bank + facility) for clean grouping
+    #"Added FACILITY_KEY" =
+        Table.AddColumn(
+            #"Changed Type",
+            "FACILITY_KEY",
+            each
+                Text.Upper(Text.From([BANK_FOR_EVENT]))
+                & "|"
+                & Text.Upper(Text.From([FACILITY_FOR_EVENT])),
+            type text
+        ),
+
+    // 4) Group to facility + movement level
+    //    One row per: facility + bank + CIS + owner + movement_type
+    #"Grouped Rows" =
+        Table.Group(
+            #"Added FACILITY_KEY",
+            {
+                "FACILITY_KEY",
+                "BANK_FOR_EVENT",
+                "FACILITY_FOR_EVENT",
+                "CIS_FOR_EVENT",
+                "OWNER_FOR_EVENT",
+                "MOVEMENT_TYPE"
+            },
+            {
+                // facility-level sums
+                {
+                    "FACILITY_PREV_SSB",
+                    each List.Sum([PREV_SSB]),
+                    type number
+                },
+                {
+                    "FACILITY_CURR_SSB",
+                    each List.Sum([CURR_SSB]),
+                    type number
+                },
+                {
+                    "FACILITY_MOM_DELTA",
+                    each List.Sum([MOM_DELTA]),
+                    type number
+                },
+
+                // distinct account count under that facility + movement
+                {
+                    "ACCOUNT_COUNT",
+                    each List.Count(List.Distinct([ACCOUNT_KEY])),
+                    Int64.Type
+                },
+
+                // facility-level negative flags (max across accounts)
+                {
+                    "FACILITY_NEGATIVE_FLAG",
+                    each List.Max([NEGATIVE_FLAG]),
+                    Int64.Type
+                },
+                {
+                    "FACILITY_NEGATIVE_FLIP_FLAG",
+                    each List.Max([NEGATIVE_FLIP_FLAG]),
+                    Int64.Type
+                }
+            }
+        )
+in
+    #"Grouped Rows"
+
+
+
+
+
+
+
 /* ===== Query 1: MoM_Account_Detail (incl. negatives, charge-offs, status) @ ACCOUNT_KEY grain ===== */
 
 WITH latest_curr AS (
