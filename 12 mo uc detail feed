@@ -1,3 +1,83 @@
+  /* Exit CO attribution */
+  CASE
+    WHEN Movement_Type IN ('Exit (ex-Auto)','Autochange Exit')
+         AND Prev_CO_MTD_Flag = 1
+         AND COALESCE(Prev_SSB,0) > 0
+         AND (Curr_SSB IS NULL OR COALESCE(Curr_SSB,0) = 0)
+      THEN 'Exit – Full CO'
+
+    WHEN Movement_Type IN ('Exit (ex-Auto)','Autochange Exit')
+         AND Prev_CO_MTD_Flag = 1
+         AND (Curr_SSB IS NULL OR COALESCE(Curr_SSB,0) <> 0)
+      THEN 'Exit – Partial CO'
+
+    WHEN Movement_Type IN ('Exit (ex-Auto)','Autochange Exit')
+         AND Prev_CO_MTD_Flag = 1
+         AND Curr_CO_MTD_Flag = 0
+      THEN 'Exit – Prior CO'
+
+    WHEN Movement_Type IN ('Exit (ex-Auto)','Autochange Exit')
+         AND Prev_CO_MTD_Flag = 0
+         AND Curr_CO_MTD_Flag = 0
+      THEN 'Exit – Non-CO Driver'
+
+    ELSE NULL
+  END AS Exit_CO_Attribution,
+
+  /* Downgrade IN CO attribution */
+  CASE
+    WHEN Movement_Type IN ('Downgrade IN (ex-Auto)','Autochange Downgrade IN')
+         AND Curr_CO_MTD_Flag = 1
+         AND COALESCE(Curr_SSB,0) = 0
+      THEN 'Downgrade IN – Full CO (MTD>0, zero curr bal)'
+
+    WHEN Movement_Type IN ('Downgrade IN (ex-Auto)','Autochange Downgrade IN')
+         AND Curr_CO_MTD_Flag = 1
+         AND COALESCE(Curr_SSB,0) <> 0
+      THEN 'Downgrade IN – Partial CO (MTD>0, still balance)'
+
+    WHEN Movement_Type IN ('Downgrade IN (ex-Auto)','Autochange Downgrade IN')
+         AND Curr_CO_MTD_Flag = 0
+         AND Prev_CO_MTD_Flag = 1
+      THEN 'Downgrade IN – Prior CO'
+
+    WHEN Movement_Type IN ('Downgrade IN (ex-Auto)','Autochange Downgrade IN')
+         AND Curr_CO_MTD_Flag = 0
+         AND Prev_CO_MTD_Flag = 0
+      THEN 'Downgrade IN – Non-CO Driver'
+
+    ELSE NULL
+  END AS Downgrade_CO_Attribution,
+
+  /* Persisting balance-change CO attribution */
+  CASE
+    WHEN Movement_Type IN ('Persisting Balance Changes (ex-Auto)',
+                           'Autochange Persisting Balance Changes')
+         AND Curr_CO_MTD_Flag = 1
+         AND COALESCE(Curr_SSB,0) <> COALESCE(Prev_SSB,0)
+      THEN 'Persisting – New CO (Curr MTD>0)'
+
+    WHEN Movement_Type IN ('Persisting Balance Changes (ex-Auto)',
+                           'Autochange Persisting Balance Changes')
+         AND Curr_CO_MTD_Flag = 0
+         AND Prev_CO_MTD_Flag = 1
+         AND COALESCE(Curr_SSB,0) <> COALESCE(Prev_SSB,0)
+      THEN 'Persisting – Prior CO (Prev MTD>0)'
+
+    WHEN Movement_Type IN ('Persisting Balance Changes (ex-Auto)',
+                           'Autochange Persisting Balance Changes')
+         AND Curr_CO_MTD_Flag = 0
+         AND Prev_CO_MTD_Flag = 0
+         AND COALESCE(Curr_SSB,0) <> COALESCE(Prev_SSB,0)
+      THEN 'Persisting – Non-CO Driver'
+
+    ELSE NULL
+  END AS Persisting_CO_Attribution
+
+
+
+
+
 CASE
   /* Full CO exits */
   WHEN Exit_CO_Attribution LIKE '%Full CO%' THEN 'Full Chargeoff (Exit)'
