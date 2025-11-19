@@ -1,3 +1,48 @@
+CASE
+  /* Full CO exits */
+  WHEN Exit_CO_Attribution LIKE '%Full CO%' THEN 'Full Chargeoff (Exit)'
+
+  /* Partial CO exits (still some balance before exit) */
+  WHEN Exit_CO_Attribution LIKE '%Partial%' THEN 'Partial Chargeoff (Exit)'
+
+  /* Persisting CO prior month but still active */
+  WHEN Prev_CO_MTD_Flag = 1 AND Curr_CO_MTD_Flag = 0 AND COALESCE(Curr_SSB,0) <> 0
+    THEN 'Persisting Chargeoff (Prior)'
+
+  /* Partial CO but still active (Curr_CO_MTD > 0, balance ≠ 0) */
+  WHEN Curr_CO_MTD_Flag = 1 AND COALESCE(Curr_SSB,0) <> 0
+    THEN 'Partial Chargeoff (Still Active)'
+
+  /* Chargeoff directly tied to downgrade IN */
+  WHEN Movement_Type = 'Downgrade IN (ex-Auto)'
+       AND Curr_CO_MTD_Flag = 1
+    THEN 'Chargeoff in Downgrade IN'
+
+  /* Any other CO event */
+  WHEN CO_Any_Flag = 1
+    THEN 'Chargeoff – Other Movement'
+
+  /* NEGATIVE classifications: potential chargeoffs */
+  WHEN Negative_Class LIKE '%Pos→Neg%'
+    THEN 'Negative – Potential CO (Pos→Neg Flip)'
+
+  WHEN Negative_Class LIKE '%Neg→Pos%'
+    THEN 'Negative – Potential CO (Neg→Pos Flip)'
+
+  WHEN Negative_Class LIKE '%Persisting%'
+    THEN 'Negative – Potential CO (Persisting Negative)'
+
+  WHEN Negative_Class LIKE '%New%'
+    THEN 'Negative – Potential CO (New Negative)'
+
+  /* default */
+  ELSE 'Not Chargeoff Related'
+END AS CO_Drill_Class,
+
+
+
+
+
 =SUMIFS(MoM_Account_Detail[Curr_CO_MTD],
         MoM_Account_Detail[Curr_CO_MTD],">0"
        )/1000
