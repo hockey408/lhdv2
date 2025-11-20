@@ -1,3 +1,115 @@
+/* ===== Satellite A: Negative NA + Accruing Offsets (Prev & Curr EOM) ===== */
+
+WITH latest_curr AS (
+  SELECT MAX(End_of_Month_Date) AS curr_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE Non_Accrual_Flag = 'Y'
+),
+latest_prev AS (
+  SELECT MAX(End_of_Month_Date) AS prev_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB, latest_curr
+  WHERE End_of_Month_Date < (SELECT curr_eom FROM latest_curr)
+    AND Non_Accrual_Flag = 'Y'
+),
+params AS (
+  SELECT
+    (SELECT curr_eom FROM latest_curr) AS curr_eom,
+    (SELECT prev_eom FROM latest_prev) AS prev_eom
+),
+
+/* Base: all accounts (NA + accruing) in the 2 months, limited to TL / HFS */
+base_all AS (
+  SELECT
+    End_of_Month_Date,
+    UPPER(TRIM(Account_Key))         AS Account_Key,
+    UPPER(TRIM(Account_Identifier))  AS Account_Identifier,
+    UPPER(TRIM(Facility_ID))         AS Facility_ID,
+    UPPER(TRIM(CIS_Customer_Number)) AS CIS_Customer_Number,
+    Account_Name,
+    Contract_Source_System,
+    PROD_HIER_LEVEL_5,
+    RBC_Code,
+    Status_Code_Description,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    GL_ACCOUNT_CODE,
+    Non_Accrual_Flag,
+    Source_System_Balance            AS SSB,
+    SOURCE_SYSTEM_CHARGE_OFF_MTD     AS CO_MTD
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE End_of_Month_Date IN (
+          (SELECT prev_eom FROM params),
+          (SELECT curr_eom FROM params)
+        )
+    AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+),
+
+/* Identify negative NA accounts (by Facility & CIS, by month) */
+neg_na AS (
+  SELECT DISTINCT
+    End_of_Month_Date,
+    Facility_ID,
+    CIS_Customer_Number
+  FROM base_all
+  WHERE Non_Accrual_Flag = 'Y'
+    AND SSB < 0
+),
+
+/* Pull ALL accounts (NA + accruing) that share Facility or CIS with a neg NA */
+neg_clusters AS (
+  SELECT
+    b.End_of_Month_Date,
+    b.Account_Key,
+    b.Account_Identifier,
+    b.Facility_ID,
+    b.CIS_Customer_Number,
+    b.Account_Name,
+    b.Contract_Source_System,
+    b.PROD_HIER_LEVEL_5,
+    b.RBC_Code,
+    b.Status_Code_Description,
+    b.GL_ACCOUNT_HIER_LEVEL_4,
+    b.GL_ACCOUNT_CODE,
+    b.Non_Accrual_Flag,
+    b.SSB,
+    b.CO_MTD,
+
+    CASE WHEN b.Non_Accrual_Flag = 'Y' THEN 1 ELSE 0 END AS Is_NA,
+    CASE WHEN b.SSB < 0 THEN 1 ELSE 0 END AS Is_Negative_SSB
+  FROM base_all b
+  JOIN neg_na n
+    ON b.End_of_Month_Date       = n.End_of_Month_Date
+   AND (
+        b.Facility_ID            = n.Facility_ID
+        OR b.CIS_Customer_Number = n.CIS_Customer_Number
+       )
+)
+
+/* Final output: one row per (month, account) in those “neg clusters” */
+SELECT
+  End_of_Month_Date,
+  Account_Key,
+  Account_Identifier,
+  Facility_ID,
+  CIS_Customer_Number,
+  Account_Name,
+  Contract_Source_System,
+  PROD_HIER_LEVEL_5,
+  RBC_Code,
+  Status_Code_Description,
+  GL_ACCOUNT_HIER_LEVEL_4,
+  GL_ACCOUNT_CODE,
+  Non_Accrual_Flag,
+  SSB,
+  CO_MTD,
+  Is_NA,
+  Is_Negative_SSB
+FROM neg_clusters
+ORDER BY End_of_Month_Date, CIS_Customer_Number, Facility_ID, Non_Accrual_Flag DESC, Account_Key;
+
+
+
+
+
 =--(AND([@[CURR_CO_MTD]]>0, [@[CURR_SSB]]=0))
 
 
