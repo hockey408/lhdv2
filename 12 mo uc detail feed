@@ -1,3 +1,16 @@
+=ROWS(
+  UNIQUE(
+    FILTER(
+      CO_MoM[Facility_For_Event],
+      (CO_MoM[Bank_For_Event]=$B$3)*
+      (ISNUMBER(SEARCH("Persisting", CO_MoM[CO_Event_Class])))
+    )
+  )
+)
+
+
+
+
 =SUMIFS(
   CO_MoM[Prev_SSB],
   CO_MoM[Bank_For_Event], $B$3,
