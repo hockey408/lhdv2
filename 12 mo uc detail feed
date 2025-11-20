@@ -1,3 +1,95 @@
+CO_ANY_FLAG:
+=--(OR([@[CURR_CO_MTD]]>0,[@[PREV_CO_MTD]]>0))
+
+CO_MTD_CURRENT_FLAG:
+=--([@[CURR_CO_MTD]]>0)
+
+CO_ANY_EXIT_FLAG:
+=--(
+  AND(
+    ISNUMBER(
+      MATCH(
+        [@[MOVEMENT_TYPE]],
+        {"Exit (ex-Auto)","Autochange Exit"},
+        0
+      )
+    ),
+    OR(
+      [@[CURR_CO_MTD]]>0,
+      [@[PREV_CO_MTD]]>0
+    )
+  )
+)
+
+CO_FULL_EXIT_FLAG:
+=--(
+  AND(
+    ISNUMBER(
+      MATCH(
+        [@[MOVEMENT_TYPE]],
+        {"Exit (ex-Auto)","Autochange Exit"},
+        0
+      )
+    ),
+    [@[PREV_SSB]]>0,
+    [@[CURR_SSB]]=0,
+    [@[CURR_CO_MTD]]>0
+  )
+)
+
+CO_PARTIAL_EXIT_FLAG:
+=--(
+  AND(
+    ISNUMBER(
+      MATCH(
+        [@[MOVEMENT_TYPE]],
+        {"Exit (ex-Auto)","Autochange Exit"},
+        0
+      )
+    ),
+    [@[CURR_CO_MTD]]>0,
+    [@[CURR_SSB]]<>0
+  )
+)
+
+CO_PERSISTING_CO_FLAG:
+=--(
+  AND(
+    [@[PREV_CO_MTD]]>0,
+    [@[CURR_CO_MTD]]=0,
+    [@[CURR_SSB]]<>0
+  )
+)
+
+CO_ANY_DOWNGRADE_FLAG:
+=--(
+  AND(
+    ISNUMBER(
+      MATCH(
+        [@[MOVEMENT_TYPE]],
+        {"Downgrade IN (ex-Auto)","Autochange Downgrade IN"},
+        0
+      )
+    ),
+    OR(
+      [@[CURR_CO_MTD]]>0,
+      [@[PREV_CO_MTD]]>0
+    )
+  )
+)
+
+POTENTIAL_CO_NEGATIVE_FLAG:
+=--(
+  AND(
+    [@[NEGATIVE_FLAG]]=1,
+    [@[CO_ANY_FLAG]]=0
+  )
+)
+
+
+
+
+
 =--(OR([@[Prev_CO_MTD]]>0,[@[Curr_CO_MTD]]>0))
 
 =--(AND(
