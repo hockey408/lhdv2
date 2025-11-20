@@ -1,3 +1,48 @@
+=SUMIFS(
+  CO_MoM[Curr_CO_MTD],
+  CO_MoM[Bank_For_Event], $B$3,
+  CO_MoM[Curr_CO_MTD], ">0"
+)
+
+=SUMPRODUCT(
+  --(CO_MoM[Bank_For_Event]=$B$3),
+  --(CO_MoM[Curr_CO_MTD]>0)
+)
+
+=ROWS(
+  UNIQUE(
+    FILTER(
+      CO_MoM[Facility_For_Event],
+      (CO_MoM[Bank_For_Event]=$B$3)*(CO_MoM[Curr_CO_MTD]>0)
+    )
+  )
+)
+
+=SUMIFS(
+  CO_MoM[Curr_CO_MTD],
+  CO_MoM[Bank_For_Event], $B$3,
+  CO_MoM[CO_Event_Class], "*Full*"
+)
+
+=SUMIFS(
+  CO_MoM[Curr_CO_MTD],
+  CO_MoM[Bank_For_Event], $B$3,
+  CO_MoM[CO_Event_Class], "*Partial*"
+)
+
+=SUMIFS(
+  CO_MoM[Curr_SSB],
+  CO_MoM[Bank_For_Event], $B$3,
+  CO_MoM[CO_Event_Class], "*Persisting*"
+)
+
+
+
+
+
+
+
+
 /* ===== Satellite: CO_MoM_Full (full chargeoff picture @ ACCOUNT_KEY grain) ===== */
 
 WITH latest_curr AS (
