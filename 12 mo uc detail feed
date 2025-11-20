@@ -1,3 +1,22 @@
+New Customers :=
+CALCULATE (
+    DISTINCTCOUNT ( Customers[customer_id] ),
+    Customers[is_new_customer] = TRUE ()
+)
+
+Total Customers :=
+DISTINCTCOUNT ( Customers[customer_id] )
+
+Returning Customers :=
+[Total Customers] - [New Customers]
+
+Returning Customer % :=
+DIVIDE ( [Returning Customers], [Total Customers] )
+
+
+
+
+
 /* ===== Satellite B: Chargeoff_Focus (incl. negatives & CO classifications) @ ACCOUNT_KEY grain ===== */
 
 /* 0) Identify current and prior EOM anchors (no NA filter so we don't miss post-CO behavior) */
