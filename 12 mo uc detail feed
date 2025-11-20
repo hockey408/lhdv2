@@ -1,4 +1,99 @@
 =SUMIFS(
+  CO_MoM[Prev_SSB],
+  CO_MoM[Bank_For_Event], $B$3,
+  CO_MoM[Movement_Type], "Exit (ex-Auto)"
+)
+
+=SUMIFS(
+  CO_MoM[Prev_SSB],
+  CO_MoM[Bank_For_Event], $B$3,
+  CO_MoM[Movement_Type], "Exit (ex-Auto)",
+  CO_MoM[CO_Any_Flag], 1
+)
+
+=IF(B19=0, 0, B20/B19)
+
+=SUMIFS(
+  CO_MoM[Prev_SSB],
+  CO_MoM[Bank_For_Event], $B$3,
+  CO_MoM[Movement_Type], "Exit (ex-Auto)",
+  CO_MoM[CO_Event_Class], "*Full*"
+)
+
+=SUMIFS(
+  CO_MoM[Curr_SSB],
+  CO_MoM[Bank_For_Event], $B$3,
+  CO_MoM[Movement_Type], "Downgrade IN (ex-Auto)"
+)
+
+=SUMIFS(
+  CO_MoM[Curr_SSB],
+  CO_MoM[Bank_For_Event], $B$3,
+  CO_MoM[Movement_Type], "Downgrade IN (ex-Auto)",
+  CO_MoM[CO_Any_Flag], 1
+)
+
+=SUMIFS(
+  CO_MoM[Curr_SSB],
+  CO_MoM[Bank_For_Event], $B$3,
+  CO_MoM[Movement_Type], "Downgrade IN (ex-Auto)",
+  CO_MoM[CO_Any_Flag], 1
+)
+
+=IF(B25=0,0,B26/B25)
+
+=SUMIFS(
+  CO_MoM[Curr_SSB],
+  CO_MoM[Bank_For_Event], $B$3,
+  CO_MoM[CO_Event_Class], "*Persisting*"
+)
+
+=SUMIFS(
+  CO_MoM[Curr_SSB],
+  CO_MoM[Bank_For_Event], $B$3,
+  CO_MoM[CO_Event_Class], "*Persisting*",
+  CO_MoM[Curr_NA_Bool], 1
+)
+
+=SUMIFS(
+  CO_MoM[Curr_SSB],
+  CO_MoM[Bank_For_Event], $B$3,
+  CO_MoM[Negative_Flag], 1,
+  CO_MoM[CO_Any_Flag], 0
+)
+
+=SUMPRODUCT(
+  --(CO_MoM[Bank_For_Event]=$B$3),
+  --(CO_MoM[Negative_Flag]=1),
+  --(CO_MoM[CO_Any_Flag]=0)
+)
+
+=ROWS(
+  UNIQUE(
+    FILTER(
+      CO_MoM[Facility_For_Event],
+      (CO_MoM[Bank_For_Event]=$B$3)*
+      (CO_MoM[Negative_Flag]=1)*
+      (CO_MoM[CO_Any_Flag]=0)
+    )
+  )
+)
+
+=LET(
+  d, CO_MoM,
+  FILTER(
+    d,
+    (CO_MoM[Bank_For_Event]=$B$3)*
+    (CO_MoM[CO_Any_Flag]=1)
+  )
+)
+
+
+
+
+
+
+=SUMIFS(
   CO_MoM[Curr_CO_MTD],
   CO_MoM[Bank_For_Event], $B$3,
   CO_MoM[Curr_CO_MTD], ">0"
