@@ -1,3 +1,34 @@
+SELECT
+    End_of_Month_Date,
+    UPPER(TRIM(Account_Key))         AS ACCOUNT_KEY,
+    UPPER(TRIM(Account_Identifier))  AS ACCOUNT_IDENTIFIER,
+    UPPER(TRIM(Facility_ID))         AS FACILITY_ID,
+    UPPER(TRIM(CIS_Customer_Number)) AS CIS_CUSTOMER_NUMBER,
+    Account_Name,
+    Contract_Source_System,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    Status_Code_Description,
+    Non_Accrual_Flag,
+    Source_System_Balance           AS SSB,
+    GL_Balance                      AS GL_BAL
+FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+WHERE End_of_Month_Date IN (
+        (SELECT MAX(End_of_Month_Date)
+         FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB),
+        (SELECT MAX(End_of_Month_Date)
+         FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+          WHERE End_of_Month_Date <
+                (SELECT MAX(End_of_Month_Date)
+                 FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB))
+      )
+  AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale');
+
+
+
+
+
+
+
 New Customers :=
 CALCULATE (
     DISTINCTCOUNT ( Customers[customer_id] ),
