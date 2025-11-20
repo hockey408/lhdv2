@@ -1,3 +1,41 @@
+=--(OR([@[Prev_CO_MTD]]>0,[@[Curr_CO_MTD]]>0))
+
+=--(AND(
+   OR([@[Movement_Type]]="Exit (ex-Auto)",[@[Movement_Type]]="Autochange Exit"),
+   [@[Curr_CO_MTD]]>0,
+   [@[CURR_SSB]]=0,
+   [@[PREV_SSB]]<>0
+))
+
+=--(AND(
+   OR([@[Movement_Type]]="Exit (ex-Auto)",[@[Movement_Type]]="Autochange Exit"),
+   [@[Curr_CO_MTD]]>0,
+   [@[CURR_SSB]]<>0
+))
+
+=--(AND(
+   NOT(OR([@[Movement_Type]]="Exit (ex-Auto)",[@[Movement_Type]]="Autochange Exit")),
+   OR([@[Prev_CO_MTD]]>0,[@[Curr_CO_MTD]]>0),
+   OR([@[CURR_SSB]]<>0,[@[PREV_SSB]]<>0)
+))
+
+=--(AND(
+   [@[Movement_Type]]="Downgrade IN (ex-Auto)",
+   [@[Curr_CO_MTD]]>0
+))
+
+=IF([@[CO_FullExit_Flag]]=1,"CO – Full Exit",
+IF([@[CO_PartialExit_Flag]]=1,"CO – Partial Exit",
+IF([@[CO_New_Downgrade_Flag]]=1,"CO – Downgrade w/ CO",
+IF([@[CO_Persisting_Flag]]=1,"CO – Persisting Exposure",
+IF([@[CO_Any_Flag]]=1,"CO – Other","Non-CO")))))
+
+
+
+
+
+
+
 SELECT
     End_of_Month_Date,
     UPPER(TRIM(Account_Key))         AS ACCOUNT_KEY,
