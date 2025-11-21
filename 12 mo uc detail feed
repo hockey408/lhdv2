@@ -1,3 +1,61 @@
+E-Commerce Performance Dashboard – Case Study Summary
+Overview
+I designed and built a complete E-Commerce Performance Dashboard in Power BI that gives founders
+and operators a clear, real-time view of their sales, marketing efficiency, product performance, and
+customer behavior.
+This project demonstrates the ability to turn raw data into a clean, intuitive analytics solution.
+What Was Built
+1. End-to-End Data Model
+• Orders, Products, Customers, and Marketing tables
+• Complete relational model with proper cardinality
+• Time intelligence and DAX-based calculations
+2. KPI Header (Founder-Ready Metrics)
+• Total Revenue
+• Total Orders
+• AOV (Average Order Value)
+• ROAS (Return on Ad Spend)
+• Returning Customer %
+3. Sales Performance Visualization
+• Trend analysis
+• Seasonality identification
+• Daily and monthly revenue patterns
+4. Product Performance Dashboard
+• Product-level revenue
+• Product-level gross margin
+• Ranking of top and bottom performers
+5. Marketing Efficiency View
+• Revenue by channel
+• Spend vs return analysis
+• ROAS context
+6. Customer Insights Module
+• New vs returning customers
+• Revenue contribution by customer type
+7. Insight Tiles
+• Executive-ready business takeaways
+• Narrative-driven explanations of trends
+Design & UX Achievements
+• Clean layout, modern styling, intuitive hierarchy
+• Consistent alignment and spacing
+• Consulting-grade presentation quality
+• Dashboard branded with “Breslin Analytics”
+What This Project Demonstrates
+✔ End-to-end BI development
+✔ Data modeling, DAX, and Power BI fluency
+✔ Founder-friendly dashboard design
+✔ Business storytelling and insight creation
+✔ Professional visual design practices
+How This Helps Clients
+• Provides a single source of truth
+• Replaces spreadsheets and manual reporting
+• Improves strategic and operational decisions
+• Highlights revenue drivers, product performance, and marketing ROI
+• Offers clear, digestible insights for founders and operators
+
+
+
+
+
+
 =ROWS(
   UNIQUE(
     FILTER(
