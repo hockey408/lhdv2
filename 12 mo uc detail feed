@@ -1,3 +1,17 @@
+Lately I’ve been investing more time into sharpening my analytics and dashboarding skills outside of work.
+
+To push myself, I built an end-to-end E-commerce Performance Dashboard covering revenue, conversion, customer behavior, and product-level insights.
+
+No client work here — just a personal project to keep improving my craft in data modeling, DAX/SQL, visualization design, and storytelling.
+
+Proud of how this one turned out, and especially how it ties together KPIs, trends, and drill-downs into a unified view. Always trying to stay curious and keep leveling up.
+
+If anyone else is working on side projects to grow their skills, I’d love to connect!
+
+
+
+
+
 -- Games & minutes
 Games Played :=
 DISTINCTCOUNT ( GameSummary[game_id] )
