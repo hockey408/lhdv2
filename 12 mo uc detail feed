@@ -1,3 +1,16 @@
+GameDimension =
+DISTINCT (
+    SELECTCOLUMNS (
+        GameSummary,
+        "game_id", GameSummary[game_id],
+        "game_date", GameSummary[game_date]
+    )
+)
+
+
+
+
+
 E-Commerce Performance Dashboard – Case Study Summary
 Overview
 I designed and built a complete E-Commerce Performance Dashboard in Power BI that gives founders
