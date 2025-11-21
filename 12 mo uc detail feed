@@ -1,3 +1,83 @@
+-- Games & minutes
+Games Played :=
+DISTINCTCOUNT ( GameSummary[game_id] )
+
+Total Minutes :=
+SUM ( GameSummary[minutes_played] )
+
+-- Shots
+Total Shots :=
+COUNTROWS ( Shots )
+
+High Danger Shots :=
+CALCULATE (
+    COUNTROWS ( Shots ),
+    Shots[danger_level] = "High"
+)
+
+
+Shot Quality % :=
+DIVIDE ( [High Danger Shots], [Total Shots] )
+
+Passes Attempted :=
+SUM ( GameSummary[passes_attempted] )
+
+Passes Completed :=
+SUM ( GameSummary[passes_completed] )
+
+Pass Completion % :=
+DIVIDE ( [Passes Completed], [Passes Attempted] )
+
+Zone Entries :=
+SUM ( GameSummary[zone_entries] )
+
+Controlled Entries :=
+SUM ( GameSummary[controlled_entries] )
+
+Zone Entry Success % :=
+DIVIDE ( [Controlled Entries], [Zone Entries] )
+
+Defensive Read Events :=
+CALCULATE (
+    COUNTROWS ( Events ),
+    Events[event_type] = "Defensive Read"
+)
+
+Successful Defensive Reads :=
+CALCULATE (
+    COUNTROWS ( Events ),
+    Events[event_type] = "Defensive Read",
+    Events[result] = "Success"
+)
+
+Defensive Read Success % :=
+DIVIDE ( [Successful Defensive Reads], [Defensive Read Events] )
+
+Turnovers :=
+SUM ( GameSummary[turnovers] )
+
+Turnovers per 60 :=
+DIVIDE ( [Turnovers] * 60, [Total Minutes] )
+
+PuckIQ Score :=
+VAR ShotQ   = [Shot Quality %]
+VAR PassQ   = [Pass Completion %]
+VAR EntryQ  = [Zone Entry Success %]
+VAR DefQ    = [Defensive Read Success %]
+RETURN
+( ShotQ * 0.25
+  + PassQ * 0.25
+  + EntryQ * 0.25
+  + DefQ * 0.25
+) * 100
+
+
+
+
+
+
+
+
 GameDimension =
 DISTINCT (
     SELECTCOLUMNS (
