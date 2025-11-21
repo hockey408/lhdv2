@@ -1,3 +1,24 @@
+SELECT						
+        END_OF_MONTH_DATE AS EOM,						
+        ACCOUNT_NAME,						
+        CIS_CUSTOMER_NUMBER,						
+        FACILITY_ID,						
+        ACCOUNT_IDENTIFIER AS ACCOUNT_ID,						
+        ACCOUNT_KEY,						
+        NON_ACCRUAL_FLAG AS NA_FLAG,						
+        SOURCE_SYSTEM_CHARGE_OFF_MTD AS CO_MTD,						
+        SOURCE_SYSTEM_BALANCE AS SS_BAL,						
+        GL_BALANCE AS GL_BAL						
+FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB						
+WHERE END_OF_MONTH_DATE = '2025-10-31'						
+        AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')						
+        AND SOURCE_SYSTEM_CHARGE_OFF_MTD <> 0						
+ORDER BY SOURCE_SYSTEM_CHARGE_OFF_MTD DESC						
+
+
+
+
+
 /* ===== CO & Negatives Satellite @ ACCOUNT_KEY grain ===== */
 
 WITH latest_curr AS (
