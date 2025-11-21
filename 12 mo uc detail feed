@@ -1,3 +1,53 @@
+=IF(
+   OR([@[MOVEMENT_TYPE]]="Exit (ex-Auto)",
+      [@[MOVEMENT_TYPE]]="Autochange Exit"),
+   [@[CURR_CO_MTD]],
+   0
+)
+
+=IF(
+   OR([@[MOVEMENT_TYPE]]="Downgrade IN (ex-Auto)",
+      [@[MOVEMENT_TYPE]]="Autochange Downgrade IN"),
+   [@[CURR_CO_MTD]],
+   0
+)
+
+=IF(
+   AND([@[MOVEMENT_TYPE]]="Persisting Balance Changes (ex-Auto)",
+       [@[CURR_CO_MTD]]>0),
+   [@[CURR_CO_MTD]],
+   0
+)
+
+Is_Full_CO:
+=--(AND([@[CO_MTD]]>0,[@[SS_BAL]]=0))
+
+Is_Partial_CO:
+=--(AND([@[CO_MTD]]>0,[@[SS_BAL]]>0))
+
+CO_Type:
+=IF([@[Is_Full_CO]]=1,"Full CO",
+   IF([@[Is_Partial_CO]]=1,"Partial CO","Check"))
+
+Is_NA_Row:
+=--([@[NA_FLAG]]="Y")
+
+In_NA_Pop_MoM:
+=--(COUNTIFS(MoM_Account_Detail[ACCOUNT_KEY],[@[ACCOUNT_KEY]])>0)
+
+Movement_Type_From_MoM:
+=IF([@[In_NA_Pop_MoM]]=1,
+    XLOOKUP([@[ACCOUNT_KEY]],
+            MoM_Account_Detail[ACCOUNT_KEY],
+            MoM_Account_Detail[MOVEMENT_TYPE],
+            ""),
+    "")
+
+
+
+
+
+
 SELECT						
         END_OF_MONTH_DATE AS EOM,						
         ACCOUNT_NAME,						
