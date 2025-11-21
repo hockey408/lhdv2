@@ -1,3 +1,122 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "PuckIQ Pass Map - Last 2 Games, Completed Passes",
+  "data": {
+    "name": "dataset"
+  },
+  "transform": [
+    { "filter": "datum.completed == true" },
+    { "filter": "isValid(datum.from_x) && isValid(datum.to_x)" }
+  ],
+  "layer": [
+    {
+      "mark": {
+        "type": "rule",
+        "strokeWidth": 1.5,
+        "opacity": 0.55
+      },
+      "encoding": {
+        "x": {
+          "field": "from_x",
+          "type": "quantitative",
+          "scale": { "domain": [0, 100] }
+        },
+        "y": {
+          "field": "from_y",
+          "type": "quantitative",
+          "scale": { "domain": [0, 100] }
+        },
+        "x2": {
+          "field": "to_x"
+        },
+        "y2": {
+          "field": "to_y"
+        },
+        "color": {
+          "field": "under_pressure",
+          "type": "nominal",
+          "legend": { "title": "Under pressure" },
+          "scale": {
+            "domain": [true, false],
+            "range": ["#FF6B6B", "#4DA3FF"]
+          }
+        },
+        "tooltip": [
+          { "field": "from_x", "type": "quantitative", "title": "From X" },
+          { "field": "from_y", "type": "quantitative", "title": "From Y" },
+          { "field": "to_x", "type": "quantitative", "title": "To X" },
+          { "field": "to_y", "type": "quantitative", "title": "To Y" },
+          { "field": "under_pressure", "type": "nominal", "title": "Under pressure" }
+        ]
+      }
+    },
+    {
+      "mark": {
+        "type": "circle",
+        "size": 40,
+        "opacity": 0.8
+      },
+      "encoding": {
+        "x": {
+          "field": "from_x",
+          "type": "quantitative",
+          "scale": { "domain": [0, 100] }
+        },
+        "y": {
+          "field": "from_y",
+          "type": "quantitative",
+          "scale": { "domain": [0, 100] }
+        },
+        "color": {
+          "value": "#4DA3FF"
+        }
+      }
+    },
+    {
+      "mark": {
+        "type": "circle",
+        "size": 25,
+        "opacity": 0.9
+      },
+      "encoding": {
+        "x": {
+          "field": "to_x",
+          "type": "quantitative",
+          "scale": { "domain": [0, 100] }
+        },
+        "y": {
+          "field": "to_y",
+          "type": "quantitative",
+          "scale": { "domain": [0, 100] }
+        },
+        "color": {
+          "value": "#0E1C2F"
+        }
+      }
+    }
+  ],
+  "config": {
+    "axis": {
+      "grid": false,
+      "labels": false,
+      "ticks": false,
+      "domain": false
+    },
+    "legend": {
+      "orient": "bottom",
+      "labelFont": "Segoe UI",
+      "titleFont": "Segoe UI Semibold"
+    },
+    "view": {
+      "stroke": null
+    }
+  }
+}
+
+
+
+
+
 SortOrder =
 IF ( PassPoints[point_type] = "from", 1, 2 )
 
