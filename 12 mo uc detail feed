@@ -1,3 +1,24 @@
+PassPoints =
+UNION (
+    SELECTCOLUMNS (
+        Passes,
+        "pass_id", Passes[pass_id],
+        "point_type", "from",
+        "x_coord", Passes[from_x],
+        "y_coord", Passes[from_y]
+    ),
+    SELECTCOLUMNS (
+        Passes,
+        "pass_id", Passes[pass_id],
+        "point_type", "to",
+        "x_coord", Passes[to_x],
+        "y_coord", Passes[to_y]
+    )
+)
+
+
+
+
 Lately I’ve been investing more time into sharpening my analytics and dashboarding skills outside of work.
 
 To push myself, I built an end-to-end E-commerce Performance Dashboard (using hypothetical client and dummy data) covering revenue, conversion, customer behavior, and product-level insights.
