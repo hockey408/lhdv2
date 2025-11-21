@@ -1,3 +1,8 @@
+SortOrder =
+IF ( PassPoints[point_type] = "from", 1, 2 )
+
+
+
 PassPoints =
 UNION (
     SELECTCOLUMNS (
