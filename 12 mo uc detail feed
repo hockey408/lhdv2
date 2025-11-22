@@ -1,3 +1,29 @@
+Selected Player Name =
+SELECTEDVALUE(Player[player_name], "Select a player")
+
+Selected Player Position =
+SELECTEDVALUE(Player[position], "")
+
+Player Header =
+VAR Name = SELECTEDVALUE(Player[player_name], "Select a player")
+VAR Pos  = SELECTEDVALUE(Player[position], "")
+RETURN
+Name & IF(Pos <> "", "  |  " & Pos, "")
+
+Player Header =
+VAR Name = SELECTEDVALUE(Player[player_name], "Select a player")
+VAR Pos  = SELECTEDVALUE(Player[position], "")
+VAR Hand = SELECTEDVALUE(Player[hand], "")
+RETURN
+Name
+    & IF(Pos <> "", " | " & Pos, "")
+    & IF(Hand <> "", " | " & Hand, "")
+
+
+
+
+
+
 =IF(
    OR([@[MOVEMENT_TYPE]]="Exit (ex-Auto)",
       [@[MOVEMENT_TYPE]]="Autochange Exit"),
