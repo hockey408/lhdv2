@@ -1,5 +1,44 @@
 {
   "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "Minimal debug pass map - should at least show dots",
+  "background": "transparent",
+
+  "data": {
+    "name": "dataset"
+  },
+
+  "mark": {
+    "type": "circle",
+    "size": 60,
+    "opacity": 0.9,
+    "color": "#22C55E"
+  },
+
+  "encoding": {
+    "x": { "field": "from_x", "type": "quantitative" },
+    "y": { "field": "from_y", "type": "quantitative" }
+  },
+
+  "config": {
+    "axis": {
+      "grid": false,
+      "domain": false,
+      "labels": false,
+      "ticks": false,
+      "title": null
+    },
+    "view": {
+      "stroke": null
+    }
+  }
+}
+
+
+
+
+
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
   "description": "PuckIQ Pass Map - lines + origins + destinations, no axes, legend on dark background",
   "background": "transparent",
 
