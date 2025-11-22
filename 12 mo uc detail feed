@@ -1,5 +1,139 @@
 {
   "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "PuckIQ Pass Map - Lines show pressure (style), dots show start/end (color)",
+  "background": "transparent",
+
+  "data": {
+    "name": "dataset"
+  },
+
+  "transform": [
+    {
+      "filter": "isValid(datum.from_x) && isValid(datum.from_y) && isValid(datum.to_x) && isValid(datum.to_y)"
+    },
+    {
+      "calculate": "datum.under_pressure ? 'Under Pressure' : 'Not Under Pressure'",
+      "as": "pressure_label"
+    }
+  ],
+
+  "layer": [
+    {
+      "mark": {
+        "type": "rule",
+        "strokeWidth": 1.5,
+        "opacity": 0.7,
+        "color": "#14B8A6"
+      },
+      "encoding": {
+        "x": { "field": "from_x", "type": "quantitative", "axis": null },
+        "y": { "field": "from_y", "type": "quantitative", "axis": null },
+        "x2": { "field": "to_x" },
+        "y2": { "field": "to_y" },
+        "strokeDash": {
+          "field": "pressure_label",
+          "type": "nominal",
+          "title": "Pass Line (Pressure)",
+          "scale": {
+            "domain": ["Under Pressure", "Not Under Pressure"],
+            "range": [[4, 4], [1, 0]]
+          },
+          "legend": {
+            "orient": "top"
+          }
+        },
+        "tooltip": [
+          { "field": "from_x", "type": "quantitative", "title": "From X" },
+          { "field": "from_y", "type": "quantitative", "title": "From Y" },
+          { "field": "to_x", "type": "quantitative", "title": "To X" },
+          { "field": "to_y", "type": "quantitative", "title": "To Y" },
+          { "field": "pressure_label", "type": "nominal", "title": "Pressure" }
+        ]
+      }
+    },
+    {
+      "mark": {
+        "type": "circle",
+        "size": 55,
+        "opacity": 0.9,
+        "color": "#111827"
+      },
+      "encoding": {
+        "x": { "field": "from_x", "type": "quantitative", "axis": null },
+        "y": { "field": "from_y", "type": "quantitative", "axis": null }
+      }
+    },
+    {
+      "mark": {
+        "type": "circle",
+        "size": 45,
+        "opacity": 0.9,
+        "color": "#6B7280"
+      },
+      "encoding": {
+        "x": { "field": "to_x", "type": "quantitative", "axis": null },
+        "y": { "field": "to_y", "type": "quantitative", "axis": null }
+      }
+    },
+    {
+      "data": {
+        "values": [
+          { "point_type": "Pass Start (From)" },
+          { "point_type": "Pass End (To)" }
+        ]
+      },
+      "mark": {
+        "type": "point",
+        "size": 80,
+        "opacity": 0
+      },
+      "encoding": {
+        "x": { "value": 0 },
+        "y": { "value": 0 },
+        "color": {
+          "field": "point_type",
+          "type": "nominal",
+          "title": "Dot Type (Start / End)",
+          "scale": {
+            "domain": ["Pass Start (From)", "Pass End (To)"],
+            "range": ["#111827", "#6B7280"]
+          },
+          "legend": {
+            "orient": "bottom"
+          }
+        }
+      }
+    }
+  ],
+
+  "config": {
+    "axis": {
+      "grid": false,
+      "domain": false,
+      "labels": false,
+      "ticks": false,
+      "title": null
+    },
+    "legend": {
+      "labelColor": "white",
+      "titleColor": "white",
+      "labelFont": "Segoe UI",
+      "titleFont": "Segoe UI Semibold",
+      "labelFontSize": 11,
+      "titleFontSize": 12
+    },
+    "view": {
+      "stroke": null
+    }
+  }
+}
+
+
+
+
+
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
   "description": "PuckIQ Pass Map - Lines show pressure, dots show start/end",
   "background": "transparent",
 
