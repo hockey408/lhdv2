@@ -1,3 +1,128 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "PuckIQ Pass Map - Completed passes, last 2 games, over white rink background",
+  "background": "transparent",
+
+  "data": {
+    "name": "dataset"
+  },
+
+  "transform": [
+    {
+      "filter": "isValid(datum.from_x) && isValid(datum.from_y) && isValid(datum.to_x) && isValid(datum.to_y)"
+    }
+    /* OPTIONAL: if you want to enforce completed-only inside Deneb too, uncomment this:
+    ,
+    {
+      "filter": "datum.completed"
+    }
+    */
+  ],
+
+  "layer": [
+    {
+      "mark": {
+        "type": "rule",
+        "strokeWidth": 1.5,
+        "opacity": 0.7
+      },
+      "encoding": {
+        "x": {
+          "field": "from_x",
+          "type": "quantitative"
+        },
+        "y": {
+          "field": "from_y",
+          "type": "quantitative"
+        },
+        "x2": {
+          "field": "to_x"
+        },
+        "y2": {
+          "field": "to_y"
+        },
+        "color": {
+          "field": "under_pressure",
+          "type": "nominal",
+          "title": "Under pressure",
+          "scale": {
+            "domain": [true, false],
+            "range": ["#F97316", "#1D4ED8"]
+          }
+        },
+        "tooltip": [
+          { "field": "from_x", "type": "quantitative", "title": "From X" },
+          { "field": "from_y", "type": "quantitative", "title": "From Y" },
+          { "field": "to_x", "type": "quantitative", "title": "To X" },
+          { "field": "to_y", "type": "quantitative", "title": "To Y" },
+          { "field": "under_pressure", "type": "nominal", "title": "Under pressure" }
+        ]
+      }
+    },
+    {
+      "mark": {
+        "type": "circle",
+        "size": 55,
+        "opacity": 0.9,
+        "color": "#0F52BA"
+      },
+      "encoding": {
+        "x": {
+          "field": "from_x",
+          "type": "quantitative"
+        },
+        "y": {
+          "field": "from_y",
+          "type": "quantitative"
+        }
+      }
+    },
+    {
+      "mark": {
+        "type": "circle",
+        "size": 45,
+        "opacity": 0.9,
+        "color": "#DA2F47"
+      },
+      "encoding": {
+        "x": {
+          "field": "to_x",
+          "type": "quantitative"
+        },
+        "y": {
+          "field": "to_y",
+          "type": "quantitative"
+        }
+      }
+    }
+  ],
+
+  "config": {
+    "axis": {
+      "grid": false,
+      "domain": false,
+      "labels": false,
+      "ticks": false
+    },
+    "legend": {
+      "labelColor": "white",
+      "titleColor": "white",
+      "labelFont": "Segoe UI",
+      "titleFont": "Segoe UI Semibold",
+      "labelFontSize": 11,
+      "titleFontSize": 12
+    },
+    "view": {
+      "stroke": null
+    }
+  }
+}
+
+
+
+
+
+
 "config": {
   "axis": {
     "labelColor": "white",
