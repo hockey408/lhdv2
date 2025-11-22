@@ -1,5 +1,80 @@
 {
   "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "Minimal PuckIQ pass map - lines + origins + destinations",
+  "background": "transparent",
+
+  "data": {
+    "name": "dataset"
+  },
+
+  "layer": [
+    {
+      "mark": {
+        "type": "rule",
+        "strokeWidth": 1.5,
+        "opacity": 0.7,
+        "color": "#1D4ED8"
+      },
+      "encoding": {
+        "x": { "field": "from_x", "type": "quantitative" },
+        "y": { "field": "from_y", "type": "quantitative" },
+        "x2": { "field": "to_x" },
+        "y2": { "field": "to_y" }
+      }
+    },
+    {
+      "mark": {
+        "type": "circle",
+        "size": 55,
+        "opacity": 0.9,
+        "color": "#0F52BA"
+      },
+      "encoding": {
+        "x": { "field": "from_x", "type": "quantitative" },
+        "y": { "field": "from_y", "type": "quantitative" }
+      }
+    },
+    {
+      "mark": {
+        "type": "circle",
+        "size": 45,
+        "opacity": 0.9,
+        "color": "#DA2F47"
+      },
+      "encoding": {
+        "x": { "field": "to_x", "type": "quantitative" },
+        "y": { "field": "to_y", "type": "quantitative" }
+      }
+    }
+  ],
+
+  "config": {
+    "axis": {
+      "grid": false,
+      "domain": false,
+      "labels": false,
+      "ticks": false
+    },
+    "legend": {
+      "labelColor": "white",
+      "titleColor": "white",
+      "labelFont": "Segoe UI",
+      "titleFont": "Segoe UI Semibold",
+      "labelFontSize": 11,
+      "titleFontSize": 12
+    },
+    "view": {
+      "stroke": null
+    }
+  }
+}
+
+
+
+
+
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
   "description": "PuckIQ Pass Map - Completed passes, last 2 games, over white rink background",
   "background": "transparent",
 
