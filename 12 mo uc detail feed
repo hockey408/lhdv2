@@ -1,5 +1,106 @@
 {
   "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "PuckIQ Pass Map - lines + origins + destinations, no axes, legend on dark background",
+  "background": "transparent",
+
+  "data": {
+    "name": "dataset"
+  },
+
+  "transform": [
+    {
+      "filter": "isValid(datum.from_x) && isValid(datum.from_y) && isValid(datum.to_x) && isValid(datum.to_y)"
+    }
+    /* Optional: also enforce completed-only inside Deneb
+    ,
+    { "filter": "datum.completed" }
+    */
+  ],
+
+  "layer": [
+    {
+      "mark": {
+        "type": "rule",
+        "strokeWidth": 1.5,
+        "opacity": 0.7
+      },
+      "encoding": {
+        "x": { "field": "from_x", "type": "quantitative", "axis": null },
+        "y": { "field": "from_y", "type": "quantitative", "axis": null },
+        "x2": { "field": "to_x" },
+        "y2": { "field": "to_y" },
+        "color": {
+          "field": "under_pressure",
+          "type": "nominal",
+          "title": "Under pressure",
+          "scale": {
+            "domain": [true, false],
+            "range": ["#22C55E", "#8B5CF6"]
+          }
+        },
+        "tooltip": [
+          { "field": "from_x", "type": "quantitative", "title": "From X" },
+          { "field": "from_y", "type": "quantitative", "title": "From Y" },
+          { "field": "to_x", "type": "quantitative", "title": "To X" },
+          { "field": "to_y", "type": "quantitative", "title": "To Y" },
+          { "field": "under_pressure", "type": "nominal", "title": "Under pressure" }
+        ]
+      }
+    },
+    {
+      "mark": {
+        "type": "circle",
+        "size": 55,
+        "opacity": 0.9,
+        "color": "#111827"
+      },
+      "encoding": {
+        "x": { "field": "from_x", "type": "quantitative", "axis": null },
+        "y": { "field": "from_y", "type": "quantitative", "axis": null }
+      }
+    },
+    {
+      "mark": {
+        "type": "circle",
+        "size": 45,
+        "opacity": 0.9,
+        "color": "#6B7280"
+      },
+      "encoding": {
+        "x": { "field": "to_x", "type": "quantitative", "axis": null },
+        "y": { "field": "to_y", "type": "quantitative", "axis": null }
+      }
+    }
+  ],
+
+  "config": {
+    "axis": {
+      "grid": false,
+      "domain": false,
+      "labels": false,
+      "ticks": false,
+      "title": null
+    },
+    "legend": {
+      "labelColor": "white",
+      "titleColor": "white",
+      "labelFont": "Segoe UI",
+      "titleFont": "Segoe UI Semibold",
+      "labelFontSize": 11,
+      "titleFontSize": 12
+    },
+    "view": {
+      "stroke": null
+    }
+  }
+}
+
+
+
+
+
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
   "description": "Minimal PuckIQ pass map - lines + origins + destinations",
   "background": "transparent",
 
