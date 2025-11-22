@@ -1,3 +1,15 @@
+Player Header :=
+VAR SelectedPlayerName =
+    SELECTEDVALUE ( Players[player_name], "Select a player" )
+VAR SelectedPosition =
+    SELECTEDVALUE ( Players[position], "" )
+RETURN
+SelectedPlayerName &
+IF ( SelectedPosition <> "", "  |  " & SelectedPosition )
+
+
+
+
 Selected Player Name =
 SELECTEDVALUE(Player[player_name], "Select a player")
 
