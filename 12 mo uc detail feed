@@ -1,3 +1,26 @@
+Passing Profile
+• Strong OZ passing volume (X OZ passes)
+• Y% of passes completed under pressure
+• Frequently targets slot / middle lane
+
+Tile 2 – Shooting Insights
+
+Shooting Profile
+• Z high-danger attempts in last 2 games
+• Most shots from [left/right] flank & mid-slot
+• Limited low-quality perimeter shots
+
+Tile 3 – Transition / Defensive Reads
+
+Reads & Transitions
+• Breaks up plays near the blue line
+• Effective at moving puck out of pressure
+• Good gap / stick detail in OZ
+
+
+
+
+
 {
   "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
   "description": "PuckIQ Pass Map with solid dot legend and pressure line legend",
