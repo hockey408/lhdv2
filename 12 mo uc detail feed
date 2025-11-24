@@ -7,6 +7,31 @@
     "title": null
   },
   "legend": {
+    "direction": "horizontal",
+    "labelColor": "white",
+    "titleColor": "white",
+    "labelFont": "Segoe UI",
+    "titleFont": "Segoe UI Semibold",
+    "labelFontSize": 11,
+    "titleFontSize": 12,
+    "padding": 2
+  },
+  "view": { "stroke": null }
+}
+
+
+
+
+
+"config": {
+  "axis": {
+    "grid": false,
+    "domain": false,
+    "labels": false,
+    "ticks": false,
+    "title": null
+  },
+  "legend": {
     "orient": "top",
     "direction": "horizontal",
     "anchor": "start",
