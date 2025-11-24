@@ -1,5 +1,134 @@
 {
   "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "PuckIQ Pass Map - NZ + OZ (x 25–100, y 0–100)",
+  "background": "transparent",
+  "padding": 0,
+  "autosize": { "type": "fit", "contains": "padding" },
+
+  "data": { "name": "dataset" },
+
+  "transform": [
+    {
+      "filter": "isValid(datum.from_x) && isValid(datum.from_y) && isValid(datum.to_x) && isValid(datum.to_y)"
+    },
+    {
+      "filter": "datum.from_x >= 25"
+    },
+    {
+      "calculate": "datum.under_pressure ? 'Under Pressure' : 'Not Under Pressure'",
+      "as": "pressure_label"
+    }
+  ],
+
+  "layer": [
+    {
+      "mark": {
+        "type": "rule",
+        "strokeWidth": 1.4,
+        "opacity": 0.8,
+        "color": "#14B8A6"
+      },
+      "encoding": {
+        "x": {
+          "field": "from_x",
+          "type": "quantitative",
+          "axis": null,
+          "scale": { "domain": [25, 100], "nice": false }
+        },
+        "y": {
+          "field": "from_y",
+          "type": "quantitative",
+          "axis": null,
+          "scale": { "domain": [0, 100], "nice": false }
+        },
+        "x2": { "field": "to_x" },
+        "y2": { "field": "to_y" },
+        "strokeDash": {
+          "field": "pressure_label",
+          "type": "nominal",
+          "scale": {
+            "domain": ["Under Pressure", "Not Under Pressure"],
+            "range": [[4,4], [1,0]]
+          },
+          "legend": null
+        }
+      }
+    },
+
+    {
+      "mark": {
+        "type": "circle",
+        "size": 55,
+        "opacity": 0.9,
+        "color": "#111827"
+      },
+      "encoding": {
+        "x": {
+          "field": "from_x",
+          "type": "quantitative",
+          "axis": null,
+          "scale": { "domain": [25, 100], "nice": false }
+        },
+        "y": {
+          "field": "from_y",
+          "type": "quantitative",
+          "axis": null,
+          "scale": { "domain": [0, 100], "nice": false }
+        }
+      }
+    },
+
+    {
+      "mark": {
+        "type": "circle",
+        "size": 45,
+        "opacity": 0.9,
+        "color": "#FACC15"
+      },
+      "encoding": {
+        "x": {
+          "field": "to_x",
+          "type": "quantitative",
+          "axis": null,
+          "scale": { "domain": [25, 100], "nice": false }
+        },
+        "y": {
+          "field": "to_y",
+          "type": "quantitative",
+          "axis": null,
+          "scale": { "domain": [0, 100], "nice": false }
+        }
+      }
+    }
+  ],
+
+  "config": {
+    "axis": {
+      "grid": false,
+      "domain": false,
+      "labels": false,
+      "ticks": false,
+      "title": null
+    },
+    "legend": {
+      "direction": "horizontal",
+      "labelColor": "white",
+      "titleColor": "white",
+      "labelFont": "Segoe UI",
+      "titleFont": "Segoe UI Semibold",
+      "labelFontSize": 11,
+      "titleFontSize": 12,
+      "padding": 2
+    },
+    "view": { "stroke": null }
+  }
+}
+
+
+
+
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
   "description": "PuckIQ Pass Map with solid dot legend and pressure line legend",
   "background": "transparent",
 
