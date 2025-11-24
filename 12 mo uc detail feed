@@ -1,3 +1,52 @@
+Zone Entries :=
+CALCULATE (
+    COUNTROWS ( Entries ),
+    Entries[is_entry] = TRUE ()
+)
+
+Zone Entries :=
+CALCULATE (
+    COUNTROWS ( Entries ),
+    Entries[is_entry] = 1
+)
+
+Successful Zone Entries :=
+CALCULATE (
+    COUNTROWS ( Entries ),
+    Entries[is_entry] = TRUE (),
+    Entries[entry_success] = TRUE ()
+)
+
+Zone Entry Success % :=
+DIVIDE ( [Successful Zone Entries], [Zone Entries] )
+
+Controlled Entries :=
+CALCULATE (
+    COUNTROWS ( Entries ),
+    Entries[is_entry] = TRUE (),
+    Entries[entry_type] = "Controlled"
+)
+
+Dump-in Entries :=
+CALCULATE (
+    COUNTROWS ( Entries ),
+    Entries[is_entry] = TRUE (),
+    Entries[entry_type] = "Dump-in"
+)
+
+Controlled Entry % :=
+DIVIDE ( [Controlled Entries], [Zone Entries] )
+
+Failed Zone Entries :=
+[Zone Entries] - [Successful Zone Entries]
+
+
+
+
+
+
+
+
 {
   "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
   "description": "PuckIQ Pass Map - NZ + OZ (x 25–100, y 0–100)",
