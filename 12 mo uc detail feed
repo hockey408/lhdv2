@@ -1,3 +1,33 @@
+"config": {
+  "axis": {
+    "grid": false,
+    "domain": false,
+    "labels": false,
+    "ticks": false,
+    "title": null
+  },
+  "legend": {
+    "orient": "top",
+    "direction": "horizontal",
+    "anchor": "start",
+    "legendX": 0,
+    "legendY": 0,
+    "labelColor": "white",
+    "titleColor": "white",
+    "labelFont": "Segoe UI",
+    "titleFont": "Segoe UI Semibold",
+    "labelFontSize": 11,
+    "titleFontSize": 12,
+    "padding": 2,
+    "offset": -10
+  },
+  "view": { "stroke": null }
+}
+
+
+
+
+
 {
   "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
   "description": "Pass Map for Neutral + Offensive Zone (x 25–100)",
