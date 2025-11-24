@@ -1,3 +1,109 @@
+Zone Entry Attempts :=
+CALCULATE (
+    COUNTROWS ( Events ),
+    Events[event_type] = "Zone Entry"
+)
+
+Successful Zone Entries :=
+CALCULATE (
+    COUNTROWS ( Events ),
+    Events[event_type] = "Zone Entry",
+    Events[event_success] = 1    -- or TRUE() if boolean
+)
+
+Zone Entry Success % :=
+DIVIDE ( [Successful Zone Entries], [Zone Entry Attempts] )
+
+Defensive Read Attempts :=
+CALCULATE (
+    COUNTROWS ( Events ),
+    Events[event_type] = "Defensive Reads"
+)
+
+Successful Defensive Reads :=
+CALCULATE (
+    COUNTROWS ( Events ),
+    Events[event_type] = "Defensive Reads",
+    Events[event_success] = 1    -- or TRUE() if boolean
+)
+
+Defensive Read Success % :=
+DIVIDE ( [Successful Defensive Reads], [Defensive Read Attempts] )
+
+Zone Entries & Reads Profile Text :=
+VAR PlayerName =
+    SELECTEDVALUE ( Players[player_name], "Selected player" )
+
+-- Zone entries
+VAR ZE_Attempts =
+    [Zone Entry Attempts]
+
+VAR ZE_SuccessPct =
+    [Zone Entry Success %]
+
+VAR ZE_VolumeLabel =
+    SWITCH (
+        TRUE (),
+        ZE_Attempts >= 20, "a primary transporter in transition",
+        ZE_Attempts >= 10, "a steady option in transition",
+        ZE_Attempts > 0,   "a lighter but meaningful entry sample",
+        "a very limited entry sample so far"
+    )
+
+VAR ZE_SuccessLabel =
+    SWITCH (
+        TRUE (),
+        ZE_SuccessPct >= 0.70, "excellent success breaking the line with control",
+        ZE_SuccessPct >= 0.60, "strong success getting the puck into the OZ",
+        ZE_SuccessPct >= 0.50, "average entry success with room to grow",
+        ZE_Attempts > 0,       "below-average entry success so far",
+        "no real read on entry success yet"
+    )
+
+-- Defensive reads
+VAR DR_Attempts =
+    [Defensive Read Attempts]
+
+VAR DR_SuccessPct =
+    [Defensive Read Success %]
+
+VAR DR_VolumeLabel =
+    SWITCH (
+        TRUE (),
+        DR_Attempts >= 20, "regularly involved in defensive reads",
+        DR_Attempts >= 10, "steadily involved in defensive reads",
+        DR_Attempts > 0,   "a smaller sample of defensive reads",
+        "a limited defensive read sample so far"
+    )
+
+VAR DR_SuccessLabel =
+    SWITCH (
+        TRUE (),
+        DR_SuccessPct >= 0.70, "breaking up plays at a strong clip",
+        DR_SuccessPct >= 0.60, "holding their own on reads at the line",
+        DR_SuccessPct >= 0.50, "trading chances with room to tighten details",
+        DR_Attempts > 0,       "struggling to consistently break up plays",
+        "no clear read on defensive reads yet"
+    )
+
+RETURN
+"• " & PlayerName & " looks like " & ZE_VolumeLabel &
+" (" & FORMAT ( ZE_Attempts, "#,0" ) & " zone entry attempts at " &
+FORMAT ( ZE_SuccessPct, "0.0%" ) & " success)." &
+UNICHAR (10) & UNICHAR (10) &
+"• In transition, they are " & ZE_SuccessLabel & "." &
+UNICHAR (10) & UNICHAR (10) &
+"• Defensively, " & PlayerName & " is " & DR_VolumeLabel &
+" (" & FORMAT ( DR_Attempts, "#,0" ) & " reads at " &
+FORMAT ( DR_SuccessPct, "0.0%" ) & " success), " & DR_SuccessLabel & "."
+
+
+
+
+
+
+
+
 Shots Attempted :=
 COUNTROWS ( Shots )
 
