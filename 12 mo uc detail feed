@@ -1,4 +1,13 @@
-    CASE
+TestWrap :=
+"• Line 1" & UNICHAR(10) &
+"• Line 2" & UNICHAR(10) &
+"• Line 3"
+
+
+
+
+
+CASE
       WHEN Contract_Source_System IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN')
         THEN 'L-SVB'
       WHEN Contract_Source_System = 'ALL'
