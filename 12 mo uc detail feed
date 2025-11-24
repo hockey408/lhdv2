@@ -1,5 +1,147 @@
 {
   "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "description": "Pass Map for Neutral + Offensive Zone (x 25–100)",
+  "background": "transparent",
+  "padding": 0,
+
+  "data": {
+    "name": "dataset"
+  },
+
+  "transform": [
+    { "filter": "datum.from_x >= 25 && datum.to_x >= 25" }
+  ],
+
+  "layer": [
+    {
+      "mark": {
+        "type": "rule",
+        "strokeWidth": 1.2
+      },
+      "encoding": {
+        "x": {
+          "field": "from_x",
+          "type": "quantitative",
+          "axis": null,
+          "scale": { "domain": [25, 100], "nice": false }
+        },
+        "y": {
+          "field": "from_y",
+          "type": "quantitative",
+          "axis": null,
+          "scale": { "domain": [0, 100], "nice": false }
+        },
+        "x2": { "field": "to_x" },
+        "y2": { "field": "to_y" },
+        "color": {
+          "field": "under_pressure",
+          "type": "nominal",
+          "scale": {
+            "domain": [true, false],
+            "range": ["#ff5d5d", "#59d6ff"]
+          },
+          "title": "Pass Line (Pressure)"
+        },
+        "opacity": { "value": 0.7 }
+      }
+    },
+
+    {
+      "mark": {
+        "type": "circle",
+        "size": 80,
+        "opacity": 1
+      },
+      "encoding": {
+        "x": {
+          "field": "from_x",
+          "type": "quantitative",
+          "axis": null,
+          "scale": { "domain": [25, 100], "nice": false }
+        },
+        "y": {
+          "field": "from_y",
+          "type": "quantitative",
+          "axis": null,
+          "scale": { "domain": [0, 100], "nice": false }
+        },
+        "color": {
+          "value": "#ffd447"   // Pass Start = Yellow
+        },
+        "tooltip": [
+          { "field": "player_id", "title": "Player" },
+          { "field": "from_x", "title": "From X" },
+          { "field": "from_y", "title": "From Y" }
+        ]
+      }
+    },
+
+    {
+      "mark": {
+        "type": "circle",
+        "size": 80,
+        "opacity": 1
+      },
+      "encoding": {
+        "x": {
+          "field": "to_x",
+          "type": "quantitative",
+          "axis": null,
+          "scale": { "domain": [25, 100], "nice": false }
+        },
+        "y": {
+          "field": "to_y",
+          "type": "quantitative",
+          "axis": null,
+          "scale": { "domain": [0, 100], "nice": false }
+        },
+        "color": {
+          "value": "#c7c7c7"   // Pass End = Light Gray
+        },
+        "tooltip": [
+          { "field": "player_id", "title": "Player" },
+          { "field": "to_x", "title": "To X" },
+          { "field": "to_y", "title": "To Y" }
+        ]
+      }
+    },
+
+    {
+      "mark": {
+        "type": "text",
+        "align": "left",
+        "baseline": "top",
+        "dx": 0,
+        "dy": -5,
+        "color": "white",
+        "fontSize": 12
+      },
+      "encoding": {
+        "text": { "value": "Pass Line (Pressure):  ● Under  ● Not Under" }
+      }
+    },
+
+    {
+      "mark": {
+        "type": "text",
+        "align": "left",
+        "baseline": "top",
+        "dx": 0,
+        "dy": 15,
+        "color": "white",
+        "fontSize": 12
+      },
+      "encoding": {
+        "text": { "value": "Dot Type:  ● Pass Start  ● Pass End" }
+      }
+    }
+  ]
+}
+
+
+
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
   "description": "PuckIQ NZ+OZ Pass Map (x = 25–100)",
   "background": "transparent",
 
