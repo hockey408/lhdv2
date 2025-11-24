@@ -1,3 +1,141 @@
+Passing Profile Text :=
+VAR PlayerName =
+    SELECTEDVALUE ( Players[player_name], "Selected player" )
+
+VAR OZPasses =
+    [OZ Passes]
+
+VAR OZPassPct =
+    [OZ Pass Completion %]
+
+VAR PressPct =
+    [Passes Under Pressure %]
+
+-- volume label
+VAR VolLabel =
+    SWITCH (
+        TRUE (),
+        OZPasses >= 40, "high OZ passing volume",
+        OZPasses >= 20, "steady OZ passing volume",
+        "lower OZ passing volume"
+    )
+
+-- completion label
+VAR CompLabel =
+    SWITCH (
+        TRUE (),
+        OZPassPct >= 0.80, "elite completion in the OZ",
+        OZPassPct >= 0.70, "strong completion in the OZ",
+        OZPassPct >= 0.60, "solid but room to grow in the OZ",
+        "inconsistent OZ completion so far"
+    )
+
+RETURN
+"• " & PlayerName & " shows " & VolLabel & " (" &
+FORMAT ( OZPasses, "#,0" ) & " passes)." & UNICHAR (10) &
+"• " & CompLabel & " (" &
+FORMAT ( OZPassPct, "0.0%" ) & ")." & UNICHAR (10) &
+"• " & FORMAT ( PressPct, "0.0%" ) &
+" of passes come under pressure, shaping how often they can attack through traffic."
+
+
+Shooting Profile Text :=
+VAR PlayerName =
+    SELECTEDVALUE ( Players[player_name], "Selected player" )
+
+VAR HDShots =
+    [High Danger Shots]
+
+VAR OZShots =
+    [OZ Shot Attempts]
+
+VAR HDShare :=
+    DIVIDE ( HDShots, OZShots )
+
+VAR VolLabel =
+    SWITCH (
+        TRUE (),
+        OZShots >= 15, "high shot volume in the OZ",
+        OZShots >= 8,  "steady shot volume in the OZ",
+        OZShots > 0,   "selective shot volume in the OZ",
+        "limited shooting sample so far"
+    )
+
+VAR QualityLabel =
+    SWITCH (
+        TRUE (),
+        HDShare >= 0.45, "a heavy focus on high-danger looks",
+        HDShare >= 0.30, "a balanced mix of high- and medium-danger looks",
+        HDShare > 0,     "more perimeter or lower-danger attempts so far",
+        "no real read on shot quality yet"
+    )
+
+RETURN
+"• " & PlayerName & " shows " & VolLabel &
+" (" & FORMAT ( OZShots, "#,0" ) & " OZ attempts)." & UNICHAR (10) &
+"• " & FORMAT ( HDShots, "#,0" ) &
+" of those are high-danger looks (" &
+FORMAT ( HDShare, "0.0%" ) & " of OZ attempts)." & UNICHAR (10) &
+"• Overall shot profile suggests " & QualityLabel & "."
+
+
+Zone Entry Profile Text :=
+VAR PlayerName =
+    SELECTEDVALUE ( Players[player_name], "Selected player" )
+
+VAR Attempts =
+    [Zone Entry Attempts]
+
+VAR Success =
+    [Successful Zone Entries]
+
+VAR SuccessPct =
+    [Zone Entry Success %]
+
+VAR ControlledEntries =
+    [Controlled Entries]   -- optional; set to 0 if you don't have it
+
+VAR ControlledShare =
+    DIVIDE ( ControlledEntries, Attempts )
+
+VAR AttemptsLabel =
+    SWITCH (
+        TRUE (),
+        Attempts >= 20, "a heavy workload as a primary transporter",
+        Attempts >= 10, "a steady role as a transporter",
+        Attempts > 0,   "a smaller but meaningful entry sample",
+        "a limited entry sample so far"
+    )
+
+VAR SuccessLabel =
+    SWITCH (
+        TRUE (),
+        SuccessPct >= 0.70, "excellent success breaking the line with control",
+        SuccessPct >= 0.60, "strong entry success into the OZ",
+        SuccessPct >= 0.50, "average entry success with room to grow",
+        Attempts > 0,       "below-average entry success so far",
+        "no clear read on entry success yet"
+    )
+
+RETURN
+"• " & PlayerName & " shows " & AttemptsLabel &
+" (" & FORMAT ( Attempts, "#,0" ) & " attempts, " &
+FORMAT ( SuccessPct, "0.0%" ) & " success)." & UNICHAR (10) &
+"• " & SuccessLabel & "." & UNICHAR (10) &
+IF (
+    Attempts > 0 && NOT ISBLANK ( ControlledEntries ),
+    "• About " & FORMAT ( ControlledShare, "0.0%" ) &
+    " of entries are controlled, shaping how often they enter with possession.",
+    "• Entry mix between controlled and dump-ins is still stabilizing."
+)
+
+
+
+
+
+
+
+
 Zone Entries :=
 CALCULATE (
     COUNTROWS ( Entries ),
