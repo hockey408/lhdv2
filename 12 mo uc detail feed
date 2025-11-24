@@ -1,3 +1,63 @@
+Shots Attempted :=
+COUNTROWS ( Shots )
+
+High Danger Shots :=
+CALCULATE (
+    COUNTROWS ( Shots ),
+    Shots[danger_level] = "High"
+)
+
+Shooting Profile Text :=
+VAR PlayerName =
+    SELECTEDVALUE ( Players[player_name], "Selected player" )
+
+VAR ShotsTotal =
+    [Shots Attempted]
+
+VAR HighDanger =
+    [High Danger Shots]
+
+VAR HighDangerShare =
+    DIVIDE ( HighDanger, ShotsTotal )
+
+VAR ShotQualityPct =
+    [Shot Quality %]
+
+VAR VolumeLabel =
+    SWITCH (
+        TRUE (),
+        ShotsTotal >= 20, "high shot volume over the selected sample",
+        ShotsTotal >= 10, "steady shot volume over the selected sample",
+        ShotsTotal > 0,   "a lighter shooting sample so far",
+        "a very limited shooting sample so far"
+    )
+
+VAR HDLabel =
+    SWITCH (
+        TRUE (),
+        HighDangerShare >= 0.45, "a heavy focus on high-danger chances",
+        HighDangerShare >= 0.30, "a balanced mix of high- and medium-danger looks",
+        HighDangerShare > 0,     "more low-danger or perimeter looks so far",
+        "no clear read on shot quality volume yet"
+    )
+
+RETURN
+"• " & PlayerName & " shows " & VolumeLabel &
+" (" & FORMAT ( ShotsTotal, "#,0" ) & " attempts)." &
+UNICHAR (10) & UNICHAR (10) &
+"• " & FORMAT ( HighDanger, "#,0" ) & " of those are high-danger looks (" &
+FORMAT ( HighDangerShare, "0.0%" ) & " of total attempts)." &
+UNICHAR (10) & UNICHAR (10) &
+"• Overall shot quality sits at " &
+FORMAT ( ShotQualityPct, "0.0%" ) &
+", giving a quick read on how dangerous their attempts have been."
+
+
+
+
+
+
+
 TestWrap :=
 "• Line 1" & UNICHAR(10) &
 "• Line 2" & UNICHAR(10) &
