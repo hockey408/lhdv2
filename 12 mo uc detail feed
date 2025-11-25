@@ -1,3 +1,15 @@
+IsPlayerSelected :=
+IF (
+    SELECTEDVALUE( Players[player_name] ) =
+    SELECTEDVALUE( Players[player_name] ),
+    1,
+    0
+)
+
+
+
+
+
 WITH latest_curr AS (
   SELECT MAX(End_of_Month_Date) AS curr_eom
   FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
