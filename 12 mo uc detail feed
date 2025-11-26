@@ -1,3 +1,20 @@
+Player Snapshot Compact :=
+VAR PlayerName        = SELECTEDVALUE ( Players[player_name], "Selected player" )
+VAR GP                = [Games Played]                    -- or DISTINCTCOUNT(GameSummary[game_id])
+VAR EntryAttempts     = [Zone Entry Attempts]
+VAR EntrySuccessPct   = [Zone Entry Success %]
+VAR DefReadAttempts   = [Defensive Read Attempts]
+VAR DefReadSuccessPct = [Defensive Read Success %]
+RETURN
+    "GP: " & FORMAT ( GP, "0" ) &
+    " | Entries: " & FORMAT ( EntryAttempts, "#,0" ) &
+    UNICHAR(10) &
+    "ZE: " & FORMAT ( EntrySuccessPct, "0.0%" ) &
+    " | Def Reads: " & FORMAT ( DefReadSuccessPct, "0.0%" )
+
+
+
+
 Shooting Profile Text :=
 VAR PlayerName   = SELECTEDVALUE ( Players[player_name] )
 VAR Shots        = [Shot Attempts]            // or [Shots]
