@@ -1,3 +1,50 @@
+Passing Profile Text :=
+VAR PlayerName          = SELECTEDVALUE ( Players[player_name], "This player" )
+VAR OzPasses            = [OZ Passes]
+VAR PassComp            = [Pass Completion %]
+VAR PressGap            = [Pressure Gap %]                      -- No pressure % minus under pressure %
+VAR MiddleLaneShare     = [Middle Lane Pass %]                  -- optional
+
+VAR VolumeLabel =
+    SWITCH (
+        TRUE (),
+        OzPasses >= 120, "a high-volume OZ distributor",
+        OzPasses >= 70,  "a steady OZ puck-mover",
+        OzPasses > 0,    "a lower-volume OZ option so far",
+        "not enough OZ touches yet for a clear read"
+    )
+
+VAR PressureLabel =
+    SWITCH (
+        TRUE (),
+        PressGap >= 0.08,  "drops off noticeably when under pressure",
+        PressGap >= 0.03,  "is slightly less efficient when pressured",
+        PressGap > -0.03,  "handles pressure about as well as clean touches",
+        PressGap <= -0.03, "actually looks more efficient under pressure in this sample",
+        "doesn't yet have a big enough split between pressured and unpressured touches"
+    )
+
+VAR LaneLabel =
+    SWITCH (
+        TRUE (),
+        MiddleLaneShare >= 0.35, "leans into middle-lane targets and dangerous seams.",
+        MiddleLaneShare >= 0.20, "mixes middle-lane looks with safer options.",
+        MiddleLaneShare > 0,     "plays more to the outside and safer support options.",
+        TRUE,                    "doesn't have a clear lane profile yet."
+    )
+
+RETURN
+    "• " & PlayerName & " profiles as " & VolumeLabel &
+        " (" & FORMAT ( OzPasses, "#,0" ) & " OZ passes at " &
+        FORMAT ( PassComp, "0.0%" ) & " completion)." &
+    UNICHAR ( 10 ) &
+    "• Under pressure, they " & PressureLabel &
+        " (completion gap: " & FORMAT ( PressGap, "0.0%" ) & ")." &
+    UNICHAR ( 10 ) &
+    "• With the puck, they " & LaneLabel
+
+
+
 Pass Completion % No Pressure :=
 VAR AttemptsNoPressure =
     CALCULATE (
