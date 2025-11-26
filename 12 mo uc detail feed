@@ -1,3 +1,30 @@
+Zone Entry Attempts :=
+CALCULATE (
+    COUNTROWS ( Events ),
+    Events[EventType] = "Zone Entry"
+)
+
+
+
+
+Zone Entry Success % :=
+VAR Attempts =
+    CALCULATE (
+        COUNTROWS ( Events ),
+        Events[EventType] = "Zone Entry"
+    )
+VAR Success =
+    CALCULATE (
+        COUNTROWS ( Events ),
+        Events[EventType] = "Zone Entry",
+        Events[IsSuccessful] = TRUE ()
+    )
+RETURN
+    DIVIDE ( Success, Attempts )
+
+
+
+
 WITH latest_curr AS (
   SELECT MAX(End_of_Month_Date) AS curr_eom
   FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
