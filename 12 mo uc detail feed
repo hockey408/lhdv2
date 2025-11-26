@@ -1,4 +1,20 @@
 Passing Profile Text :=
+VAR PlayerName        = SELECTEDVALUE ( Players[player_name] )
+VAR OzPasses          = [OZ Passes]
+VAR PassCompPct       = [Pass Completion %]
+VAR UnderPressurePct  = [Passes Under Pressure %]
+RETURN
+    "• " & PlayerName & " shows high OZ passing volume (" &
+        FORMAT ( OzPasses, "#,0" ) & " passes)." & UNICHAR ( 10 ) &
+    "• Pass completion in the OZ sits at " &
+        FORMAT ( PassCompPct, "0.0%" ) & ", highlighting how reliably they move the puck." & UNICHAR ( 10 ) &
+    "• " & FORMAT ( UnderPressurePct, "0.0%" ) &
+        " of passes come under pressure, shaping how often they can attack through traffic."
+
+
+
+
+Passing Profile Text :=
 VAR PlayerName = SELECTEDVALUE ( Players[player_name] )
 VAR OZPasses   = [OZ Passes]                      -- your existing measure
 VAR PressPct   = [Passes Under Pressure %]        -- example
