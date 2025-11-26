@@ -1,3 +1,41 @@
+Shooting Profile Text :=
+VAR PlayerName   = SELECTEDVALUE ( Players[player_name] )
+VAR Shots        = [Shot Attempts]            // or [Shots]
+VAR HDShots      = [High Danger Attempts]
+VAR HDPct        = DIVIDE ( HDShots, Shots )
+VAR ShotQuality  = [Shot Quality %]
+RETURN
+    "• " & PlayerName & " shows high shot volume over the selected sample (" &
+        FORMAT ( Shots, "#,0" ) & " attempts)." & UNICHAR ( 10 ) &
+    "• " & FORMAT ( HDShots, "#,0" ) & " of those are high-danger looks (" &
+        FORMAT ( HDPct, "0.0%" ) & " of total attempts)." & UNICHAR ( 10 ) &
+    "• Overall shot quality sits at " &
+        FORMAT ( ShotQuality, "0.0%" ) &
+        ", giving a quick read on how dangerous their attempts have been."
+
+Zone Entries & Defensive Reads Profile Text :=
+VAR PlayerName        = SELECTEDVALUE ( Players[player_name] )
+VAR EntryAttempts     = [Zone Entry Attempts]
+VAR EntrySuccessPct   = [Zone Entry Success %]
+VAR DefReadAttempts   = [Defensive Read Attempts]
+VAR DefReadSuccessPct = [Defensive Read Success %]
+RETURN
+    "• " & PlayerName & " looks like a primary transporter in transition (" &
+        FORMAT ( EntryAttempts, "#,0" ) & " zone entry attempts at " &
+        FORMAT ( EntrySuccessPct, "0.0%" ) & " success)." & UNICHAR ( 10 ) &
+    "• In transition, they are effective at breaking the line with control, " &
+        "driving play through the neutral zone." & UNICHAR ( 10 ) &
+    "• Defensively, they have " & FORMAT ( DefReadAttempts, "#,0" ) &
+        " defensive reads so far at " &
+        FORMAT ( DefReadSuccessPct, "0.0%" ) &
+        " success, breaking up plays at a strong clip."
+
+
+
+
+
+
+
 =LET(
   cis_sel, $B$4,
   t_cis,   Neg_NA[CIS_Customer_Number],
