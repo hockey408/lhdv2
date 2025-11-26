@@ -1,3 +1,43 @@
+=LET(
+  cis_sel, $B$4,
+  t_cis,   Neg_NA[CIS_Customer_Number],
+  ssb,     Neg_NA[SSB],
+  co_mtd,  Neg_NA[CO_MTD],
+  is_na,   Neg_NA[Is_NA],
+  is_neg,  Neg_NA[Is_Negative_SSB],
+
+  in_cluster, (t_cis = cis_sel),
+
+  neg_rows,  in_cluster * (is_na = 1) * (is_neg = 1),
+  offs_rows, in_cluster * ( (is_na = 0) + ((is_na = 1) * (is_neg = 0)) ),
+
+  total_neg_ssb,  SUM( FILTER(ssb, neg_rows) ),
+  total_off_ssb,  SUM( FILTER(ssb, offs_rows) ),
+  net_ssb,        total_neg_ssb + total_off_ssb,
+
+  cnt_neg,        ROWS( FILTER(ssb, neg_rows) ),
+  cnt_off,        ROWS( FILTER(ssb, offs_rows) ),
+
+  total_neg_co,   SUM( FILTER(co_mtd, neg_rows) ),
+  total_off_co,   SUM( FILTER(co_mtd, offs_rows) ),
+
+  VSTACK(
+    {"Metric","Value"},
+    {"CIS Cluster",          cis_sel},
+    {"Neg NA SSB",           total_neg_ssb},
+    {"Offset SSB",           total_off_ssb},
+    {"Net Cluster SSB",      net_ssb},
+    {"# Neg NA Accounts",    cnt_neg},
+    {"# Offset Accounts",    cnt_off},
+    {"Neg NA CO_MTD",        total_neg_co},
+    {"Offset CO_MTD",        total_off_co}
+  )
+)
+
+
+
+
+
 Passing Profile Text :=
 VAR PlayerName        = SELECTEDVALUE ( Players[player_name] )
 VAR OzPasses          = [OZ Passes]
