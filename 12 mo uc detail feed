@@ -1,3 +1,39 @@
+=LET(
+  data, NegNA_CIS,
+  cis_neg, UNIQUE(FILTER(data[CIS_Customer_Number], data[Is_Negative_SSB]=1)),
+  pos_per_cis, MAP(
+      cis_neg,
+      LAMBDA(c,
+        SUMIFS(
+          data[SSB],
+          data[CIS_Customer_Number], c,
+          data[SSB], ">0"
+        )
+      )
+  ),
+  SUM(pos_per_cis)
+)
+
+=LET(
+  data, NegNA_CIS,
+  cis_neg, UNIQUE(FILTER(data[CIS_Customer_Number], data[Is_Negative_SSB]=1)),
+  co_per_cis, MAP(
+      cis_neg,
+      LAMBDA(c,
+        SUMIFS(
+          data[CO_MTD],
+          data[CIS_Customer_Number], c
+        )
+      )
+  ),
+  SUM(co_per_cis)
+)
+
+
+
+
+
+
 =SUMIFS(NegNA_CIS[SSB],
         NegNA_CIS[CIS_Customer_Number],
         UNIQUE(FILTER(NegNA_CIS[CIS_Customer_Number], NegNA_CIS[Is_Negative_SSB]=1)),
