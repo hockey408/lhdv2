@@ -1,3 +1,26 @@
+Pass Completion % No Pressure :=
+VAR AttemptsNoPressure =
+    CALCULATE (
+        [Pass Attempts],
+        Passes[UnderPressure] = FALSE ()
+    )
+VAR CompletedNoPressure =
+    CALCULATE (
+        [Completed Passes],
+        Passes[UnderPressure] = FALSE ()
+    )
+RETURN
+    DIVIDE ( CompletedNoPressure, AttemptsNoPressure )
+
+Pressure Gap % :=
+[Pass Completion % No Pressure] - [Pass Completion % Under Pressure]
+
+
+
+
+
+
+
 Pass Completion % Under Pressure :=
 VAR AttemptsUnderPressure =
     CALCULATE (
