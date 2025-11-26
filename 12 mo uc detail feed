@@ -1,3 +1,19 @@
+Passing Profile Text :=
+VAR PlayerName = SELECTEDVALUE ( Players[player_name] )
+VAR OZPasses   = [OZ Passes]                      -- your existing measure
+VAR PressPct   = [Passes Under Pressure %]        -- example
+VAR MiddlePct  = [Passes to Middle Lane %]        -- example
+RETURN
+    "• " & PlayerName & " shows high OZ passing volume (" &
+        FORMAT ( OZPasses, "#,0" ) & " passes)." & UNICHAR(10) &
+    "• " & FORMAT ( PressPct, "0.0%" ) &
+        " of passes completed under pressure." & UNICHAR(10) &
+    "• Frequently targets the slot / middle lane (" &
+        FORMAT ( MiddlePct, "0.0%" ) & ")."
+
+
+
+
 =FILTER(
   NegNA_CIS,
   NegNA_CIS[CIS_Customer_Number] = $B$45
