@@ -1,4 +1,95 @@
 =LET(
+  totalNA, SUM(MoM_Account_Detail[SSB_FOR_EVENT]),
+  deltaNA, SUM(MoM_Account_Detail[MOM_DELTA]),
+  dir, IF(deltaNA>=0,"up","down"),
+  "Non-accrual portfolio is $" &
+    TEXT(totalNA/1000,"#,##0") & "k, " &
+    dir & " $" & TEXT(ABS(deltaNA)/1000,"#,##0") & "k vs prior month."
+)
+
+=LET(
+  totalNA, SUM(MoM_Account_Detail[SSB_FOR_EVENT]),
+  revNA,   SUMIFS(MoM_Account_Detail[SSB_FOR_EVENT],
+                  MoM_Account_Detail[REVIEWABLE_FLAG],1),
+  pct, IF(totalNA=0,0,revNA/totalNA),
+  "Of total non-accruals, $" &
+    TEXT(revNA/1000,"#,##0") & "k (" &
+    TEXT(pct,"0.0%") & ") is flagged as reviewable exposure."
+)
+
+=LET(
+  revDE,
+    SUMIFS(MoM_Account_Detail[SSB_FOR_EVENT],
+           MoM_Account_Detail[REVIEWABLE_FLAG],1,
+           MoM_Account_Detail[MOVEMENT_TYPE],"Downgrade IN (ex-Auto)")
+  +
+    SUMIFS(MoM_Account_Detail[SSB_FOR_EVENT],
+           MoM_Account_Detail[REVIEWABLE_FLAG],1,
+           MoM_Account_Detail[MOVEMENT_TYPE],"Exit (ex-Auto)"),
+  totalRev,
+    SUMIFS(MoM_Account_Detail[SSB_FOR_EVENT],
+           MoM_Account_Detail[REVIEWABLE_FLAG],1),
+  pct, IF(totalRev=0,0,revDE/totalRev),
+  "Downgrades and exits drive $" &
+    TEXT(revDE/1000,"#,##0") & "k of reviewable NA (" &
+    TEXT(pct,"0.0%") & " of the reviewable book)."
+)
+
+=LET(
+  exitBal,
+    SUMIFS(MoM_Account_Detail[SSB_FOR_EVENT],
+           MoM_Account_Detail[MOVEMENT_TYPE],"Exit (ex-Auto)")
+  +
+    SUMIFS(MoM_Account_Detail[SSB_FOR_EVENT],
+           MoM_Account_Detail[MOVEMENT_TYPE],"Autochange Exit"),
+  exitCO,
+    SUMIFS(MoM_Account_Detail[SSB_FOR_EVENT],
+           MoM_Account_Detail[CURR_CO_MTD],">0",
+           MoM_Account_Detail[MOVEMENT_TYPE],"Exit (ex-Auto)")
+  +
+    SUMIFS(MoM_Account_Detail[SSB_FOR_EVENT],
+           MoM_Account_Detail[CURR_CO_MTD],">0",
+           MoM_Account_Detail[MOVEMENT_TYPE],"Autochange Exit"),
+  pct, IF(exitBal=0,0,exitCO/exitBal),
+  "Approximately $" &
+    TEXT(exitCO/1000,"#,##0") & "k of exit activity (" &
+    TEXT(pct,"0.0%") &
+    ") is tied to accounts with current-month chargeoffs."
+)
+
+=LET(
+  negBal,
+    SUMIFS(MoM_Account_Detail[SSB_FOR_EVENT],
+           MoM_Account_Detail[NEGATIVE_FLAG],1),
+  negFlipBal,
+    SUMIFS(MoM_Account_Detail[SSB_FOR_EVENT],
+           MoM_Account_Detail[NEGATIVE_FLIP_FLAG],1),
+  totalNA, SUM(MoM_Account_Detail[SSB_FOR_EVENT]),
+  pct, IF(totalNA=0,0,negBal/totalNA),
+  "There are $" &
+    TEXT(negBal/1000,"#,##0") & "k of negative-balance non-accruals (" &
+    TEXT(pct,"0.0%") &
+    " of total NA), including $" &
+    TEXT(negFlipBal/1000,"#,##0") & "k where the balance flipped sign since last month."
+)
+
+=LET(
+  topBal,   SUM(Top30_Facility_Detail[SSB_FOR_EVENT]),
+  totalRev, SUMIFS(MoM_Account_Detail[SSB_FOR_EVENT],
+                   MoM_Account_Detail[REVIEWABLE_FLAG],1),
+  pct, IF(totalRev=0,0,topBal/totalRev),
+  "Top-30 reviewable facilities account for $" &
+    TEXT(topBal/1000,"#,##0") & "k (" &
+    TEXT(pct,"0.0%") & ") of total reviewable exposure."
+)
+
+
+
+
+
+
+
+=LET(
   Prev,  $C$4,
   Curr,  $C$5,
   Delta, Curr-Prev,
