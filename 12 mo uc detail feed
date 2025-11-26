@@ -1,4 +1,66 @@
 Passing Profile Text :=
+VAR PlayerName         = SELECTEDVALUE ( Players[player_name], "This player" )
+VAR OzPasses           = [OZ Passes]
+VAR PassComp           = [Pass Completion %]
+VAR PassCompUnderPress = [Pass Completion % Under Pressure]
+VAR PassCompNoPress    = [Pass Completion % No Pressure]
+VAR PressGap           = [Pressure Gap %]     -- No-pressure minus under-pressure
+
+VAR VolumeLabel =
+    SWITCH (
+        TRUE (),
+        OzPasses >= 120, "a high-volume OZ distributor",
+        OzPasses >= 70,  "a steady OZ puck-mover",
+        OzPasses > 0,    "a lighter-volume OZ option so far",
+        "still building an OZ passing sample"
+    )
+
+VAR PressureLabel =
+    SWITCH (
+        TRUE (),
+        PressGap >= 0.08,
+            "completion drops clearly under pressure",
+        PressGap >= 0.03,
+            "is somewhat less efficient when pressured",
+        PressGap > -0.03,
+            "handles pressure about as well as clean touches",
+        PressGap <= -0.03,
+            "actually completes more when pressured in this sample",
+        TRUE,
+            "doesn't yet show a clear split between pressured and unpressured situations"
+    )
+
+VAR CoachingCue =
+    SWITCH (
+        TRUE (),
+        PressGap >= 0.08,
+            "Coaching insight: support with close options on breakouts and exits; work on under-pressure outlets and quick bump passes.",
+        PressGap >= 0.03,
+            "Coaching insight: can handle puck movement but benefits from structured outlets under pressure.",
+        PressGap > -0.03,
+            "Coaching insight: can be trusted to move the puck under pressure and used as a primary option on breakouts and regroups.",
+        PressGap <= -0.03,
+            "Coaching insight: shows comfort in traffic—use as a first-touch option in tight areas.",
+        TRUE,
+            "Coaching insight: sample is still small—keep tracking how they handle pressure before changing deployment."
+    )
+
+RETURN
+    "• " & PlayerName & " profiles as " & VolumeLabel &
+        " (" & FORMAT ( OzPasses, "#,0" ) & " OZ passes at " &
+        FORMAT ( PassComp, "0.0%" ) & " completion)." &
+    UNICHAR ( 10 ) &
+    "• Under pressure, they " & PressureLabel &
+        " (no-pressure: " & FORMAT ( PassCompNoPress, "0.0%" ) &
+        ", under pressure: " & FORMAT ( PassCompUnderPress, "0.0%" ) & ")." &
+    UNICHAR ( 10 ) &
+    "• Coaching insight: " & CoachingCue
+
+
+
+
+
+Passing Profile Text :=
 VAR PlayerName          = SELECTEDVALUE ( Players[player_name], "This player" )
 VAR OzPasses            = [OZ Passes]
 VAR PassComp            = [Pass Completion %]
