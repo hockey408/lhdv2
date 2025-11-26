@@ -1,3 +1,85 @@
+High Danger Attempts :=
+CALCULATE (
+    COUNTROWS ( Events ),
+    Events[EventType] = "Shot",
+    Events[IsHighDanger] = TRUE ()
+)
+
+High Danger Share :=
+DIVIDE ( [High Danger Attempts], [Shot Attempts] )
+
+Shot Quality % :=
+[High Danger Share]
+
+Shooting Profile Text :=
+VAR PlayerName  = SELECTEDVALUE ( Players[player_name], "This player" )
+VAR Shots       = [Shot Attempts]
+VAR HDShots     = [High Danger Attempts]
+VAR HDShare     = [High Danger Share]
+VAR ShotQuality = [Shot Quality %]
+
+VAR VolumeLabel =
+    SWITCH (
+        TRUE (),
+        Shots >= 25, "a clear volume shooter over the selected sample",
+        Shots >= 12, "generating a steady number of attempts",
+        Shots > 0,   "working off a lighter shot sample so far",
+        "still building a meaningful shooting sample"
+    )
+
+VAR DangerLabel =
+    SWITCH (
+        TRUE (),
+        HDShare >= 0.40,
+            "a strong creator of inside and high-danger looks",
+        HDShare >= 0.25,
+            "mixing some high-danger chances with medium looks",
+        HDShare > 0,
+            "relying more on outside or lower-danger attempts so far",
+        TRUE,
+            "not yet showing a clear danger profile"
+    )
+
+VAR QualityLabel =
+    SWITCH (
+        TRUE (),
+        ShotQuality >= 0.20,
+            "an above-average shot quality profile in this sample.",
+        ShotQuality >= 0.13,
+            "a fairly typical shot quality profile.",
+        ShotQuality > 0,
+            "a lower shot quality profile, leaning more on volume than prime looks.",
+        TRUE,
+            "no clear read on shot quality yet."
+    )
+
+VAR CoachingCue =
+    SWITCH (
+        TRUE (),
+        ShotQuality >= 0.20 && HDShare >= 0.30,
+            "lean into inside-lane touches and set plays that get them into the slot.",
+        ShotQuality >= 0.13 && HDShare >= 0.20,
+            "keep them involved as a steady shooting option—focus on timing and shot selection.",
+        ShotQuality > 0 && HDShare < 0.20,
+            "encourage more middle-ice attacks and inside routes rather than perimeter volume.",
+        TRUE,
+            "sample is small—track a few more games before making firm adjustments to shot usage."
+    )
+
+RETURN
+    "• " & PlayerName & " looks like " & VolumeLabel &
+        " (" & FORMAT ( Shots, "#,0" ) & " attempts total)." &
+    UNICHAR ( 10 ) &
+    "• With " & FORMAT ( HDShots, "#,0" ) & " high-danger attempts (" &
+        FORMAT ( HDShare, "0.0%" ) & " of shots), they profile as " & DangerLabel &
+        " Shot quality sits at " & FORMAT ( ShotQuality, "0.0%" ) & "." &
+    UNICHAR ( 10 ) &
+    "• Coaching insight: " & CoachingCue
+
+
+
+
+
 Pass Completion % Under Pressure :=
 VAR AttemptsUnderPressure =
     CALCULATE (
