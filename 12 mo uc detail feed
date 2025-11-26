@@ -1,3 +1,113 @@
+Zone Entry Attempts :=
+CALCULATE (
+    COUNTROWS ( Events ),
+    Events[EventType] = "Zone Entry"
+)
+
+Zone Entry Successful :=
+CALCULATE (
+    COUNTROWS ( Events ),
+    Events[EventType] = "Zone Entry",
+    Events[IsSuccessful] = TRUE ()
+)
+
+Zone Entry Success % :=
+DIVIDE ( [Zone Entry Successful], [Zone Entry Attempts] )
+
+Defensive Read Attempts :=
+CALCULATE (
+    COUNTROWS ( Events ),
+    Events[EventType] = "Defensive Read"
+)
+
+Defensive Read Successful :=
+CALCULATE (
+    COUNTROWS ( Events ),
+    Events[EventType] = "Defensive Read",
+    Events[IsSuccessful] = TRUE ()
+)
+
+Defensive Read Success % :=
+DIVIDE ( [Defensive Read Successful], [Defensive Read Attempts] )
+
+Games Played :=
+DISTINCTCOUNT ( GameSummary[game_id] )
+
+Zone Entries per Game :=
+DIVIDE ( [Zone Entry Attempts], [Games Played] )
+
+Defensive Reads per Game :=
+DIVIDE ( [Defensive Read Attempts], [Games Played] )
+
+Zone Entries & Defensive Reads Profile Text :=
+VAR PlayerName        = SELECTEDVALUE ( Players[player_name], "This player" )
+
+VAR EntryAttempts     = [Zone Entry Attempts]
+VAR EntrySuccessPct   = [Zone Entry Success %]
+VAR EntriesPerGame    = [Zone Entries per Game]
+
+VAR DefReadAttempts   = [Defensive Read Attempts]
+VAR DefReadSuccessPct = [Defensive Read Success %]
+VAR ReadsPerGame      = [Defensive Reads per Game]
+
+VAR TransportLabel =
+    SWITCH (
+        TRUE (),
+        EntryAttempts >= 30 && EntrySuccessPct >= 0.70,
+            "a primary transporter who reliably carries play through the neutral zone",
+        EntryAttempts >= 15 && EntrySuccessPct >= 0.60,
+            "a steady secondary transporter with solid transition impact",
+        EntryAttempts > 0,
+            "a lighter-volume carrier so far, used more situationally in transition",
+        TRUE,
+            "not yet showing a clear transition role in the current sample"
+    )
+
+VAR DefenseLabel =
+    SWITCH (
+        TRUE (),
+        DefReadAttempts >= 20 && DefReadSuccessPct >= 0.70,
+            "reads the play well and regularly breaks up opposition possessions.",
+        DefReadAttempts >= 10 && DefReadSuccessPct >= 0.60,
+            "is a steady defensive presence with respectable read success.",
+        DefReadAttempts > 0,
+            "has a lighter sample of reads so far, making the defensive profile more tentative.",
+        TRUE,
+            "doesn't yet have enough tracked reads for a stable defensive picture."
+    )
+
+VAR CoachingCue =
+    SWITCH (
+        TRUE (),
+        EntryAttempts >= 20 && EntrySuccessPct >= 0.65 && DefReadSuccessPct >= 0.65,
+            "deploy as a key transition piece—primary carrier on entries and trusted defender on retrievals.",
+        EntryAttempts >= 20 && EntrySuccessPct >= 0.65,
+            "lean on them as a main transporter on breakouts and controlled entries.",
+        DefReadAttempts >= 10 && DefReadSuccessPct >= 0.65,
+            "use them heavily in defensive situations—PK, D-zone starts, and matchup shifts.",
+        EntryAttempts > 0 || DefReadAttempts > 0,
+            "keep building sample size, but current trends suggest a useful complementary transition piece.",
+        TRUE,
+            "sample is limited—monitor a few more games before adjusting role in transition or defensive usage."
+    )
+
+RETURN
+    "• In transition, " & PlayerName & " looks like " & TransportLabel &
+        " (" & FORMAT ( EntryAttempts, "#,0" ) & " entries at " &
+        FORMAT ( EntrySuccessPct, "0.0%" ) & " success; " &
+        FORMAT ( EntriesPerGame, "0.0" ) & " per game)." &
+    UNICHAR ( 10 ) &
+    "• Defensively, they " & DefenseLabel &
+        " (" & FORMAT ( DefReadAttempts, "#,0" ) & " reads at " &
+        FORMAT ( DefReadSuccessPct, "0.0%" ) & " success; " &
+        FORMAT ( ReadsPerGame, "0.0" ) & " per game)." &
+    UNICHAR ( 10 ) &
+    "• Coaching insight: " & CoachingCue
+
+
+
+
+
 High Danger Attempts :=
 CALCULATE (
     COUNTROWS ( Shots ),
