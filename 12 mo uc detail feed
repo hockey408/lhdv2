@@ -1,3 +1,38 @@
+Pass Completion % Under Pressure :=
+VAR AttemptsUnderPressure =
+    CALCULATE (
+        COUNTROWS ( Passes ),
+        Passes[UnderPressure] = TRUE ()
+    )
+VAR CompletedUnderPressure =
+    CALCULATE (
+        COUNTROWS ( Passes ),
+        Passes[IsCompleted] = TRUE (),
+        Passes[UnderPressure] = TRUE ()
+    )
+RETURN
+    DIVIDE ( CompletedUnderPressure, AttemptsUnderPressure )
+
+Pass Completion % No Pressure :=
+VAR AttemptsNoPressure =
+    CALCULATE (
+        COUNTROWS ( Passes ),
+        Passes[UnderPressure] = FALSE ()
+    )
+VAR CompletedNoPressure =
+    CALCULATE (
+        COUNTROWS ( Passes ),
+        Passes[IsCompleted] = TRUE (),
+        Passes[UnderPressure] = FALSE ()
+    )
+RETURN
+    DIVIDE ( CompletedNoPressure, AttemptsNoPressure )
+
+
+
+
+
+
 Passing Profile Text :=
 VAR PlayerName         = SELECTEDVALUE ( Players[player_name], "This player" )
 VAR OzPasses           = [OZ Passes]
