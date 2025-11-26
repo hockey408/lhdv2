@@ -1,3 +1,12 @@
+=FILTER(
+  NegNA_CIS,
+  NegNA_CIS[CIS_Customer_Number] = $B$45
+)
+
+
+
+
+
 =LET(
   cis,   Neg_NA[CIS_Customer_Number],
   ssb,   Neg_NA[SSB],
