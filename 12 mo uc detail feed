@@ -1,3 +1,95 @@
+=LET(
+  Prev,  $C$4,
+  Curr,  $C$5,
+  Delta, Curr-Prev,
+  AbsDelta, ABS(Delta),
+  DirTxt,
+    IF(Delta>0,"increased",
+      IF(Delta<0,"decreased","was flat versus")),
+  ChgTxt,
+    IF(Delta=0,
+       "no change versus prior month",
+       TEXT(AbsDelta,"#,##0") & "K vs prior month"),
+  "Total non-accrual balance " & DirTxt & " prior month (" &
+  ChgTxt & "), moving from " &
+  TEXT(Prev,"#,##0") & "K to " & TEXT(Curr,"#,##0") & "K."
+)
+
+=LET(
+  Dg,  $C$6,
+  Ex,  $C$7,
+  Tot, Dg+Ex,
+  ShareDg, IF(Tot=0,0,Dg/Tot),
+  MixTxt,
+    IF(Tot=0,
+       "Movement mix is neutral this month (no Downgrade IN or Exit exposure).",
+       IF(ShareDg>=0.65,
+          "This month is predominantly Downgrade IN-driven.",
+          IF(ShareDg<=0.35,
+             "This month is predominantly Exit-driven.",
+             "This month shows a balanced mix of Downgrade IN and Exit activity."
+          )
+       )
+    ),
+  MixTxt & " Downgrade IN: " & TEXT(Dg,"#,##0") & "K; Exits: " &
+  TEXT(Ex,"#,##0") & "K (total " & TEXT(Tot,"#,##0") & "K)."
+)
+
+=LET(
+  Banks, {"L-FCB","L-SVB","L-CIT"},
+  Deltas, $C$12:$E$12,
+  AbsD, ABS(Deltas),
+  MaxIdx, XMATCH(MAX(AbsD),AbsD),
+  LeadBank, INDEX(Banks, MaxIdx),
+  LeadDelta, INDEX(Deltas, MaxIdx),
+  DirTxt, IF(LeadDelta>0,"increase","reduction"),
+  "Largest bank-level " & DirTxt & " came from " & LeadBank &
+  " at " & TEXT(LeadDelta,"#,##0") & "K MoM."
+)
+
+=LET(
+  Top30,    $C$8,
+  RevTotal, $C$9,
+  NATotal,  $C$5,
+  PctRev,   IF(RevTotal=0,0,Top30/RevTotal),
+  PctNA,    IF(NATotal=0,0,Top30/NATotal),
+  "Top 30 facilities capture " & TEXT(PctRev,"0%") &
+  " of reviewable non-accrual exposure and " &
+  TEXT(PctNA,"0%") & " of total non-accruals (" &
+  TEXT(Top30,"#,##0") & "K in aggregate)."
+)
+
+=LET(
+  Owners, {"Connor","Samya","Casey","Daniel","Eleanor"},
+  OwnerVals, $C$20:$C$24,
+  TotRev,   $C$9,
+  MaxIdx,   XMATCH(MAX(OwnerVals),OwnerVals),
+  LeadOwner, INDEX(Owners,MaxIdx),
+  LeadAmt,   INDEX(OwnerVals,MaxIdx),
+  Pct,       IF(TotRev=0,0,LeadAmt/TotRev),
+  LeadOwner & " currently carries the largest share of reviewable exposure at " &
+  TEXT(LeadAmt,"#,##0") & "K (" & TEXT(Pct,"0%") &
+  " of total reviewable non-accruals)."
+)
+
+
+=LET(
+  Neg,    $C$10,
+  NATot,  $C$5,
+  NegAbs, ABS(Neg),
+  Pct,    IF(NATot=0,0,NegAbs/NATot),
+  "Negative non-accrual balances total " &
+  TEXT(NegAbs,"#,##0") & "K (" & TEXT(Pct,"0%") &
+  " of total NA) and are flagged for potential chargeoff / offsetting exposure review."
+)
+
+
+
+
+
+
+
+
 Zone Entry Attempts :=
 CALCULATE (
     COUNTROWS ( Events ),
