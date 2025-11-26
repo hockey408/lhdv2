@@ -1,3 +1,11 @@
+=SUMIFS(NegNA_CIS[SSB], NegNA_CIS[CIS_Customer_Number], $B$45, NegNA_CIS[SSB],">0")
+
+=SUMIFS(NegNA_CIS[CO_MTD], NegNA_CIS[CIS_Customer_Number], $B$45)
+
+
+
+
+
 =LET(
   cis,   Neg_NA[CIS_Customer_Number],
   ssb,   Neg_NA[SSB],
