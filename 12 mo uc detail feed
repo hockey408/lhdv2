@@ -1,3 +1,38 @@
+Current Player Index :=
+SELECTEDVALUE ( Players[PlayerIndex] )
+
+Button_Selected_BG := "#14B8A6"   // teal
+Button_Unselected_BG := "#111827" // dark navy
+
+Button_Selected_Text := "#020617" // very dark text
+Button_Unselected_Text := "#E5E7EB" // light gray
+
+Tyler_Button_BG :=
+IF ( [Current Player Index] = 1, [Button_Selected_BG], [Button_Unselected_BG] )
+
+Rylan_Button_BG :=
+IF ( [Current Player Index] = 2, [Button_Selected_BG], [Button_Unselected_BG] )
+
+Evan_Button_BG :=
+IF ( [Current Player Index] = 3, [Button_Selected_BG], [Button_Unselected_BG] )
+
+Tyler_Button_Text :=
+IF ( [Current Player Index] = 1, [Button_Selected_Text], [Button_Unselected_Text] )
+
+Rylan_Button_Text :=
+IF ( [Current Player Index] = 2, [Button_Selected_Text], [Button_Unselected_Text] )
+
+Evan_Button_Text :=
+IF ( [Current Player Index] = 3, [Button_Selected_Text], [Button_Unselected_Text] )
+
+
+
+
+
+
+
+
+
 IsPlayerSelected :=
 IF (
     SELECTEDVALUE( Players[player_name] ) =
