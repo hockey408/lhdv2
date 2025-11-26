@@ -1,3 +1,36 @@
+=SUMIFS(NegNA_CIS[SSB],
+        NegNA_CIS[CIS_Customer_Number],
+        UNIQUE(FILTER(NegNA_CIS[CIS_Customer_Number], NegNA_CIS[Is_Negative_SSB]=1)),
+        NegNA_CIS[SSB],">0")
+
+=SUMIFS(NegNA_CIS[CO_MTD],
+        NegNA_CIS[CIS_Customer_Number],
+        UNIQUE(FILTER(NegNA_CIS[CIS_Customer_Number], NegNA_CIS[Is_Negative_SSB]=1)))
+
+=IFERROR( CardC_TotalOffsetSSB / ABS(CardA_TotalNegNA) , 0)
+
+=LET(
+  data, NegNA_CIS,
+  cisList, UNIQUE(data[CIS_Customer_Number]),
+  negNA, MAP(cisList, LAMBDA(c, SUMIFS(data[SSB], data[CIS_Customer_Number], c, data[Is_Negative_SSB],1))),
+  SORTBY(HSTACK(cisList, negNA), negNA, -1)
+)
+
+=TAKE( the_formula_above , 15)
+
+=FILTER(
+  NegNA_CIS,
+  NegNA_CIS[CIS_Customer_Number] = $B$45
+)
+
+
+
+
+
+
+
+
+
 Zone Entry Attempts :=
 CALCULATE (
     COUNTROWS ( Events ),
