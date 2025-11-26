@@ -1,3 +1,19 @@
+Pass Completion % Under Pressure :=
+VAR AttemptsUnderPressure =
+    CALCULATE (
+        [Pass Attempts],
+        Passes[UnderPressure] = TRUE ()
+    )
+VAR CompletedUnderPressure =
+    CALCULATE (
+        [Completed Passes],
+        Passes[UnderPressure] = TRUE ()
+    )
+RETURN
+    DIVIDE ( CompletedUnderPressure, AttemptsUnderPressure )
+
+
+
 =SUMIFS(NegNA_CIS[SSB], NegNA_CIS[CIS_Customer_Number], $B$45, NegNA_CIS[SSB],">0")
 
 =SUMIFS(NegNA_CIS[CO_MTD], NegNA_CIS[CIS_Customer_Number], $B$45)
