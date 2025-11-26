@@ -1,4 +1,43 @@
 =LET(
+  cis_neg, UNIQUE(FILTER(Neg_NA[CIS_CUSTOMER_NUMBER], Neg_NA[Is_Negative_SSB]=1)),
+  rows_to_sum,
+    FILTER(
+      Neg_NA[SSB],
+      (Neg_NA[SSB]>0) *
+      ISNUMBER(MATCH(Neg_NA[CIS_CUSTOMER_NUMBER], cis_neg, 0))
+    ),
+  SUM(rows_to_sum)
+)
+
+=LET(
+  cis_neg, UNIQUE(FILTER(Neg_NA[CIS_CUSTOMER_NUMBER], Neg_NA[Is_Negative_SSB]=1)),
+  rows_to_sum,
+    FILTER(
+      Neg_NA[SSB],
+      (Neg_NA[SSB]>0) *
+      ISNUMBER(MATCH(Neg_NA[CIS_CUSTOMER_NUMBER], cis_neg, 0))
+    ),
+  SUM(rows_to_sum)/1000
+)
+
+=LET(
+  cis_neg, UNIQUE(FILTER(Neg_NA[CIS_CUSTOMER_NUMBER], Neg_NA[Is_Negative_SSB]=1)),
+  co_rows,
+    FILTER(
+      Neg_NA[CO_MTD],
+      ISNUMBER(MATCH(Neg_NA[CIS_CUSTOMER_NUMBER], cis_neg, 0))
+    ),
+  SUM(co_rows)/1000
+)
+
+
+
+
+
+
+
+
+=LET(
   data, NegNA_CIS,
   cis_neg, UNIQUE(FILTER(data[CIS_Customer_Number], data[Is_Negative_SSB]=1)),
   pos_per_cis, MAP(
