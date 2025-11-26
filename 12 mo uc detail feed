@@ -1,3 +1,39 @@
+=LET(
+  cis,   Neg_NA[CIS_Customer_Number],
+  ssb,   Neg_NA[SSB],
+  is_na, Neg_NA[Is_NA],
+  is_neg,Neg_NA[Is_Negative_SSB],
+
+  cis_list, UNIQUE(
+    FILTER(cis, (is_na=1)*(is_neg=1))
+  ),
+
+  neg_sum,
+    BYROW(
+      cis_list,
+      LAMBDA(c,
+        SUM(
+          FILTER(
+            ssb,
+            (cis=c)*(is_na=1)*(is_neg=1)
+          )
+        )
+      )
+    ),
+
+  sorted, SORTBY(
+    HSTACK(cis_list, neg_sum),
+    ABS(neg_sum), -1
+  ),
+
+  TAKE(sorted, 15)
+)
+
+
+
+
+
+
 Player Snapshot Compact :=
 VAR PlayerName        = SELECTEDVALUE ( Players[player_name], "Selected player" )
 VAR GP                = [Games Played]                    -- or DISTINCTCOUNT(GameSummary[game_id])
