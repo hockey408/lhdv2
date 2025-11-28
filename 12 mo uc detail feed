@@ -1,4 +1,29 @@
 =LET(
+  negFlag,    MoM_Account_Detail[NEGATIVE_FLAG],
+  ssb,        MoM_Account_Detail[SSB_FOR_EVENT],
+  thresh,     -250000,  /* treat worse than -$250k as “large” – adjust if needed */
+
+  negMask,    (negFlag=1),
+  totalNegExp,
+              -SUM(FILTER(ssb, negMask)),
+  bigMask,    negMask * (ssb<=thresh),
+  bigCount,   SUM(bigMask),
+  worstBal,   MIN(FILTER(ssb, negMask)),
+  worstExp,   -worstBal,
+
+  "Negative non-accrual anomalies total $" &
+  TEXT(totalNegExp/1000,"#,##0") & "k across " &
+  TEXT(SUM(negMask),"#,##0") & " accounts, including " &
+  TEXT(bigCount,"#,##0") & " with balances below $" &
+  TEXT(ABS(thresh)/1000,"#,##0") & "k. The single largest negative exposure is $" &
+  TEXT(worstExp/1000,"#,##0") & "k and should be reviewed for offsetting accruals or chargeoff behavior."
+)
+
+
+
+
+
+=LET(
   banks,      UNIQUE(MoM_Account_Detail[Bank_For_Event]),
   contrib,    BYROW(
                 banks,
