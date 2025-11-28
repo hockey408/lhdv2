@@ -1,4 +1,89 @@
 =LET(
+  banks,      UNIQUE(MoM_Account_Detail[Bank_For_Event]),
+  contrib,    BYROW(
+                banks,
+                LAMBDA(b,
+                  SUMIFS(
+                    MoM_Account_Detail[MOM_DELTA],
+                    MoM_Account_Detail[Bank_For_Event], b
+                  )
+                )
+              ),
+  absContrib, ABS(contrib),
+  idx,        XMATCH(MAX(absContrib), absContrib),
+  topBank,    INDEX(banks, idx),
+  topDelta,   INDEX(contrib, idx),
+  dir,        IF(topDelta>=0,"increase","decrease"),
+  "This month, " & topBank &
+  " is the primary driver of portfolio change, with a net " &
+  dir & " of $" & TEXT(ABS(topDelta)/1000,"#,##0") &
+  "k in non-accrual balances."
+)
+
+
+=LET(
+  types,      UNIQUE(MoM_Account_Detail[Movement_Type]),
+  contrib,    BYROW(
+                types,
+                LAMBDA(t,
+                  SUMIFS(
+                    MoM_Account_Detail[MOM_DELTA],
+                    MoM_Account_Detail[Movement_Type], t
+                  )
+                )
+              ),
+  absContrib, ABS(contrib),
+  idx,        XMATCH(MAX(absContrib), absContrib),
+  topType,    INDEX(types, idx),
+  topDelta,   INDEX(contrib, idx),
+  dir,        IF(topDelta>=0,"increase","decrease"),
+  "Net change is most heavily driven by " & topType &
+  ", contributing a $" & TEXT(ABS(topDelta)/1000,"#,##0") &
+  "k " & dir & " versus prior month."
+)
+
+
+=LET(
+  banks,   UNIQUE(MoM_Account_Detail[Bank_For_Event]),
+  co,      BYROW(
+             banks,
+             LAMBDA(b,
+               SUMIFS(
+                 MoM_Account_Detail[CURR_CO_MTD],
+                 MoM_Account_Detail[Bank_For_Event], b
+               )
+             )
+           ),
+  totalCO, SUM(co),
+  idx,     XMATCH(MAX(co), co),
+  topBank, INDEX(banks, idx),
+  topCO,   INDEX(co, idx),
+  pct,     IF(totalCO=0,0,topCO/totalCO),
+  "Current-month chargeoff activity tied to non-accruals is most concentrated at " &
+  topBank & " (approx. $" &
+  TEXT(topCO/1000,"#,##0") & "k, " &
+  TEXT(pct,"0.0%") & " of NA-linked chargeoffs)."
+)
+
+=LET(
+  negCount,
+    SUM(MoM_Account_Detail[NEGATIVE_FLAG]),
+  flipCount,
+    SUM(MoM_Account_Detail[NEGATIVE_FLIP_FLAG]),
+  "There are " & TEXT(negCount,"#,##0") &
+  " accounts with negative non-accrual balances and " &
+  TEXT(flipCount,"#,##0") &
+  " accounts where exposure flipped sign since last month — key candidates for deeper QA and reconciliation."
+)
+
+
+
+
+
+
+
+
+=LET(
   totalNA, SUM(MoM_Account_Detail[SSB_FOR_EVENT]),
   deltaNA, SUM(MoM_Account_Detail[MOM_DELTA]),
   dir, IF(deltaNA>=0,"up","down"),
