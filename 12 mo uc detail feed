@@ -1,3 +1,26 @@
+Role: Developer & Data Analyst
+Technologies: Power BI, SQL, Python, DAX, Data Modeling, Sports Analytics
+
+Description:
+Designed and built a professional-grade hockey player performance dashboard used to analyze individual player tendencies, decision-making patterns, and game impact. This dashboard aggregates event-level tracking data into a clear, coach-friendly interface that surfaces strengths, weaknesses, and developmental insights in seconds.
+
+Key Features:
+	•	Interactive Player Profiles with photo identification, role archetype classification, and game-by-game performance metrics.
+	•	Advanced Rink Visualizations including pass maps, shot maps, danger scoring profiles, and pressure-based passing outcomes.
+	•	Zone Entry Analysis with attempt counts, controlled-entry success rates, and neutral zone transition insights.
+	•	Defensive Read Tracking to evaluate retrievals, pressure decisions, and defensive reliability.
+	•	Automated KPI Engine producing Composite Performance Score, Shot Quality %, Turnovers per 60, and role-specific impact metrics.
+	•	Role Archetype System (e.g., OZ Distributor, Transition Carrier, Volume Shooter, Defensive Anchor) dynamically generated through DAX logic based on player behavior patterns.
+	•	Coach-Oriented Insight Panels with narrative summaries highlighting actionable takeaways for development and deployment.
+
+Impact:
+This dashboard provides coaches, trainers, and players with a clear picture of how decisions, habits, and transition sequences influence game outcomes. It has become the foundation for a scalable analytics product line (PUCKIQ) designed for individualized player development, scouting support, and team performance analysis.
+
+
+
+
+
+
 =LET(
   co, CO_Raw[CO_MTD],
   acct, CO_Raw[Account_Name],
