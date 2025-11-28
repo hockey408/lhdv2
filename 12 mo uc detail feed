@@ -1,4 +1,21 @@
 =LET(
+  co, CO_Raw[CO_MTD],
+  acct, CO_Raw[Account_Name],
+  tot, SUM(co),
+  topAcct, INDEX(acct, XMATCH(MAX(co), co)),
+  topAmt, MAX(co),
+  "Chargeoffs this month totaled $" &
+  TEXT(tot/1000,"#,##0") & "k, with losses concentrated in a small set of borrowers. The largest individual chargeoff was " &
+  topAcct & " at $" &
+  TEXT(topAmt/1000,"#,##0") &
+  "k, highlighting the need for proactive review of similar risk profiles."
+)
+
+
+
+
+
+=LET(
   negFlag,    MoM_Account_Detail[NEGATIVE_FLAG],
   ssb,        MoM_Account_Detail[SSB_FOR_EVENT],
   thresh,     -250000,  /* treat worse than -$250k as “large” – adjust if needed */
