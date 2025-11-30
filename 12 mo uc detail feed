@@ -1,4 +1,103 @@
 Role Archetype =
+VAR Shots            = [Total Shots]
+VAR Passes           = [Total Passes]
+VAR ZoneEntriesPG    = [Zone Entries per game]
+VAR OZPasses         = [OZ Passes]
+VAR DefReadsPG       = [Defensive reads per game]
+VAR Turnovers        = [Turnovers]
+
+-- Basic presence check
+VAR HasData =
+    NOT (
+        ISBLANK ( Shots )
+        && ISBLANK ( Passes )
+        && ISBLANK ( ZoneEntriesPG )
+        && ISBLANK ( DefReadsPG )
+    )
+
+-- Min / Max across players for normalization (in current overall context)
+VAR MinShots =
+    MINX ( ALL ( Players ), [Total Shots] )
+VAR MaxShots =
+    MAXX ( ALL ( Players ), [Total Shots] )
+
+VAR MinPasses =
+    MINX ( ALL ( Players ), [Total Passes] )
+VAR MaxPasses =
+    MAXX ( ALL ( Players ), [Total Passes] )
+
+VAR MinEntriesPG =
+    MINX ( ALL ( Players ), [Zone Entries per game] )
+VAR MaxEntriesPG =
+    MAXX ( ALL ( Players ), [Zone Entries per game] )
+
+VAR MinDefReadsPG =
+    MINX ( ALL ( Players ), [Defensive reads per game] )
+VAR MaxDefReadsPG =
+    MAXX ( ALL ( Players ), [Defensive reads per game] )
+
+VAR MinTO =
+    MINX ( ALL ( Players ), [Turnovers] )
+VAR MaxTO =
+    MAXX ( ALL ( Players ), [Turnovers] )
+
+-- Safe normalization (0–1)
+VAR ShotsNorm =
+    DIVIDE ( Shots - MinShots, MaxShots - MinShots + 0.00001 )
+
+VAR PassesNorm =
+    DIVIDE ( Passes - MinPasses, MaxPasses - MinPasses + 0.00001 )
+
+VAR EntriesNorm =
+    DIVIDE ( ZoneEntriesPG - MinEntriesPG, MaxEntriesPG - MinEntriesPG + 0.00001 )
+
+VAR DefReadsNorm =
+    DIVIDE ( DefReadsPG - MinDefReadsPG, MaxDefReadsPG - MinDefReadsPG + 0.00001 )
+
+VAR TONorm =
+    DIVIDE ( Turnovers - MinTO, MaxTO - MinTO + 0.00001 )
+
+VAR OZPassShare =
+    DIVIDE ( OZPasses, Passes )
+
+-- Role scores (tune these weightings as you like)
+VAR VolumeShooterScore =
+    ShotsNorm - 0.3 * PassesNorm
+
+VAR OZDistributorScore =
+    PassesNorm + 0.5 * OZPassShare - 0.2 * ShotsNorm
+
+VAR TransitionCarrierScore =
+    EntriesNorm - 0.2 * TONorm
+
+VAR DefensiveAnchorScore =
+    DefReadsNorm - 0.5 * TONorm
+
+VAR MaxScore =
+    MAX (
+        MAX ( VolumeShooterScore, OZDistributorScore ),
+        MAX ( TransitionCarrierScore, DefensiveAnchorScore )
+    )
+
+RETURN
+IF (
+    NOT HasData,
+    BLANK (),
+    SWITCH (
+        TRUE (),
+        MaxScore = VolumeShooterScore,      "Volume Shooter",
+        MaxScore = OZDistributorScore,      "OZ Distributor",
+        MaxScore = TransitionCarrierScore,  "Transition Carrier",
+        MaxScore = DefensiveAnchorScore,    "Defensive Anchor",
+        "Undefined Role"
+    )
+)
+
+
+
+
+
+Role Archetype =
 VAR Shots             = [Total Shots]
 VAR Passes            = [Total Passes]
 VAR ZoneEntriesPG     = [Zone Entries per game]
