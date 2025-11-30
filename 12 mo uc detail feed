@@ -1,3 +1,117 @@
+Role Archetype =
+VAR Shots =
+    SELECTEDVALUE ( Players[Total Shots] )
+
+VAR Passes =
+    SELECTEDVALUE ( Players[Total Passes] )
+
+VAR ZoneEntriesPG =
+    SELECTEDVALUE ( Players[Zone Entries per game] )
+
+VAR OZPasses =
+    SELECTEDVALUE ( Players[OZ Passes] )
+
+VAR ZoneEntriesTotal =
+    SELECTEDVALUE ( Players[Zone_entries] )
+
+VAR DefReadsPG =
+    SELECTEDVALUE ( Players[Defensive reads per game] )
+
+VAR Turnovers =
+    SELECTEDVALUE ( Players[Turnovers] )
+
+/* Ratios */
+VAR PassShotRatio =
+    DIVIDE ( Passes, Shots )      -- >1 = more pass heavy
+
+VAR OZPassShare =
+    DIVIDE ( OZPasses, Passes )   -- share of passes in OZ
+
+VAR TO_Per_Entry =
+    DIVIDE ( Turnovers, ZoneEntriesTotal )
+
+/* Dataset averages for relative comparison */
+VAR AvgShots =
+    CALCULATE ( AVERAGE ( Players[Total Shots] ), ALL ( Players ) )
+
+VAR AvgPasses =
+    CALCULATE ( AVERAGE ( Players[Total Passes] ), ALL ( Players ) )
+
+VAR AvgZoneEntriesPG =
+    CALCULATE ( AVERAGE ( Players[Zone Entries per game] ), ALL ( Players ) )
+
+VAR AvgDefReadsPG =
+    CALCULATE ( AVERAGE ( Players[Defensive reads per game] ), ALL ( Players ) )
+
+VAR AvgTurnovers =
+    CALCULATE ( AVERAGE ( Players[Turnovers] ), ALL ( Players ) )
+
+/* Flags for "high" / "low" characteristics */
+VAR HighShots =
+    Shots >= AvgShots * 1.25
+
+VAR HighPasses =
+    Passes >= AvgPasses * 1.25
+
+VAR HighEntries =
+    ZoneEntriesPG >= AvgZoneEntriesPG * 1.25
+
+VAR HighDefReads =
+    DefReadsPG >= AvgDefReadsPG * 1.25
+
+VAR LowTurnovers =
+    Turnovers <= AvgTurnovers * 0.75
+
+VAR HighTurnovers =
+    Turnovers >= AvgTurnovers * 1.25
+
+RETURN
+SWITCH (
+    TRUE (),
+
+    /* 1 — Volume Shooter: high shots, shoots at least as often as passes */
+    HighShots && Shots >= Passes,
+        "Volume Shooter",
+
+    /* 2 — OZ Distributor: heavy OZ passing, pass-heavy profile, low-ish TOs */
+    OZPassShare >= 0.35 &&
+    PassShotRatio >= 1.4 &&
+    HighPasses &&
+    NOT HighShots &&
+    LowTurnovers,
+        "OZ Distributor",
+
+    /* 3 — Transition Carrier: aggressive on entries, not crazy TOs */
+    HighEntries &&
+    TO_Per_Entry <= 0.25,
+        "Transition Carrier",
+
+    /* 4 — Primary PK Handler / Defensive Anchor: strong D reads, low TOs, not hyper-aggressive on entries */
+    HighDefReads &&
+    LowTurnovers &&
+    ZoneEntriesPG <= AvgZoneEntriesPG * 1.05,
+        "Primary PK Handler",
+
+    /* 5 — High-Risk Creator: lots of entries but also higher turnovers */
+    HighEntries &&
+    HighTurnovers,
+        "High-Risk Creator",
+
+    /* 6 — Two-Way Reliability: above-average D and entries, controlled TOs */
+    DefReadsPG >= AvgDefReadsPG * 1.05 &&
+    ZoneEntriesPG >= AvgZoneEntriesPG * 1.05 &&
+    Turnovers <= AvgTurnovers * 1.05,
+        "Two-Way Reliability",
+
+    /* Fallback */
+        "Undefined Role"
+)
+
+
+
+
+
+
 Player Header = 
 VAR SelectedPlayerName =
     SELECTEDVALUE ( Players[player_name], "Select a player" )
