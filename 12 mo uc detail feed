@@ -1,3 +1,16 @@
+Is Latest Month =
+VAR LatestMonth =
+    CALCULATE(
+        MAX ( RC_CODE_MODEL_BASE[MONTH_END] ),
+        ALL ( RC_CODE_MODEL_BASE )         -- ignore filters, get global latest month
+    )
+RETURN
+IF ( RC_CODE_MODEL_BASE[MONTH_END] = LatestMonth, 1, 0 )
+
+
+
+
+
 Latest Month =
 CALCULATE (
     MAX ( RC_Code_Model_Base[month_end] ),
