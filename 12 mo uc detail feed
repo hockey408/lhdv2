@@ -1,3 +1,18 @@
+Is Latest Month (Flag) =
+VAR lm = [Latest Month]
+RETURN
+IF (
+    MAX ( RC_Code_Model_Base[month_end] ) = lm,
+    1,
+    0
+)
+
+
+
+Error on ‘Is Latest Month (Flag)’. A single value for column ‘MONTH_END’ in table ‘RC_CODE_MODEL_BASE’ cannot be determined…
+
+
+
 Error on ‘Is Latest Month (Flag)’. A single value for column ‘MONTH_END’ in table ‘RC_CODE_MODEL_BASE’ cannot be determined…
 
 
