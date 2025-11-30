@@ -1,3 +1,381 @@
+/* ========== RC_Code Anomaly Detection — REG12-only, Thresholded, PBI-safe ========== */
+/* Key features:
+   - Uses only 12-month regression per RC (no REG36, MA6, MA12, no seasonality)
+   - Limits history (min_me) to control runtime
+   - Applies exposure_min_for_model on latest balance
+   - Adds TOTAL_PORTFOLIO pseudo-RC
+   - Outputs PI bands, Severity_0_100, Persistent_Outlier_3of6, Reason_Code
+   - Flags Is_Material_Residual_500M for |Residual| >= threshold
+*/
+
+WITH
+/* 0) Parameters */
+params AS (
+  SELECT
+    ADD_MONTHS(CURRENT_DATE, -72)::DATE AS min_me,            -- last 72 months only
+    1000000000.0::FLOAT8               AS exposure_min_for_model,   -- >= $1B latest
+    500000000.0::FLOAT8                AS material_resid_threshold  -- >= $500M residual
+),
+
+/* 1) Base RC-level balances (time filtered) */
+base_rc AS (
+  SELECT
+    b.RC_CODE,
+    b.RC_DESCRIPTION,
+    CAST(b.END_OF_MONTH_DATE AS DATE)    AS month_end,
+    SUM(b.SOURCE_SYSTEM_BALANCE)::FLOAT8 AS bal_num
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB b,
+       params p
+  WHERE b.SOURCE_SYSTEM_BALANCE IS NOT NULL
+    AND b.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+    AND b.END_OF_MONTH_DATE >= p.min_me
+  GROUP BY b.RC_CODE, b.RC_DESCRIPTION, CAST(b.END_OF_MONTH_DATE AS DATE)
+),
+
+/* 2) Portfolio total per month as pseudo-RC */
+base_total AS (
+  SELECT
+    'TOTAL_PORTFOLIO'               AS RC_CODE,
+    'Total Loans - Portfolio'       AS RC_DESCRIPTION,
+    month_end,
+    SUM(bal_num)::FLOAT8            AS bal_num
+  FROM base_rc
+  GROUP BY month_end
+),
+
+/* 3) Combine RC-level + portfolio-level */
+base_all AS (
+  SELECT * FROM base_rc
+  UNION ALL
+  SELECT * FROM base_total
+),
+
+/* 4) Latest month & latest exposure per RC */
+latest_me AS (
+  SELECT
+    RC_CODE,
+    MAX(month_end) AS max_me
+  FROM base_all
+  GROUP BY RC_CODE
+),
+
+latest_exp AS (
+  SELECT
+    b.RC_CODE,
+    b.bal_num AS latest_bal
+  FROM base_all b
+  JOIN latest_me m
+    ON m.RC_CODE = b.RC_CODE
+   AND m.max_me  = b.month_end
+),
+
+/* 5) RCs that pass exposure threshold */
+material_rc AS (
+  SELECT
+    e.RC_CODE
+  FROM latest_exp e
+  CROSS JOIN params p
+  WHERE e.latest_bal >= p.exposure_min_for_model
+),
+
+/* 6) Filter base to material RCs + portfolio */
+base AS (
+  SELECT b.*
+  FROM base_all b
+  WHERE b.RC_CODE IN (SELECT RC_CODE FROM material_rc)
+),
+
+/* 7) Index per RC, tmax, prev_bal, 3-month activity */
+idx AS (
+  SELECT
+    b.*,
+    ROW_NUMBER() OVER (PARTITION BY b.RC_CODE ORDER BY b.month_end) AS t
+  FROM base b
+),
+
+idx_tm AS (
+  SELECT
+    i.*,
+    MAX(i.t) OVER (PARTITION BY i.RC_CODE) AS tmax,
+    LAG(i.bal_num) OVER (PARTITION BY i.RC_CODE ORDER BY i.month_end) AS prev_bal,
+    SUM(CASE WHEN i.bal_num > 0 THEN 1 ELSE 0 END) OVER (
+      PARTITION BY i.RC_CODE
+      ORDER BY i.month_end
+      ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+    ) AS pos3_count
+  FROM idx i
+),
+
+/* 8) 12-month evaluation window */
+last12 AS (
+  SELECT *
+  FROM idx_tm
+  WHERE t >= tmax - 11
+),
+
+/* 9) REG12 parameters per RC */
+reg12_params AS (
+  SELECT
+    RC_CODE,
+    COUNT(*)               AS n12,
+    SUM(t)::FLOAT8         AS sumx12,
+    SUM(bal_num)::FLOAT8   AS sumy12,
+    SUM(t*bal_num)::FLOAT8 AS sumxy12,
+    SUM(t*t)::FLOAT8       AS sumx2_12
+  FROM last12
+  GROUP BY RC_CODE
+),
+
+/* 10) REG12 fitted values on last12 window */
+reg12_fit AS (
+  SELECT
+    l.RC_CODE,
+    l.month_end,
+    l.RC_DESCRIPTION,
+    l.bal_num,
+    l.t,
+    CASE
+      WHEN p.n12 >= 2 AND (p.n12*p.sumx2_12 - p.sumx12*p.sumx12) <> 0
+      THEN
+        ((p.n12*p.sumxy12 - p.sumx12*p.sumy12)
+          / (p.n12*p.sumx2_12 - p.sumx12*p.sumx12)) * l.t
+        + (
+            (p.sumy12/p.n12)
+            - ((p.n12*p.sumxy12 - p.sumx12*p.sumy12)
+               / (p.n12*p.sumx2_12 - p.sumx12*p.sumx12))
+              * (p.sumx12/p.n12)
+          )
+      ELSE NULL
+    END::FLOAT8 AS fc_reg12
+  FROM last12 l
+  JOIN reg12_params p USING (RC_CODE)
+),
+
+/* 11) Attach prev_bal & pos3_count to forecasts */
+fits_ready AS (
+  SELECT
+    f.RC_CODE,
+    f.month_end,
+    f.RC_DESCRIPTION,
+    f.bal_num,
+    t.prev_bal,
+    t.pos3_count,
+    f.fc_reg12 AS forecast
+  FROM reg12_fit f
+  JOIN idx_tm t
+    ON t.RC_CODE   = f.RC_CODE
+   AND t.month_end = f.month_end
+),
+
+/* 12) Residuals, MoM, per-RC stats & RMSE */
+enriched AS (
+  SELECT
+    x.*,
+    (x.bal_num - x.forecast)::FLOAT8 AS Resid,
+    ABS(x.bal_num - x.forecast)::FLOAT8 AS AbsResid,
+    CASE
+      WHEN x.prev_bal IS NULL THEN NULL
+      ELSE ABS(x.bal_num - x.prev_bal)
+    END::FLOAT8 AS MoM_Abs,
+    CASE
+      WHEN x.prev_bal IS NULL THEN NULL
+      WHEN ABS(x.prev_bal) < 1.0 THEN ABS(x.bal_num - x.prev_bal) / 1.0
+      ELSE ABS(x.bal_num - x.prev_bal) / ABS(x.prev_bal)
+    END::FLOAT8 AS MoM_Pct_Abs,
+
+    -- residual distribution stats
+    AVG(ABS(x.bal_num - x.forecast)) OVER (PARTITION BY x.RC_CODE) AS mean_abs_resid,
+    STDDEV_SAMP(ABS(x.bal_num - x.forecast)) OVER (PARTITION BY x.RC_CODE) AS sd_abs_resid,
+
+    -- MoM distribution stats
+    AVG(
+      CASE WHEN x.prev_bal IS NULL THEN NULL ELSE ABS(x.bal_num - x.prev_bal) END
+    ) OVER (PARTITION BY x.RC_CODE) AS mean_mom_abs,
+    STDDEV_SAMP(
+      CASE WHEN x.prev_bal IS NULL THEN NULL ELSE ABS(x.bal_num - x.prev_bal) END
+    ) OVER (PARTITION BY x.RC_CODE) AS sd_mom_abs,
+
+    AVG(
+      CASE
+        WHEN x.prev_bal IS NULL THEN NULL
+        WHEN ABS(x.prev_bal) < 1.0 THEN ABS(x.bal_num - x.prev_bal) / 1.0
+        ELSE ABS(x.bal_num - x.prev_bal) / ABS(x.prev_bal)
+      END
+    ) OVER (PARTITION BY x.RC_CODE) AS mean_mom_pct,
+
+    STDDEV_SAMP(
+      CASE
+        WHEN x.prev_bal IS NULL THEN NULL
+        WHEN ABS(x.prev_bal) < 1.0 THEN ABS(x.bal_num - x.prev_bal) / 1.0
+        ELSE ABS(x.bal_num - x.prev_bal) / ABS(x.prev_bal)
+      END
+    ) OVER (PARTITION BY x.RC_CODE) AS sd_mom_pct,
+
+    -- RMSE per RC (for PI bands)
+    SQRT(
+      AVG( (x.bal_num - x.forecast)*(x.bal_num - x.forecast) )
+      OVER (PARTITION BY x.RC_CODE)
+    ) AS rmse
+  FROM fits_ready x
+),
+
+/* 13) Z-scores */
+with_z AS (
+  SELECT
+    e.*,
+    CASE
+      WHEN e.sd_abs_resid IS NULL OR e.sd_abs_resid = 0 THEN 0
+      ELSE (e.AbsResid - e.mean_abs_resid) / e.sd_abs_resid
+    END::FLOAT8 AS Z_Resid,
+    CASE
+      WHEN e.sd_mom_abs IS NULL OR e.sd_mom_abs = 0 THEN 0
+      ELSE (e.MoM_Abs - e.mean_mom_abs) / e.sd_mom_abs
+    END::FLOAT8 AS Z_MoM_Abs,
+    CASE
+      WHEN e.sd_mom_pct IS NULL OR e.sd_mom_pct = 0 THEN 0
+      ELSE (e.MoM_Pct_Abs - e.mean_mom_pct) / e.sd_mom_pct
+    END::FLOAT8 AS Z_MoM_Pct
+  FROM enriched e
+),
+
+/* 14) P95 AbsResid & MoM_Abs per RC (for severity scaling) */
+p95_abs AS (
+  SELECT RC_CODE, MIN(AbsResid) AS p95_abs_resid
+  FROM (
+    SELECT
+      RC_CODE,
+      AbsResid,
+      ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY AbsResid) AS rn,
+      COUNT(*)    OVER (PARTITION BY RC_CODE)                     AS n
+    FROM with_z
+    WHERE AbsResid IS NOT NULL
+  ) q
+  WHERE rn >= CEIL(0.95 * n)
+  GROUP BY RC_CODE
+),
+
+p95_mom AS (
+  SELECT RC_CODE, MIN(MoM_Abs) AS p95_mom_abs
+  FROM (
+    SELECT
+      RC_CODE,
+      MoM_Abs,
+      ROW_NUMBER() OVER (PARTITION BY RC_CODE ORDER BY MoM_Abs) AS rn,
+      COUNT(*)    OVER (PARTITION BY RC_CODE)                   AS n
+    FROM with_z
+    WHERE MoM_Abs IS NOT NULL
+  ) q
+  WHERE rn >= CEIL(0.95 * n)
+  GROUP BY RC_CODE
+),
+
+/* 15) Severity raw */
+sev_raw AS (
+  SELECT
+    z.*,
+    (
+      0.25 * ( z.AbsResid / NULLIF(p95a.p95_abs_resid,0) )
+      + 0.65 * ABS(z.Z_Resid)
+      + 0.07 * ABS(z.Z_MoM_Abs)
+      + 0.03 * ( z.MoM_Abs / NULLIF(p95m.p95_mom_abs,0) )
+    )::FLOAT8 AS Severity_Raw
+  FROM with_z z
+  LEFT JOIN p95_abs p95a ON p95a.RC_CODE = z.RC_CODE
+  LEFT JOIN p95_mom p95m ON p95m.RC_CODE = z.RC_CODE
+),
+
+/* 16) Severity scaled 0–100 */
+sev_scaled AS (
+  SELECT
+    s.*,
+    ROUND(
+      100.0 * (1.0 - EXP(
+        - CASE
+            WHEN s.Severity_Raw IS NULL OR s.Severity_Raw < 0 THEN 0
+            ELSE s.Severity_Raw
+          END
+      )),
+      0
+    )::INTEGER AS Severity_0_100
+  FROM sev_raw s
+),
+
+/* 17) Persistent outlier: 3 of last 6 months >= 70 */
+pers AS (
+  SELECT
+    x.*,
+    SUM(CASE WHEN x.Severity_0_100 >= 70 THEN 1 ELSE 0 END) OVER (
+      PARTITION BY x.RC_CODE
+      ORDER BY x.month_end
+      ROWS BETWEEN 5 PRECEDING AND CURRENT ROW
+    ) AS outlier_6m_sum
+  FROM sev_scaled x
+),
+
+pers_flag AS (
+  SELECT
+    p.*,
+    CASE WHEN p.outlier_6m_sum >= 3 THEN 1 ELSE 0 END AS Persistent_Outlier_3of6
+  FROM pers p
+),
+
+/* 18) Reason_Code based on residual vs MoM signals */
+reasoned AS (
+  SELECT
+    p.*,
+    CASE
+      WHEN ABS(p.Z_Resid) >=
+           CASE
+             WHEN ABS(COALESCE(p.Z_MoM_Abs,0.0)) >= ABS(COALESCE(p.MoM_Abs,0.0))
+               THEN ABS(COALESCE(p.Z_MoM_Abs,0.0))
+             ELSE ABS(COALESCE(p.MoM_Abs,0.0))
+           END
+        THEN 'Residual spike vs model'
+      WHEN ABS(COALESCE(p.Z_MoM_Abs,0.0)) >= 2
+        THEN 'Unusual MoM swing'
+      WHEN p.MoM_Abs IS NOT NULL
+           AND pm.p95_mom_abs IS NOT NULL
+           AND p.MoM_Abs > pm.p95_mom_abs
+        THEN 'Large absolute MoM'
+      ELSE 'Mixed'
+    END AS Reason_Code
+  FROM pers_flag p
+  LEFT JOIN p95_mom pm ON pm.RC_CODE = p.RC_CODE
+)
+
+SELECT
+  r.RC_CODE,
+  r.RC_DESCRIPTION,
+  r.month_end,
+  'REG12'                 AS Best_Model,
+  r.forecast              AS Forecast_Selected,
+  r.bal_num               AS Actual,
+  r.Resid,
+  r.AbsResid,
+  r.MoM_Abs,
+  r.MoM_Pct_Abs,
+  r.Z_Resid,
+  r.Z_MoM_Abs,
+  r.Z_MoM_Pct,
+  r.rmse,
+  (r.forecast - 1.96 * r.rmse)::FLOAT8 AS PI_Lo,
+  (r.forecast + 1.96 * r.rmse)::FLOAT8 AS PI_Hi,
+  r.Severity_0_100,
+  r.Persistent_Outlier_3of6,
+  r.Reason_Code,
+  /* Flag big residuals */
+  CASE
+    WHEN ABS(r.Resid) >= p.material_resid_threshold THEN 1
+    ELSE 0
+  END AS Is_Material_Residual_500M
+FROM reasoned r
+CROSS JOIN params p
+ORDER BY r.RC_CODE, r.month_end;
+
+
+
+
+
 /* =============== RC_Code Anomaly Detection — Seasonality-free, Thresholded =============== */
 /* - Adds:
      • params: exposure_min_for_model, material_resid_threshold
