@@ -1,4 +1,95 @@
 Role Archetype =
+VAR Shots              = [Total Shots]
+VAR Passes             = [Total Passes]
+VAR ZoneEntriesPG      = [Zone Entries per game]
+VAR OZPasses           = [OZ Passes]
+VAR ZoneEntriesTotal   = [Zone_entries]
+VAR DefReadsPG         = [Defensive reads per game]
+VAR Turnovers          = [Turnovers]
+
+/* Ratios */
+VAR PassShotRatio =
+    DIVIDE ( Passes, Shots )          -- >1 = more pass heavy
+
+VAR OZPassShare =
+    DIVIDE ( OZPasses, Passes )       -- share of passes in OZ
+
+VAR TO_Per_Entry =
+    DIVIDE ( Turnovers, ZoneEntriesTotal )
+
+/* Dataset averages using measures */
+VAR AvgShots =
+    AVERAGEX ( ALL ( Players ), [Total Shots] )
+
+VAR AvgPasses =
+    AVERAGEX ( ALL ( Players ), [Total Passes] )
+
+VAR AvgZoneEntriesPG =
+    AVERAGEX ( ALL ( Players ), [Zone Entries per game] )
+
+VAR AvgDefReadsPG =
+    AVERAGEX ( ALL ( Players ), [Defensive reads per game] )
+
+VAR AvgTurnovers =
+    AVERAGEX ( ALL ( Players ), [Turnovers] )
+
+/* Flags for “high / low” relative to group */
+VAR HighShots      = Shots          >= AvgShots        * 1.25
+VAR HighPasses     = Passes         >= AvgPasses       * 1.25
+VAR HighEntries    = ZoneEntriesPG  >= AvgZoneEntriesPG * 1.25
+VAR HighDefReads   = DefReadsPG     >= AvgDefReadsPG   * 1.25
+VAR LowTurnovers   = Turnovers      <= AvgTurnovers    * 0.75
+VAR HighTurnovers  = Turnovers      >= AvgTurnovers    * 1.25
+
+RETURN
+SWITCH (
+    TRUE (),
+
+    /* 1 — Volume Shooter: high shots, shoots at least as often as passes */
+    HighShots &&
+    Shots >= Passes,
+        "Volume Shooter",
+
+    /* 2 — OZ Distributor: heavy OZ passing, pass-heavy, not a pure volume shooter, low-ish TOs */
+    OZPassShare >= 0.35 &&
+    PassShotRatio >= 1.4 &&
+    HighPasses &&
+    NOT HighShots &&
+    LowTurnovers,
+        "OZ Distributor",
+
+    /* 3 — Transition Carrier: aggressive entries, not crazy TO per entry */
+    HighEntries &&
+    TO_Per_Entry <= 0.25,
+        "Transition Carrier",
+
+    /* 4 — Primary PK Handler: strong D reads, low TOs, not hyper-aggressive on entries */
+    HighDefReads &&
+    LowTurnovers &&
+    ZoneEntriesPG <= AvgZoneEntriesPG * 1.05,
+        "Primary PK Handler",
+
+    /* 5 — High-Risk Creator: lots of entries but also higher turnovers */
+    HighEntries &&
+    HighTurnovers,
+        "High-Risk Creator",
+
+    /* 6 — Two-Way Reliability: solid D + solid entries + controlled TOs */
+    DefReadsPG >= AvgDefReadsPG * 1.05 &&
+    ZoneEntriesPG >= AvgZoneEntriesPG * 1.05 &&
+    Turnovers <= AvgTurnovers * 1.05,
+        "Two-Way Reliability",
+
+    /* Fallback */
+        "Undefined Role"
+)
+
+
+
+
+
+
+Role Archetype =
 VAR Shots =
     SELECTEDVALUE ( Players[Total Shots] )
 
