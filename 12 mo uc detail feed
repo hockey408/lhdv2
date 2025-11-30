@@ -1,3 +1,9 @@
+Error on ‘Is Latest Month (Flag)’. A single value for column ‘MONTH_END’ in table ‘RC_CODE_MODEL_BASE’ cannot be determined…
+
+
+
+
+
 Is Latest Month =
 VAR LatestMonth =
     CALCULATE(
