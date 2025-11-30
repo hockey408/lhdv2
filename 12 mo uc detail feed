@@ -1,6 +1,55 @@
 Player Header = 
 VAR SelectedPlayerName =
     SELECTEDVALUE ( Players[player_name], "Select a player" )
+
+VAR SelectedPosition =
+    SELECTEDVALUE ( Players[position], "" )
+
+VAR SelectedHandedness = 
+    SELECTEDVALUE ( Players[handedness], "" )
+
+VAR SelectedRole =
+    [Role Archetype]   -- this is your MEASURE
+
+RETURN
+    SelectedPlayerName &
+    IF ( SelectedPosition <> "", "  |  " & SelectedPosition ) &
+    IF ( SelectedHandedness <> "", "  |  " & SelectedHandedness ) &
+    IF ( NOT ISBLANK ( SelectedRole ) && SelectedRole <> "Undefined Role",
+         "  |  " & SelectedRole
+    )
+
+
+
+
+
+
+Player Header = 
+VAR SelectedPlayerName =
+    SELECTEDVALUE ( Players[player_name], "Select a player" )
+
+VAR SelectedPosition =
+    SELECTEDVALUE ( Players[position], "" )
+
+VAR SelectedHandedness = 
+    SELECTEDVALUE ( Players[handedness], "" )
+
+VAR SelectedRole =
+    SELECTEDVALUE ( Players[Role Archetype], "" )
+
+RETURN
+    SelectedPlayerName &
+    IF ( SelectedPosition <> "", "  |  " & SelectedPosition ) &
+    IF ( SelectedHandedness <> "", "  |  " & SelectedHandedness ) &
+    IF ( SelectedRole <> "" && SelectedRole <> "Undefined Role", "  |  " & SelectedRole )
+
+
+
+
+
+Player Header = 
+VAR SelectedPlayerName =
+    SELECTEDVALUE ( Players[player_name], "Select a player" )
 VAR SelectedPosition =
     SELECTEDVALUE ( Players[position], "" )
 VAR SelectedHandedness = 
