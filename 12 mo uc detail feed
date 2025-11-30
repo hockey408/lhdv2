@@ -1,3 +1,47 @@
+Role Archetype =
+SWITCH(
+    TRUE(),
+
+    /* 1 — OZ Distributor (OZ pass-first, lower shot volume relative to passes) */
+    [OZ Passes] >= 20 &&
+    [Total Passes] >= 50 &&
+    [Total Shots] < [Total Passes] * 0.6,
+        "OZ Distributor",
+
+    /* 2 — Transition Carrier (lots of entries per game) */
+    [Zone Entries per game] >= 6 &&
+    [Zone_entries] >= 30,
+        "Transition Carrier",
+
+    /* 3 — Volume Shooter (very shot-heavy profile) */
+    [Total Shots] >= 40 &&
+    [Total Shots] >= [Total Passes],
+        "Volume Shooter",
+
+    /* 4 — Primary PK Handler / Defensive Anchor (high D reads, low TOs) */
+    [Defensive reads per game] >= 5 &&
+    [Turnovers] <= 5,
+        "Primary PK Handler",
+
+    /* 5 — Two-Way Reliability (solid D + solid entries + controlled TOs) */
+    [Defensive reads per game] >= 3 &&
+    [Zone Entries per game] >= 3 &&
+    [Turnovers] <= 8,
+        "Two-Way Reliability",
+
+    /* 6 — High-Risk Creator (attack-heavy but higher turnovers) */
+    [Zone Entries per game] >= 5 &&
+    [Turnovers] > 8,
+        "High-Risk Creator",
+
+    /* Default fallback */
+        "Undefined Role"
+)
+
+
+
+
+
 /* ========== RC_Code Anomaly Detection — REG12-only, Thresholded, PBI-safe ========== */
 /* Key features:
    - Uses only 12-month regression per RC (no REG36, MA6, MA12, no seasonality)
