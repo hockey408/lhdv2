@@ -1,3 +1,249 @@
+⭐ BREslin Analytics — Carrd Layout Guide (Copy This Into Your Build)
+
+⸻
+
+1. GLOBAL SETTINGS
+
+Theme: Start from a blank “Landing Page” template
+
+Page Width: 800–1040px
+
+Background:
+	•	Solid navy: #0A1A2F
+	•	Subtle gradient option: top #0A1A2F → bottom #08121F
+
+Font:
+	•	Headers: Montserrat (Bold)
+	•	Body: Inter (Regular)
+
+Accent Color: #3BA4FF (buttons, highlights)
+
+Spacing:
+	•	Section padding: 60–90 px
+	•	Element spacing: 24–36 px
+	•	Button padding: 16px vertical, 28px horizontal
+
+⸻
+
+2. HEADER / HERO SECTION
+
+Component: “Banner”
+
+Alignment: Center
+
+Text:
+
+Modern Data Solutions for Small Businesses & Startups
+(H1 — Montserrat, white, size ~42–52px)
+
+Dashboards, automation, and intelligent reporting systems built for clarity, efficiency, and growth.
+(Body — Inter, white, 18–20px)
+
+Button:
+
+Book a Free Diagnostic →
+Style: Filled
+Color: #3BA4FF
+Text Color: White
+Rounded corners: 4px
+
+Optional Sub-Text:
+
+“No commitments. 15-minute clarity call.”
+
+⸻
+
+3. SERVICES SECTION
+
+Section Title (center):
+
+What I Do
+(H2 — Montserrat, white, ~36px)
+
+Use 3 columns on desktop / stacked on mobile.
+
+Column 1
+
+Analytics & Dashboarding
+	•	KPI dashboards
+	•	Power BI, Excel, Python
+	•	E-commerce & finance reporting
+	•	Clean, executive-ready visuals
+
+Column 2
+
+Automation & Optimization
+	•	SQL + Python automation
+	•	Month-end workflow streamlining
+	•	Variance + anomaly detection tools
+	•	Reduce manual work
+
+Column 3
+
+Data Strategy
+	•	KPI frameworks
+	•	Process mapping
+	•	Data governance basics
+	•	Metric definitions
+
+Full-width Specialty Highlight Box
+
+Use a Carrd “Container” with lighter navy background (#132236):
+Specialty: Intelligent Variance & Anomaly Detection
+	•	Statistical early-warning systems
+	•	Pattern detection & trend modeling
+	•	Red-flag dashboards that save hours
+
+⸻
+
+4. HOW IT WORKS
+
+Title (center):
+
+How It Works
+
+Use numbered horizontal cards (1–5):
+
+1. Discovery Call
+Understand goals, systems, and reporting needs.
+
+2. Data Review
+You provide exports; I analyze structure & opportunities.
+
+3. Build & Automate
+Reports, automation, workflows built cleanly and fast.
+
+4. Insights Delivery
+Walk-through meeting + recommendations.
+
+5. Ongoing Support (optional)
+Flexible models depending on needs.
+
+⸻
+
+5. ABOUT BRENT SECTION
+
+Background stays navy.
+
+Title:
+
+About Brent
+
+Layout:
+
+Use a 2-column layout:
+	•	Left: circular headshot placeholder
+	•	Right: text
+
+Text (polished):
+
+I’m a Credit Reporting Manager with deep experience building enterprise-level analytics tools, anomaly detection models, and performance dashboards.
+I specialize in translating complex data into clean, executive-ready insights — fast.
+
+I’ve built:
+	•	Enterprise anomaly detection systems
+	•	Financial variance & reconciliation models
+	•	E-commerce performance dashboards
+	•	Intelligent SQL/Python automations
+	•	Sports analytics tools (hockey player dashboard)
+
+My approach is:
+	•	Clean
+	•	Fast
+	•	Insight-driven
+	•	Highly visual
+	•	Built for real operators
+
+⸻
+
+6. PACKAGES SECTION
+
+Title:
+
+Starter Packages
+
+Use 3 clean pricing cards:
+
+⸻
+
+Card 1 — Quick-Win Package
+
+$500–$1,500
+1–2 week build
+KPI dashboard + automation + insights
+Perfect for founders and small businesses
+
+⸻
+
+Card 2 — Reporting Overhaul
+
+$2,500–$5,000
+End-to-end reporting system
+Dashboards, automation, KPI framework
+
+⸻
+
+Card 3 — Anomaly Detection Lite
+
+$1,500–$3,000
+Statistical variance model
+Red-flag trend reporting
+Saves 5–20 hours per month
+
+⸻
+
+Optional Card 4 — Sports Analytics
+
+$300–$1,200
+Hockey dashboards for coaches, players, and trainers
+
+⸻
+
+7. PORTFOLIO PREVIEW SECTION
+
+Title:
+
+Work Examples
+
+Use a grid with 4–6 placeholder cards (you will fill later):
+
+E-Commerce Performance Dashboard
+Power BI, SQL
+
+Variance & Anomaly Detection Model
+SQL, Python, BI
+
+Hockey Player Analytics Dashboard
+Power BI, Sports Analytics
+
+Finance & Operations KPI Framework
+Data Strategy
+
+Each card should have:
+	•	Screenshot placeholder
+	•	Title
+	•	Short description
+
+⸻
+
+8. CALL TO ACTION (FINAL SECTION)
+
+Big centered section with lighter navy background.
+
+Ready to Build Smarter Analytics?
+(H2 — Montserrat, 40px, white)
+
+A clean, modern data foundation can transform decision-making.
+
+CTA Buttons:
+
+Book a Free Diagnostic (primary, blue)
+Email Me → (secondary)
+
+
+
+
+
 Role: Developer & Data Analyst
 Technologies: Power BI, SQL, Python, DAX, Data Modeling, Sports Analytics
 
