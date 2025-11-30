@@ -1,4 +1,82 @@
 Role Archetype =
+VAR Shots             = [Total Shots]
+VAR Passes            = [Total Passes]
+VAR ZoneEntriesPG     = [Zone Entries per game]
+VAR OZPasses          = [OZ Passes]
+VAR ZoneEntriesTotal  = [Zone_entries]
+VAR DefReadsPG        = [Defensive reads per game]
+VAR Turnovers         = [Turnovers]
+
+-- Basic guards
+VAR HasData =
+    NOT (
+        ISBLANK ( Shots )
+        && ISBLANK ( Passes )
+        && ISBLANK ( ZoneEntriesPG )
+        && ISBLANK ( DefReadsPG )
+    )
+
+-- Ratios (safe divide)
+VAR PassShotRatio =
+    DIVIDE ( Passes, Shots )                -- >1 = more passes than shots
+
+VAR OZPassShare =
+    DIVIDE ( OZPasses, Passes )             -- share of passes in OZ
+
+VAR TO_Per_Entry =
+    DIVIDE ( Turnovers, ZoneEntriesTotal )
+
+RETURN
+IF (
+    NOT HasData,
+    BLANK (),
+    SWITCH (
+        TRUE (),
+
+        -- 1) Volume Shooter: shoots a lot, shots ≥ passes
+        Shots >= 30
+            && Shots >= Passes,
+        "Volume Shooter",
+
+        -- 2) OZ Distributor: lots of OZ passing, pass-heavy, not huge shot volume
+        OZPassShare >= 0.35
+            && PassShotRatio >= 1.3
+            && Passes >= 30
+            && Shots < Passes,
+        "OZ Distributor",
+
+        -- 3) Transition Carrier: lots of entries per game
+        ZoneEntriesPG >= 5
+            && ZoneEntriesTotal >= 25,
+        "Transition Carrier",
+
+        -- 4) Primary PK Handler: strong defensive reads, low-ish turnovers
+        DefReadsPG >= 4
+            && Turnovers <= 6,
+        "Primary PK Handler",
+
+        -- 5) High-Risk Creator: lots of entries but also higher turnovers
+        ZoneEntriesPG >= 4
+            && Turnovers >= 10,
+        "High-Risk Creator",
+
+        -- 6) Two-Way Reliability: okay entries + okay D + controlled turnovers
+        ZoneEntriesPG >= 3
+            && DefReadsPG >= 3
+            && Turnovers <= 10,
+        "Two-Way Reliability",
+
+        -- Fallback if nothing matches
+        "Undefined Role"
+    )
+)
+
+
+
+
+
+
+Role Archetype =
 VAR Shots              = [Total Shots]
 VAR Passes             = [Total Passes]
 VAR ZoneEntriesPG      = [Zone Entries per game]
