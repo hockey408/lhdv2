@@ -1,3 +1,107 @@
+New RC Exposure (Latest) :=
+VAR lm = [Latest Month]
+VAR pm = [Prior Month]
+
+// RCs that exist in latest month
+VAR Rc_Latest =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = lm,
+        RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+    )
+
+// RCs that existed in prior month
+VAR Rc_Prior =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = pm,
+        RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+    )
+
+// RCs that are new in the latest month
+VAR Rc_New = EXCEPT ( Rc_Latest, Rc_Prior )
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[Actual] ),
+    RC_Code_Model_Base[month_end] = lm,
+    RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio",
+    TREATAS ( Rc_New, RC_Code_Model_Base[RC_CODE] )
+)
+
+Closed RC Exposure (Prior) :=
+VAR lm = [Latest Month]
+VAR pm = [Prior Month]
+
+VAR Rc_Latest =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = lm,
+        RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+    )
+
+VAR Rc_Prior =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = pm,
+        RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+    )
+
+// RCs that disappeared
+VAR Rc_Closed = EXCEPT ( Rc_Prior, Rc_Latest )
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[Actual] ),
+    RC_Code_Model_Base[month_end] = pm,
+    RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio",
+    TREATAS ( Rc_Closed, RC_Code_Model_Base[RC_CODE] )
+)
+
+
+Continuing RC Exposure Change :=
+VAR tot_latest = [Total Exposure (Latest)]
+VAR tot_prior  = [Total Exposure (Prior)]
+VAR new_exp    = [New RC Exposure (Latest)]
+VAR closed_exp = [Closed RC Exposure (Prior)]
+RETURN
+    ( tot_latest - new_exp )
+    - ( tot_prior  - closed_exp )
+
+Waterfall_Steps =
+DATATABLE (
+    "Step", STRING,
+    "StepOrder", INTEGER,
+    {
+        { "Previous Exposure", 1 },
+        { "Closed RCs",        2 },
+        { "New RCs",           3 },
+        { "Continuing Change", 4 },
+        { "Current Exposure",  5 }
+    }
+)
+
+
+Waterfall Amount :=
+VAR step = SELECTEDVALUE ( Waterfall_Steps[Step] )
+RETURN
+SWITCH (
+    TRUE (),
+    step = "Previous Exposure", [Total Exposure (Prior)],
+    step = "Closed RCs",        - [Closed RC Exposure (Prior)],      -- negative
+    step = "New RCs",             [New RC Exposure (Latest)],        -- positive
+    step = "Continuing Change",   [Continuing RC Exposure Change],   -- can be +/- 
+    step = "Current Exposure",    [Total Exposure (Latest)],
+    BLANK ()
+)
+
+
+
+
+
+
+
+
+
+
 Exec Summary – Top Driver Narrative :=
 VAR lm = [Latest Month]
 
