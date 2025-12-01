@@ -1,3 +1,59 @@
+Exec Summary – Top Driver Narrative :=
+VAR lm = [Latest Month]
+
+VAR t =
+    ADDCOLUMNS (
+        SUMMARIZE (
+            FILTER (
+                RC_Code_Model_Base,
+                RC_Code_Model_Base[month_end] = lm
+                    && RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"   -- <- filter out roll-up
+            ),
+            RC_Code_Model_Base[RC_DESCRIPTION],
+            RC_Code_Model_Base[RC_CODE]
+        ),
+        "abs_resid",
+            CALCULATE (
+                SUM ( RC_Code_Model_Base[AbsResid] ),
+                RC_Code_Model_Base[month_end] = lm
+            ),
+        "resid_signed",
+            CALCULATE (
+                SUM ( RC_Code_Model_Base[Resid] ),
+                RC_Code_Model_Base[month_end] = lm
+            )
+    )
+
+VAR top_row =
+    TOPN ( 1, t, [abs_resid], DESC )
+
+VAR top_rc   = MAXX ( top_row, RC_Code_Model_Base[RC_DESCRIPTION] )
+VAR top_abs  = MAXX ( top_row, [abs_resid] )
+VAR top_res  = MAXX ( top_row, [resid_signed] )
+
+VAR dir_word =
+    SWITCH (
+        TRUE (),
+        top_res > 0, "above the model forecast",
+        top_res < 0, "below the model forecast",
+        "in line with the model"
+    )
+
+RETURN
+IF (
+    ISBLANK ( top_rc ),
+    BLANK (),
+    "The largest modeled variance is in "
+        & top_rc & ", with a "
+        & FORMAT ( top_abs, "$#,0,,.00""B""" )
+        & " absolute residual, "
+        & dir_word & " this month."
+)
+
+
+
+
+
 Latest Month :=
 CALCULATE (
     MAX ( RC_Code_Model_Base[month_end] ),
