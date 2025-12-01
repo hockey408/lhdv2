@@ -2,6 +2,41 @@ New RC Exposure (Latest) :=
 VAR lm = [Latest Month]
 VAR pm = [Prior Month]
 
+-- RCs that exist in latest month
+VAR RCs_Latest =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = lm
+    )
+
+-- RCs that existed in prior month
+VAR RCs_Prior =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = pm
+    )
+
+-- New RCs = in latest, not in prior
+VAR NewRCs =
+    EXCEPT ( RCs_Latest, RCs_Prior )
+
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[Actual] ),
+    RC_Code_Model_Base[month_end] = lm,
+    KEEPFILTERS ( NewRCs ),
+    RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+)
+
+
+
+
+
+
+New RC Exposure (Latest) :=
+VAR lm = [Latest Month]
+VAR pm = [Prior Month]
+
 // RCs that exist in latest month
 VAR Rc_Latest =
     CALCULATETABLE (
