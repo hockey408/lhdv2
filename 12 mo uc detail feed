@@ -1,3 +1,103 @@
+RC Count (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( RC_Code_Model_Base[RC_CODE] ),
+    RC_Code_Model_Base[month_end] = lm,
+    RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+)
+
+RC Count (Prior) :=
+VAR pm = [Prior Month]
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( RC_Code_Model_Base[RC_CODE] ),
+    RC_Code_Model_Base[month_end] = pm,
+    RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+)
+
+New RC Count (Latest) :=
+VAR lm = [Latest Month]
+VAR pm = [Prior Month]
+
+VAR RCs_Latest =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = lm,
+        RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+    )
+
+VAR RCs_Prior =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = pm,
+        RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+    )
+
+VAR NewRCs =
+    EXCEPT ( RCs_Latest, RCs_Prior )
+
+RETURN
+COUNTROWS ( NewRCs )
+
+Closed RC Count (Prior) :=
+VAR lm = [Latest Month]
+VAR pm = [Prior Month]
+
+VAR RCs_Latest =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = lm,
+        RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+    )
+
+VAR RCs_Prior =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = pm,
+        RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+    )
+
+VAR ClosedRCs =
+    EXCEPT ( RCs_Prior, RCs_Latest )
+
+RETURN
+COUNTROWS ( ClosedRCs )
+
+New RC Exposure (Latest) :=
+VAR lm = [Latest Month]
+VAR pm = [Prior Month]
+
+VAR RCs_Latest =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = lm,
+        RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+    )
+
+VAR RCs_Prior =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = pm,
+        RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+    )
+
+VAR NewRCs =
+    EXCEPT ( RCs_Latest, RCs_Prior )
+
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[Actual] ),
+    RC_Code_Model_Base[month_end] = lm,
+    KEEPFILTERS ( NewRCs )
+)
+
+
+
+
+
+
+
 Waterfall_Steps =
 DATATABLE (
     "Waterfall_Step", STRING,
