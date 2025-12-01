@@ -1,3 +1,39 @@
+Exposure (Latest, by RC) =
+VAR lm = [Latest Month]
+RETURN
+    CALCULATE (
+        SUM ( RC_Code_Model_Base[Actual] ),
+        RC_Code_Model_Base[month_end] = lm
+    )
+
+Persistent Outlier (3of6, Latest) =
+VAR lm = [Latest Month]
+RETURN
+    CALCULATE (
+        MAX ( RC_Code_Model_Base[Persistent_Outlier_3of6] ),
+        RC_Code_Model_Base[month_end] = lm
+    )
+
+Is Material Residual (500M, Latest) =
+VAR lm = [Latest Month]
+RETURN
+    CALCULATE (
+        MAX ( RC_Code_Model_Base[Is_Material_Residual_500M] ),
+        RC_Code_Model_Base[month_end] = lm
+    )
+
+Reason Code (Latest) =
+VAR lm = [Latest Month]
+RETURN
+    CALCULATE (
+        MAX ( RC_Code_Model_Base[Reason_Code] ),
+        RC_Code_Model_Base[month_end] = lm
+    )
+
+
+
+
+
 Portfolio MoM Abs =
 CALCULATE (
     SUM ( RC_Code_Model_Base[MoM_Abs] ),
