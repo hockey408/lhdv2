@@ -1,3 +1,14 @@
+Total Portfolio Actual :=
+CALCULATE (
+    SUM ( RC_Code_Model_Base[Actual] ),
+    RC_Code_Model_Base[RC_CODE] = "Total_Portfolio"
+)
+
+
+
+
+
+
 RC Count (Latest) :=
 VAR lm = [Latest Month]
 RETURN
