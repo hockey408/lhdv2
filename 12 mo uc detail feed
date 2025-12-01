@@ -1,3 +1,28 @@
+RCs Out of PI Band (Latest) :=
+VAR lm =
+    CALCULATE (
+        MAX ( RC_Code_Model_Base[month_end] ),
+        ALL ( RC_Code_Model_Base )
+    )
+
+VAR t =
+    FILTER (
+        RC_Code_Model_Base,
+        RC_Code_Model_Base[month_end] = lm
+            && RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"       -- exclude portfolio roll-up
+            && NOT (
+                RC_Code_Model_Base[Actual] >= RC_Code_Model_Base[PI_Lo]
+                && RC_Code_Model_Base[Actual] <= RC_Code_Model_Base[PI_Hi]
+            )
+    )
+
+RETURN
+COUNTROWS ( t )
+
+
+
+
+
 Total Portfolio Actual :=
 CALCULATE (
     SUM ( RC_Code_Model_Base[Actual] ),
