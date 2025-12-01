@@ -1,3 +1,14 @@
+Residual (Latest, by RC) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[Resid] ),
+    RC_Code_Model_Base[month_end] = lm,
+    RC_Code_Model_Base[Is_Portfolio_Total] <> 1
+)
+
+
+
 Residual Direction (Latest) =
 VAR lm = [Latest Month]
 VAR r =
