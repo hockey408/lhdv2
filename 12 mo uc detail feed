@@ -1,3 +1,82 @@
+Closed RC Exposure (Prior) :=
+VAR lm = [Latest Month]
+VAR pm = [Prior Month]
+
+VAR RCs_Latest =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = lm
+    )
+
+VAR RCs_Prior =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = pm
+    )
+
+VAR ClosedRCs =
+    EXCEPT ( RCs_Prior, RCs_Latest )
+
+VAR ClosedExposure_Prior =
+    CALCULATE (
+        SUM ( RC_Code_Model_Base[Actual] ),
+        RC_Code_Model_Base[month_end] = pm,
+        KEEPFILTERS ( ClosedRCs ),
+        RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+    )
+RETURN
+    - ClosedExposure_Prior
+
+
+Continuing RC Exposure Δ (MoM) :=
+VAR lm = [Latest Month]
+VAR pm = [Prior Month]
+
+VAR RCs_Latest =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = lm
+    )
+
+VAR RCs_Prior =
+    CALCULATETABLE (
+        VALUES ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[month_end] = pm
+    )
+
+VAR ContinuingRCs =
+    INTERSECT ( RCs_Latest, RCs_Prior )
+
+VAR Exp_Latest_Continuing =
+    CALCULATE (
+        SUM ( RC_Code_Model_Base[Actual] ),
+        RC_Code_Model_Base[month_end] = lm,
+        KEEPFILTERS ( ContinuingRCs ),
+        RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+    )
+
+VAR Exp_Prior_Continuing =
+    CALCULATE (
+        SUM ( RC_Code_Model_Base[Actual] ),
+        RC_Code_Model_Base[month_end] = pm,
+        KEEPFILTERS ( ContinuingRCs ),
+        RC_Code_Model_Base[RC_CODE] <> "Total_Portfolio"
+    )
+RETURN
+    Exp_Latest_Continuing - Exp_Prior_Continuing
+
+
+Total Exposure Δ (MoM) :=
+[Total Exposure (Latest)] - [Total Exposure (Prior)]
+
+
+
+
+
+
+
+
+
 New RC Exposure (Latest) :=
 VAR lm = [Latest Month]
 VAR pm = [Prior Month]
