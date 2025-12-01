@@ -1,3 +1,21 @@
+Waterfall_Steps =
+DATATABLE (
+    "Waterfall_Step", STRING,
+    "Step_Order", INTEGER,
+    {
+        { "Previous Balance",        1 },
+        { "New RCs",                 2 },
+        { "Closed RCs",              3 },
+        { "Continuing RC Change",    4 },
+        { "Current Balance",         5 }
+    }
+)
+
+
+
+
+
+
 Waterfall Amount :=
 SWITCH (
     SELECTEDVALUE ( Waterfall_Steps[Waterfall_Step] ),
