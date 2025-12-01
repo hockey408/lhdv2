@@ -1,3 +1,13 @@
+Portfolio MoM Abs =
+CALCULATE (
+    SUM ( RC_Code_Model_Base[MoM_Abs] ),
+    RC_Code_Model_Base[RC_CODE] = "TOTAL_PORTFOLIO"
+)
+
+
+
+
+
 Residual (Latest, by RC) =
 VAR lm = [Latest Month]
 RETURN
