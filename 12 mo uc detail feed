@@ -1,3 +1,25 @@
+Avg Severity (Exposure-Weighted, Latest) = 
+VAR lm = [Latest Month]
+VAR num =
+    CALCULATE (
+        SUMX (
+            RC_Code_Model_Base,
+            RC_Code_Model_Base[Severity_0_100] * RC_Code_Model_Base[Actual]
+        ),
+        RC_Code_Model_Base[month_end] = lm
+    )
+VAR den =
+    CALCULATE (
+        SUM ( RC_Code_Model_Base[Actual] ),
+        RC_Code_Model_Base[month_end] = lm
+    )
+RETURN
+    DIVIDE ( num, den )
+
+
+
+
+
 Total Portfolio Exposure (Latest) =
 VAR lm = [Latest Month]
 RETURN
