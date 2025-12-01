@@ -1,3 +1,15 @@
+Z_Resid (Latest, by RC) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    AVERAGE ( RC_Code_Model_Base[Z_Resid] ),
+    RC_Code_Model_Base[month_end] = lm,
+    RC_Code_Model_Base[Is_Portfolio_Total] <> 1
+)
+
+
+
+
 Exposure (Latest, by RC) =
 VAR lm = [Latest Month]
 RETURN
