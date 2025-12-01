@@ -1,3 +1,17 @@
+Residual Direction (Latest) =
+VAR lm = [Latest Month]
+VAR r =
+    CALCULATE (
+        SUM ( RC_Code_Model_Base[Resid] ),
+        RC_Code_Model_Base[month_end] = lm
+    )
+RETURN
+    IF ( r > 0, "Above model", IF ( r < 0, "Below model", "Near model" ) )
+
+
+
+
+
 Avg Severity (Exposure-Weighted, Latest) = 
 VAR lm = [Latest Month]
 VAR num =
