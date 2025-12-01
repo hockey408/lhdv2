@@ -1,3 +1,18 @@
+Waterfall Amount :=
+SWITCH (
+    SELECTEDVALUE ( Waterfall_Steps[Waterfall_Step] ),
+    "Previous Balance",  [Total Exposure (Prior)],
+    "New RCs",           [New RC Exposure (Latest)],
+    "Closed RCs",        [Closed RC Exposure (Prior)],
+    "Continuing RC Change", [Continuing RC Exposure Δ (MoM)],
+    "Current Balance",   [Total Exposure (Latest)]
+)
+
+
+
+
+
+
 Closed RC Exposure (Prior) :=
 VAR lm = [Latest Month]
 VAR pm = [Prior Month]
