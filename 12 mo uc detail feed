@@ -1,3 +1,194 @@
+Latest Month :=
+CALCULATE (
+    MAX ( RC_Code_Model_Base[month_end] ),
+    ALL ( RC_Code_Model_Base )
+)
+
+Prior Month :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    MAX ( RC_Code_Model_Base[month_end] ),
+    ALL ( RC_Code_Model_Base ),
+    RC_Code_Model_Base[month_end] < lm
+)
+
+Total Exposure (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[Actual] ),
+    RC_Code_Model_Base[month_end] = lm
+)
+
+Total Exposure (Prior) :=
+VAR pm = [Prior Month]
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[Actual] ),
+    RC_Code_Model_Base[month_end] = pm
+)
+
+Total Exposure MoM % :=
+VAR cur = [Total Exposure (Latest)]
+VAR prev = [Total Exposure (Prior)]
+RETURN
+    IF (
+        NOT ISBLANK ( cur ) && NOT ISBLANK ( prev ),
+        DIVIDE ( cur - prev, prev ),
+        BLANK ()
+    )
+
+Abs Residual (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[AbsResid] ),
+    RC_Code_Model_Base[month_end] = lm
+)
+
+High Severity RC Count (Latest) :=
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( RC_Code_Model_Base[RC_DESCRIPTION] ),
+    RC_Code_Model_Base[month_end] = lm,
+    RC_Code_Model_Base[Severity_0_100] >= 70
+)
+
+Exec Summary – Portfolio Narrative :=
+VAR lm       = [Latest Month]
+VAR pm       = [Prior Month]
+VAR exp_cur  = [Total Exposure (Latest)]
+VAR exp_prev = [Total Exposure (Prior)]
+VAR exp_mom  = [Total Exposure MoM %]
+VAR sev_avg  = [Avg Severity (Exposure-Weighted, Latest)]  -- use your existing measure here
+VAR hi_rcs   = [High Severity RC Count (Latest)]
+
+VAR trend_word =
+    SWITCH (
+        TRUE (),
+        exp_mom > 0, "up",
+        exp_mom < 0, "down",
+        "flat"
+    )
+
+VAR sev_bucket =
+    SWITCH (
+        TRUE (),
+        sev_avg >= 80, "elevated",
+        sev_avg >= 50, "moderate",
+        "muted"
+    )
+
+VAR exp_text =
+    IF (
+        NOT ISBLANK ( exp_cur ),
+        FORMAT ( exp_cur, "$#,0,,.00""B""" ),
+        "N/A"
+    )
+
+VAR mom_text =
+    IF (
+        NOT ISBLANK ( exp_mom ),
+        FORMAT ( exp_mom, "0.0%" ),
+        "N/A"
+    )
+
+RETURN
+"At " & FORMAT ( lm, "mmm yyyy" )
+& ", monitorable portfolio exposure is "
+& exp_text
+& " (" & IF ( exp_mom >= 0, "▲ ", "▼ " ) & mom_text & " vs prior month). "
+& "There are " & FORMAT ( hi_rcs, "0" )
+& " high-severity RCs (Severity ≥ 70), and the exposure-weighted severity is "
+& FORMAT ( sev_avg, "0" ) & " (" & sev_bucket & ")."
+
+
+
+Exec Summary – Top Driver Narrative :=
+VAR lm = [Latest Month]
+
+-- Build a per-RC summary table for the latest month
+VAR t =
+    ADDCOLUMNS (
+        SUMMARIZE (
+            FILTER ( RC_Code_Model_Base, RC_Code_Model_Base[month_end] = lm ),
+            RC_Code_Model_Base[RC_DESCRIPTION]
+        ),
+        "abs_resid", [Abs Residual (Latest)],
+        "resid_signed",
+            CALCULATE (
+                SUM ( RC_Code_Model_Base[Resid] ),
+                RC_Code_Model_Base[month_end] = lm
+            )
+    )
+
+VAR top_row =
+    TOPN ( 1, t, [abs_resid], DESC )
+
+VAR top_rc   = MAXX ( top_row, RC_Code_Model_Base[RC_DESCRIPTION] )
+VAR top_abs  = MAXX ( top_row, [abs_resid] )
+VAR top_res  = MAXX ( top_row, [resid_signed] )
+
+VAR dir_word =
+    SWITCH (
+        TRUE (),
+        top_res > 0, "above the model forecast",
+        top_res < 0, "below the model forecast",
+        "in line with the model"
+    )
+
+RETURN
+IF (
+    ISBLANK ( top_rc ),
+    BLANK (),
+    "The largest modeled variance is in "
+        & top_rc & ", with a "
+        & FORMAT ( top_abs, "$#,0,,.00""B""" )
+        & " absolute residual, "
+        & dir_word & " this month."
+)
+Exec Summary – Risk Posture Narrative :=
+VAR sev_avg   = [Avg Severity (Exposure-Weighted, Latest)]
+VAR hi_rcs    = [High Severity RC Count (Latest)]
+VAR lm        = [Latest Month]
+
+VAR sev_word =
+    SWITCH (
+        TRUE (),
+        sev_avg >= 85, "very elevated",
+        sev_avg >= 70, "elevated",
+        sev_avg >= 50, "somewhat elevated",
+        sev_avg >= 30, "moderate",
+        "muted"
+    )
+
+VAR conc_word =
+    SWITCH (
+        TRUE (),
+        hi_rcs >= 15, "highly concentrated across many RCs",
+        hi_rcs >= 7, "spread across several RCs",
+        hi_rcs >= 1, "driven by a small number of RCs",
+        "not concentrated in any RC this month"
+    )
+
+RETURN
+"Overall risk posture in " & FORMAT ( lm, "mmm yyyy" )
+& " is " & sev_word
+& ", with " & FORMAT ( hi_rcs, "0" )
+& " high-severity RCs, "
+& conc_word & "."
+
+
+
+
+
+
+
+
+
+
 Abs Z Residual (Latest, by RC) =
 VAR lm = [Latest Month]
 VAR z =
