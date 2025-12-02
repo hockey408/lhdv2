@@ -1,3 +1,37 @@
+Out of PI Band (Latest) =
+VAR isPortfolioTotal =
+    SELECTEDVALUE ( RC_Code_Model_Base[RC_CODE] ) = "TOTAL_PORTFOLIO"
+
+VAR lm =
+    CALCULATE (
+        MAX ( RC_Code_Model_Base[MONTH_END] ),
+        ALL ( RC_Code_Model_Base )
+    )
+
+VAR act =
+    CALCULATE ( SELECTEDVALUE ( RC_Code_Model_Base[Actual] ), RC_Code_Model_Base[MONTH_END] = lm )
+VAR lo =
+    CALCULATE ( SELECTEDVALUE ( RC_Code_Model_Base[PI_Lo] ),  RC_Code_Model_Base[MONTH_END] = lm )
+VAR hi =
+    CALCULATE ( SELECTEDVALUE ( RC_Code_Model_Base[PI_Hi] ),  RC_Code_Model_Base[MONTH_END] = lm )
+
+RETURN
+IF (
+    isPortfolioTotal,
+    BLANK(),                          -- skip the TOTAL_PORTFOLIO row entirely
+
+    IF (
+        NOT ISBLANK ( act ) && NOT ISBLANK ( lo ) && NOT ISBLANK ( hi ) &&
+        ( act < lo || act > hi ),
+        1,
+        0
+    )
+)
+
+
+
+
+
 RC Variance Tag (Context) =
 VAR act =
     SELECTEDVALUE ( RC_Code_Model_Base[Actual] )
