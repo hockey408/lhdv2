@@ -1,3 +1,23 @@
+Dim_Month =
+VAR StartDate = DATE(2015,1,1)
+VAR EndDate   = TODAY() + 365
+RETURN
+ADDCOLUMNS (
+    SUMMARIZE (
+        CALENDAR ( StartDate, EndDate ),
+        EOMONTH ( [Date], 0 ),
+        "Month_End", EOMONTH ( [Date], 0 )
+    ),
+    "Year", YEAR ( [Month_End] ),
+    "MonthNum", MONTH ( [Month_End] ),
+    "MonthName", FORMAT ( [Month_End], "MMM" ),
+    "YearMonth", FORMAT ( [Month_End], "YYYY-MM" ),
+    "Quarter", "Q" & FORMAT ( [Month_End], "Q" )
+)
+
+
+
+
 Dim_Date =
 VAR StartDate = DATE(2015,1,1)
 VAR EndDate   = TODAY() + 365   -- 1 year future buffer
