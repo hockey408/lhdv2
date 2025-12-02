@@ -1,3 +1,89 @@
+RC Variance Tag (Context) =
+VAR act =
+    SELECTEDVALUE ( RC_Code_Model_Base[Actual] )
+VAR fc =
+    SELECTEDVALUE ( RC_Code_Model_Base[Forecast_Selected] )
+VAR resid =
+    SELECTEDVALUE ( RC_Code_Model_Base[Resid] )
+VAR absResid =
+    SELECTEDVALUE ( RC_Code_Model_Base[AbsResid] )
+VAR momAbs =
+    SELECTEDVALUE ( RC_Code_Model_Base[MoM_Abs] )
+VAR momPct =
+    SELECTEDVALUE ( RC_Code_Model_Base[MoM_Pct_Abs] )
+VAR sev =
+    SELECTEDVALUE ( RC_Code_Model_Base[Severity_0_100] )
+VAR zRes =
+    SELECTEDVALUE ( RC_Code_Model_Base[Z_Resid] )
+VAR zMomAbs =
+    SELECTEDVALUE ( RC_Code_Model_Base[Z_MoM_Abs] )
+VAR loPI =
+    SELECTEDVALUE ( RC_Code_Model_Base[PI_Lo] )
+VAR hiPI =
+    SELECTEDVALUE ( RC_Code_Model_Base[PI_Hi] )
+
+VAR outPIFlag =
+    NOT ISBLANK ( act )
+        && NOT ISBLANK ( loPI )
+        && NOT ISBLANK ( hiPI )
+        && ( act < loPI || act > hiPI )
+
+VAR bigResid =
+    ABS ( resid ) >= 500000000    -- ≥ $500M
+VAR medResid =
+    ABS ( resid ) >= 200000000    -- ≥ $200M
+VAR bigMoM =
+    ABS ( momAbs ) >= 500000000   -- ≥ $500M MoM
+VAR bigMoMPct =
+    momPct >= 0.05                -- ≥ 5% MoM change
+VAR highZRes =
+    ABS ( zRes ) >= 2.5
+VAR highZMom =
+    ABS ( zMomAbs ) >= 2.5
+
+RETURN
+IF (
+    ISBLANK ( act ),
+    BLANK (),
+
+    SWITCH (
+        TRUE (),
+
+        -- 🔴 ALWAYS HANDLE OUT-OF-PI FIRST
+        outPIFlag && bigResid,
+            "Outside PI – large structural shift",
+
+        outPIFlag && bigMoM,
+            "Outside PI – large MoM swing",
+
+        outPIFlag,
+            "Outside PI – mild breach",
+
+        -- 🟠 Still inside PI but weird statistically / high severity
+        highZRes && sev >= 80,
+            "Persistent model breakdown",
+
+        bigMoM && highZMom,
+            "Unusual MoM movement",
+
+        sev >= 80,
+            "High severity but within PI",
+
+        medResid || bigMoMPct,
+            "Moderate variance – monitor",
+
+        TRUE,
+            "Within expected range"
+    )
+)
+
+
+
+
+
+
+
+
 RC Drilldown Narrative =
 VAR hasMonth =
     HASONEVALUE ( RC_Code_Model_Base[MONTH_END] )
