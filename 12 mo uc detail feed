@@ -1,3 +1,115 @@
+R2 (Context) =
+VAR meanY =
+    AVERAGE ( RC_Code_Model_Base[Actual] )
+VAR ss_tot =
+    SUMX (
+        RC_Code_Model_Base,
+        POWER ( RC_Code_Model_Base[Actual] - meanY, 2 )
+    )
+VAR ss_res =
+    SUMX (
+        RC_Code_Model_Base,
+        POWER ( RC_Code_Model_Base[Actual] - RC_Code_Model_Base[Forecast_Selected], 2 )
+    )
+RETURN
+IF (
+    ss_tot = 0 || ISBLANK ( ss_tot ),
+    BLANK (),
+    1 - DIVIDE ( ss_res, ss_tot )
+)
+
+
+RMSE (Context) =
+VAR n =
+    COUNTROWS ( RC_Code_Model_Base )
+VAR mse =
+    DIVIDE (
+        SUMX (
+            RC_Code_Model_Base,
+            POWER ( RC_Code_Model_Base[Actual] - RC_Code_Model_Base[Forecast_Selected], 2 )
+        ),
+        n
+    )
+RETURN
+IF ( n = 0, BLANK (), SQRT ( mse ) )
+
+
+Latest Month =
+CALCULATE (
+    MAX ( RC_Code_Model_Base[MONTH_END] ),
+    ALL ( RC_Code_Model_Base )
+)
+
+Portfolio R2 (Latest, Monitorable) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    [R2 (Context)],
+    RC_Code_Model_Base[MONTH_END] = lm,
+    RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+    -- If you have a monitorable flag column, use this:
+    -- RC_Code_Model_Base[Monitorable_Flag] = 1
+    -- Or, if it's a measure, rely on a page filter/slicer for Monitorable = 1
+    ALLSELECTED ( RC_Code_Model_Base )
+)
+
+
+Median R2 (Latest, RC-level) =
+VAR lm = [Latest Month]
+VAR t =
+    SUMMARIZE (
+        FILTER (
+            RC_Code_Model_Base,
+            RC_Code_Model_Base[MONTH_END] = lm
+                && RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO"
+        ),
+        RC_Code_Model_Base[RC_CODE],
+        "R2_RC", [R2 (Context)]
+    )
+RETURN
+MEDIANX ( t, [R2_RC] )
+
+RC Count – Poor Fit (Latest) =
+VAR lm = [Latest Month]
+VAR t =
+    SUMMARIZE (
+        FILTER (
+            RC_Code_Model_Base,
+            RC_Code_Model_Base[MONTH_END] = lm
+                && RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO"
+        ),
+        RC_Code_Model_Base[RC_CODE],
+        "R2_RC", [R2 (Context)]
+    )
+RETURN
+COUNTROWS ( FILTER ( t, [R2_RC] < 0 ) )
+
+
+
+Good-Fit Exposure % (Latest) =
+VAR lm = [Latest Month]
+VAR t =
+    SUMMARIZE (
+        FILTER (
+            RC_Code_Model_Base,
+            RC_Code_Model_Base[MONTH_END] = lm
+                && RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO"
+        ),
+        RC_Code_Model_Base[RC_CODE],
+        "R2_RC", [R2 (Context)],
+        "Exp_RC", SUM ( RC_Code_Model_Base[Actual] )
+    )
+VAR goodExp =
+    SUMX ( FILTER ( t, [R2_RC] >= 0.7 ), [Exp_RC] )
+VAR totExp =
+    SUMX ( t, [Exp_RC] )
+RETURN
+DIVIDE ( goodExp, totExp )
+
+
+
+
+
 Out of PI Band (Latest) =
 VAR isPortfolioTotal =
     SELECTEDVALUE ( RC_Code_Model_Base[RC_CODE] ) = "TOTAL_PORTFOLIO"
