@@ -1,3 +1,113 @@
+RC Variance Risk Score :=
+VAR Var        = [RC MoM Variance]              -- e.g. current - prior
+VAR VarAbs     = ABS ( Var )
+VAR Resid      = [RC Residual]                  -- unexplained portion
+VAR ResidAbs   = ABS ( Resid )
+VAR PriorBal   = [RC Prior Month Balance]       -- or prior EOP exposure
+
+VAR PctVar =
+    DIVIDE ( Var, PriorBal )                    -- MoM variance as % of prior
+VAR PctVarAbs =
+    ABS ( PctVar )
+
+VAR ResidShare =
+    IF ( VarAbs = 0, 0, ResidAbs / VarAbs )     -- 0 = fully explained, 1 = fully unexplained
+
+-- Normalize variance size: 0–2% → 0–1 (cap at 2%)
+VAR PctVarScore =
+    MIN ( 1.0, PctVarAbs / 0.02 )
+
+-- Residual share is already 0–1
+VAR ResidScore =
+    MIN ( 1.0, ResidShare )
+
+RETURN
+    ROUND ( 100 * ( 0.6 * ResidScore + 0.4 * PctVarScore ), 0 )
+
+
+RC Variance Tag :=
+VAR Var        = [RC MoM Variance]
+VAR VarAbs     = ABS ( Var )
+VAR Resid      = [RC Residual]
+VAR ResidAbs   = ABS ( Resid )
+VAR PriorBal   = [RC Prior Month Balance]
+
+VAR PctVar =
+    DIVIDE ( Var, PriorBal )
+VAR PctVarAbs =
+    ABS ( PctVar )
+
+VAR ResidShare =
+    IF ( VarAbs = 0, 0, ResidAbs / VarAbs )
+
+VAR DirectionLabel =
+    SWITCH (
+        TRUE (),
+        Var > 0, "Increase",
+        Var < 0, "Decrease",
+        "Flat"
+    )
+RETURN
+    SWITCH (
+        TRUE (),
+
+        -- Very small movement + low residual → noise
+        PctVarAbs < 0.002 && ResidShare < 0.30,
+            "Stable / Noise",
+
+        -- Movement mostly explained by modeled drivers
+        PctVarAbs >= 0.002 && ResidShare < 0.30,
+            "Explained " & DirectionLabel,
+
+        -- Big move + high residual → high-risk
+        PctVarAbs >= 0.01 && ResidShare >= 0.50,
+            "High-Risk " & DirectionLabel,
+
+        -- Medium/large move, mostly unexplained
+        PctVarAbs >= 0.002 && ResidShare >= 0.70,
+            "Unexplained " & DirectionLabel,
+
+        -- In-between zone
+        ResidShare >= 0.30 && ResidShare < 0.70,
+            "Partially Explained " & DirectionLabel,
+
+        -- Fallback
+            "Mixed / Review"
+    )
+
+
+
+RC Variance Narrative :=
+VAR Var        = [RC MoM Variance]
+VAR PriorBal   = [RC Prior Month Balance]
+VAR Resid      = [RC Residual]
+VAR VarAbs     = ABS ( Var )
+VAR ResidAbs   = ABS ( Resid )
+
+VAR PctVar =
+    DIVIDE ( Var, PriorBal )
+
+VAR ResidShare =
+    IF ( VarAbs = 0, 0, ResidAbs / VarAbs )
+
+VAR Tag =
+    [RC Variance Tag]
+
+RETURN
+    "MoM variance of "
+        & FORMAT ( Var, "#,##0" )
+        & " ("
+        & FORMAT ( PctVar, "0.0%" )
+        & "), with ~"
+        & FORMAT ( ResidShare, "0%" )
+        & " unexplained. Tag: "
+        & Tag
+
+
+
+
+
+
 Out of PI Band (Latest) =
 VAR rc =
     SELECTEDVALUE ( RC_Code_Model_Base[RC_DESCRIPTION] )
