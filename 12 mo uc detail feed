@@ -1,3 +1,211 @@
+RC Drilldown Narrative =
+VAR hasMonth =
+    HASONEVALUE ( RC_Code_Model_Base[MONTH_END] )
+VAR rc_desc =
+    SELECTEDVALUE ( RC_Code_Model_Base[RC_DESCRIPTION] )
+VAR me =
+    SELECTEDVALUE ( RC_Code_Model_Base[MONTH_END] )
+
+VAR act =
+    SELECTEDVALUE ( RC_Code_Model_Base[Actual] )
+VAR fc =
+    SELECTEDVALUE ( RC_Code_Model_Base[Forecast_Selected] )
+VAR resid =
+    SELECTEDVALUE ( RC_Code_Model_Base[Resid] )
+VAR absResid =
+    SELECTEDVALUE ( RC_Code_Model_Base[AbsResid] )
+
+VAR momAbs =
+    SELECTEDVALUE ( RC_Code_Model_Base[MoM_Abs] )
+VAR momPct =
+    SELECTEDVALUE ( RC_Code_Model_Base[MoM_Pct_Abs] )
+
+VAR sev =
+    SELECTEDVALUE ( RC_Code_Model_Base[Severity_0_100] )
+VAR zRes =
+    SELECTEDVALUE ( RC_Code_Model_Base[Z_Resid] )
+VAR zMomAbs =
+    SELECTEDVALUE ( RC_Code_Model_Base[Z_MoM_Abs] )
+
+VAR loPI =
+    SELECTEDVALUE ( RC_Code_Model_Base[PI_Lo] )
+VAR hiPI =
+    SELECTEDVALUE ( RC_Code_Model_Base[PI_Hi] )
+
+VAR outPIFlag =
+    IF (
+        NOT ISBLANK ( act )
+            && NOT ISBLANK ( loPI )
+            && NOT ISBLANK ( hiPI )
+            && ( act < loPI || act > hiPI ),
+        TRUE (),
+        FALSE ()
+    )
+
+VAR residDirTxt =
+    SWITCH (
+        TRUE (),
+        resid > 0, "above forecast",
+        resid < 0, "below forecast",
+        "in line with forecast"
+    )
+
+VAR piTxt =
+    IF (
+        outPIFlag,
+        "outside the 95% prediction band",
+        "within the 95% prediction band"
+    )
+
+VAR sevTxt =
+    SWITCH (
+        TRUE (),
+        sev >= 90, "very high severity",
+        sev >= 70, "high severity",
+        sev >= 40, "moderate severity",
+        sev >  0,  "low severity",
+        "no material anomaly"
+    )
+
+VAR momTxt =
+    IF (
+        ISBLANK ( momAbs ),
+        "MoM movement not available",
+        "MoM change of "
+            & FORMAT ( momAbs / 1000000, "$0.0B" )
+            & " ("
+            & FORMAT ( momPct, "0.0%" )
+            & ")"
+    )
+
+RETURN
+IF (
+    NOT hasMonth || ISBLANK ( act ),
+    "Select a single month and RC to see a variance summary.",
+    rc_desc & " — " & FORMAT ( me, "MMM yyyy" ) & ": "
+        & "Actual "
+        & FORMAT ( act / 1000000, "$0.0B" )
+        & " vs forecast "
+        & FORMAT ( fc / 1000000, "$0.0B" )
+        & " (residual "
+        & FORMAT ( resid / 1000000, "$0.0B" )
+        & " "
+        & residDirTxt
+        & "). "
+        & momTxt & ". "
+        & "Severity "
+        & FORMAT ( sev, "0" )
+        & " ("
+        & sevTxt
+        & "), "
+        & "Z(Residual) = "
+        & FORMAT ( zRes, "0.0" )
+        & ", Z(MoM) = "
+        & FORMAT ( zMomAbs, "0.0" )
+        & ", "
+        & piTxt
+        & "."
+)
+
+
+RC Variance Tag (Context) =
+VAR act =
+    SELECTEDVALUE ( RC_Code_Model_Base[Actual] )
+VAR fc =
+    SELECTEDVALUE ( RC_Code_Model_Base[Forecast_Selected] )
+VAR resid =
+    SELECTEDVALUE ( RC_Code_Model_Base[Resid] )
+VAR absResid =
+    SELECTEDVALUE ( RC_Code_Model_Base[AbsResid] )
+VAR momAbs =
+    SELECTEDVALUE ( RC_Code_Model_Base[MoM_Abs] )
+VAR momPct =
+    SELECTEDVALUE ( RC_Code_Model_Base[MoM_Pct_Abs] )
+VAR sev =
+    SELECTEDVALUE ( RC_Code_Model_Base[Severity_0_100] )
+VAR zRes =
+    SELECTEDVALUE ( RC_Code_Model_Base[Z_Resid] )
+VAR zMomAbs =
+    SELECTEDVALUE ( RC_Code_Model_Base[Z_MoM_Abs] )
+VAR loPI =
+    SELECTEDVALUE ( RC_Code_Model_Base[PI_Lo] )
+VAR hiPI =
+    SELECTEDVALUE ( RC_Code_Model_Base[PI_Hi] )
+
+VAR outPIFlag =
+    IF (
+        NOT ISBLANK ( act )
+            && NOT ISBLANK ( loPI )
+            && NOT ISBLANK ( hiPI )
+            && ( act < loPI || act > hiPI ),
+        TRUE (),
+        FALSE ()
+    )
+
+VAR bigResid :=
+    ABS ( resid ) >= 500000000        -- ≥ $500M
+VAR medResid :=
+    ABS ( resid ) >= 200000000        -- ≥ $200M
+VAR bigMoM :=
+    ABS ( momAbs ) >= 500000000       -- ≥ $500M MoM
+VAR bigMoMPct :=
+    momPct >= 0.05                    -- ≥ 5% MoM change
+VAR highZRes :=
+    ABS ( zRes ) >= 2.5
+VAR highZMom :=
+    ABS ( zMomAbs ) >= 2.5
+
+RETURN
+IF (
+    ISBLANK ( act ),
+    BLANK (),
+    SWITCH (
+        TRUE (),
+
+        outPIFlag && bigResid,
+            "Outside PI – large structural shift",
+
+        outPIFlag && bigMoM,
+            "Outside PI – large MoM swing",
+
+        highZRes && sev >= 80,
+            "Persistent model breakdown",
+
+        bigMoM && highZMom,
+            "Unusual MoM movement",
+
+        sev >= 80,
+            "High severity but within PI",
+
+        medResid || bigMoMPct,
+            "Moderate variance – monitor",
+
+        TRUE,
+            "Within expected range"
+    )
+)
+
+
+RC Variance Tag (Latest) =
+VAR lm =
+    CALCULATE (
+        MAX ( RC_Code_Model_Base[MONTH_END] ),
+        ALL ( RC_Code_Model_Base )
+    )
+RETURN
+CALCULATE (
+    [RC Variance Tag (Context)],
+    RC_Code_Model_Base[MONTH_END] = lm
+)
+
+
+
+
+
+
+
+
+
 RC Variance Risk Score :=
 VAR Var        = [RC MoM Variance]              -- e.g. current - prior
 VAR VarAbs     = ABS ( Var )
