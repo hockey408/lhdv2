@@ -1,3 +1,33 @@
+MetricDefinitions =
+DATATABLE (
+    "MetricKey", STRING,
+    "MetricLabel", STRING,
+    "Definition", STRING,
+    {
+        { "TotalShots", "Total Shots",
+          "Total number of all shot attempts taken by the player." },
+
+        { "TotalPasses", "Total Passes",
+          "Total number of passes attempted across all zones." },
+
+        { "OZPasses", "OZ Passes",
+          "Passes completed inside the offensive zone; indicates offensive playmaking involvement." },
+
+        { "ZoneEntriesPG", "Zone Entries per Game",
+          "Total offensive zone entries divided by games played; measures how often the player drives transition." },
+
+        { "DefReadsPG", "Defensive Reads per Game",
+          "Count of defensive decisions that disrupt opponent plays (stick checks, slot coverage, lane closures, rush gap reads, etc.) per game." },
+
+        { "Turnovers", "Turnovers",
+          "Number of times the player loses possession due to a mistake (giveaways, failed decisions, forced errors)." }
+    }
+)
+
+
+
+
+
 R2 (Context) =
 VAR meanY =
     AVERAGE ( RC_Code_Model_Base[Actual] )
