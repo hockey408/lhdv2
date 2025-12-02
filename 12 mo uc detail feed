@@ -1,3 +1,100 @@
+Abs Residual (12M, Monitorable) =
+VAR lm   = [Latest Month]
+VAR start = [Last 12M Start]
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[AbsResid] ),
+    RC_Code_Model_Base[month_end] >= start,
+    RC_Code_Model_Base[month_end] <= lm,
+    RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+    [Monitorable_Flag] = 1
+)
+
+Exposure (12M, Monitorable) =
+VAR lm   = [Latest Month]
+VAR start = [Last 12M Start]
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[Actual] ),
+    RC_Code_Model_Base[month_end] >= start,
+    RC_Code_Model_Base[month_end] <= lm,
+    RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+    [Monitorable_Flag] = 1
+)
+
+Error Ratio (12M, Monitorable) =
+DIVIDE (
+    [Abs Residual (12M, Monitorable)],
+    [Exposure (12M, Monitorable)]
+)
+
+Within PI (Row) =
+VAR act = MAX ( RC_Code_Model_Base[Actual] )
+VAR lo  = MAX ( RC_Code_Model_Base[PI_Lo] )
+VAR hi  = MAX ( RC_Code_Model_Base[PI_Hi] )
+RETURN
+IF (
+    NOT ISBLANK ( act )
+        && NOT ISBLANK ( lo )
+        && NOT ISBLANK ( hi )
+        && act >= lo
+        && act <= hi,
+    1,
+    0
+)
+
+Pct Within PI (12M, Monitorable) =
+VAR lm    = [Latest Month]
+VAR start = [Last 12M Start]
+RETURN
+CALCULATE (
+    AVERAGE ( [Within PI (Row)] ),
+    RC_Code_Model_Base[month_end] >= start,
+    RC_Code_Model_Base[month_end] <= lm,
+    RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+    [Monitorable_Flag] = 1
+)
+
+Abs Residual (Latest, by RC, Monitorable) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[AbsResid] ),
+    RC_Code_Model_Base[month_end] = lm,
+    RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+    [Monitorable_Flag] = 1
+)
+
+Exposure (Latest, by RC, Monitorable) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[Actual] ),
+    RC_Code_Model_Base[month_end] = lm,
+    RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+    [Monitorable_Flag] = 1
+)
+
+
+Persistent Outliers (Count, Latest, Monitorable) =
+VAR lm = [Latest Month]
+RETURN
+CALCULATE (
+    DISTINCTCOUNT ( RC_Code_Model_Base[RC_CODE] ),
+    RC_Code_Model_Base[month_end] = lm,
+    RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+    [Monitorable_Flag] = 1,
+    RC_Code_Model_Base[Persistent_Outlier_3of6] = 1
+)
+
+
+
+
+
+
+
+
+
 Dim_Month =
 VAR StartDate = DATE ( 2015, 1, 1 )
 VAR EndDate   = TODAY () + 365
