@@ -4,6 +4,120 @@ IF OBJECT_ID('tempdb..#CARDS')  IS NOT NULL DROP TABLE #CARDS;
 
 /* Params */
 DECLARE @system NVARCHAR(150);
+DECLARE @current_period DATE = '2025-11-30';
+DECLARE @prior_period   DATE = '2025-10-31';
+
+/* Max RunIDs for CURRENT period */
+DECLARE @current_CLM_RunID INT;
+DECLARE @current_UF_RunID  INT;
+
+SELECT @current_CLM_RunID = MAX(RunID)
+FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY
+WHERE CAST(LoadDate AS DATE) = @current_period;
+
+SELECT @current_UF_RunID = MAX(RunID)
+FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED
+WHERE CAST(LoadDate AS DATE) = @current_period;
+
+/* Cards for system tagging */
+SELECT DISTINCT LOADDT, CUST_LINE_NBR
+INTO #CARDS
+FROM CRDADMPRD.CRDADMPRD.dbo.CDM_CARDS_LOAN
+WHERE CAST(LOADDT AS DATE) IN (@current_period, @prior_period);
+
+/* === Latest row per table, per date & credit line === */
+WITH CLM AS (
+    SELECT
+        CAST(a.LoadDate AS DATE) AS LoadDate,
+        a.CreditLineNumber,
+        a.NetUtilized,
+        a.ApplID,
+        a.RunID,
+        ROW_NUMBER() OVER (
+            PARTITION BY CAST(a.LoadDate AS DATE), a.CreditLineNumber
+            ORDER BY a.RunID DESC
+        ) AS rn
+    FROM CRDLMTUFCALC.dbo.CREDIT_LINE_MONTHLY a
+    WHERE CAST(a.LoadDate AS DATE) IN (@current_period, @prior_period)
+      AND (
+            -- For current month: only the max RunID
+            (CAST(a.LoadDate AS DATE) = @current_period AND a.RunID = @current_CLM_RunID)
+            -- For prior month: keep all RunIDs (we'll pick latest per line via ROW_NUMBER)
+         OR (CAST(a.LoadDate AS DATE) = @prior_period)
+          )
+),
+CLM_Latest AS (
+    SELECT * FROM CLM WHERE rn = 1
+),
+UF AS (
+    SELECT
+        CAST(b.LoadDate AS DATE) AS LoadDate,
+        b.CreditLineNumber,
+        b.SecUnfunded,
+        b.RunID,
+        ROW_NUMBER() OVER (
+            PARTITION BY CAST(b.LoadDate AS DATE), b.CreditLineNumber
+            ORDER BY b.RunID DESC
+        ) AS rn
+    FROM CRDLMTUFCALC.dbo.CALCULATED_UNFUNDED b
+    WHERE CAST(b.LoadDate AS DATE) IN (@current_period, @prior_period)
+      AND (
+            -- For current month: only the max RunID
+            (CAST(b.LoadDate AS DATE) = @current_period AND b.RunID = @current_UF_RunID)
+            -- For prior month: keep all RunIDs (we'll pick latest per line via ROW_NUMBER)
+         OR (CAST(b.LoadDate AS DATE) = @prior_period)
+          )
+),
+UF_Latest AS (
+    SELECT * FROM UF WHERE rn = 1
+)
+
+/* Build flux set (one row per date & credit line) */
+SELECT
+    c.LoadDate,
+    c.CreditLineNumber,
+    (c.NetUtilized + COALESCE(u.SecUnfunded, 0)) AS commitment,
+    c.NetUtilized,
+    COALESCE(u.SecUnfunded, 0) AS SecUnfunded,
+    c.ApplID,
+    @system AS [system]
+INTO #FLUX
+FROM CLM_Latest c
+LEFT JOIN UF_Latest u
+  ON u.LoadDate = c.LoadDate
+ AND u.CreditLineNumber = c.CreditLineNumber;
+
+/* System tagging (date-scoped) */
+UPDATE f
+SET    [system] = 'Cards'
+FROM   #FLUX f
+JOIN   #CARDS c
+  ON   c.CUST_LINE_NBR = f.CreditLineNumber
+ AND   CAST(c.LOADDT AS DATE) = f.LoadDate
+WHERE  f.[system] IS NULL;
+
+UPDATE #FLUX SET [system] = 'CFD'            WHERE ApplID IN ('CF')              AND [system] IS NULL;
+UPDATE #FLUX SET [system] = 'Miser Lines'    WHERE ApplID IN ('ML')              AND [system] IS NULL;
+UPDATE #FLUX SET [system] = 'Miser Mortgage' WHERE ApplID IN ('MO')              AND [system] IS NULL;
+UPDATE #FLUX SET [system] = 'iMX'            WHERE CreditLineNumber LIKE '%iMX%' AND [system] IS NULL;
+UPDATE #FLUX SET [system] = 'CBS'            WHERE ApplID IN ('LN')              AND [system] IS NULL;
+UPDATE #FLUX SET [system] = 'UBS'            WHERE ApplID IN ('LO')              AND [system] IS NULL;
+UPDATE #FLUX SET [system] = 'LJ'             WHERE ApplID IN ('LJ')              AND [system] IS NULL;
+
+/* Results */
+SELECT *
+FROM #FLUX;
+
+
+
+
+
+/* Clean up temp tables */
+IF OBJECT_ID('tempdb..#FLUX')   IS NOT NULL DROP TABLE #FLUX;
+IF OBJECT_ID('tempdb..#CARDS')  IS NOT NULL DROP TABLE #CARDS;
+
+/* Params */
+DECLARE @system NVARCHAR(150);
 DECLARE @current_period DATETIME = '2025-11-30';
 DECLARE @prior_period   DATETIME = '2025-10-31';
 
