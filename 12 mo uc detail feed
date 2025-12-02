@@ -1,3 +1,157 @@
+MetricDefinitions =
+DATATABLE(
+    "MetricKey", STRING,
+    "MetricLabel", STRING,
+    "Definition", STRING,
+{
+    // ─────────────────────────────
+    // Shooting Metrics
+    // ─────────────────────────────
+    { "TotalShots", "Total Shots",
+      "Total number of shot attempts taken by the player (on goal, missed, or blocked depending on source)." },
+
+    { "ShotsPerGame", "Shots per Game",
+      "Total shots divided by games played; measures shot volume normalized for ice time." },
+
+    { "ShotDangerLevel", "Shot Danger Level",
+      "Categorization of shots based on scoring threat: Low = perimeter/blue line, Medium = high circles, High = slot/inner slot. Often used to estimate expected scoring contribution." },
+
+    { "ShotQualityPct", "Shot Quality %",
+      "Percentage of shot attempts taken from high-danger locations. Formula: High-Danger Shots ÷ Total Shots." },
+
+    { "ShotQualityRating", "Shot Quality Rating (xQ)",
+      "Weighted index estimating shot threat: Inner Slot ×1.0 + Slot ×0.6 + High Circle ×0.3 + Blue Line ×0.1." },
+
+    // ─────────────────────────────
+    // Passing Metrics
+    // ─────────────────────────────
+    { "TotalPasses", "Total Passes",
+      "All pass attempts made by the player in any zone." },
+
+    { "CompletedPasses", "Completed Passes",
+      "All successful completed passes made by the player." },
+
+    { "PassCompletionPct", "Pass Completion %",
+      "Completed Passes divided by Total Passes; measures accuracy." },
+
+    { "OZPasses", "OZ Passes",
+      "Passes completed inside the offensive zone, indicating playmaking involvement." },
+
+    { "OZPassShare", "OZ Pass Share",
+      "OZ Passes divided by Total Passes; shows how frequently a player operates in the offensive zone." },
+
+    { "EastWestPassPct", "East-West Pass %",
+      "Percentage of passes that travel laterally through dangerous areas; advanced playmaking metric." },
+
+    // ─────────────────────────────
+    // Transition Metrics
+    // ─────────────────────────────
+    { "ZoneEntriesTotal", "Zone Entries (Total)",
+      "Total number of times the player carried or passed the puck into the offensive zone." },
+
+    { "ZoneEntriesPG", "Zone Entries per Game",
+      "Total offensive-zone entries divided by games played; key indicator of transition ability." },
+
+    { "ControlledEntries", "Controlled Entries",
+      "Entries where the puck carrier maintains possession through the blue line." },
+
+    { "EntrySuccessPct", "Entry Success %",
+      "Controlled Entries divided by Total Entries; shows transition efficiency." },
+
+    { "RushAttempts", "Rush Attempts",
+      "Total rush plays generated with speed through the neutral zone." },
+
+    // ─────────────────────────────
+    // Defensive Metrics
+    // ─────────────────────────────
+    { "DefReads", "Defensive Reads (Total)",
+      "Count of intelligent defensive actions that disrupt opponent play: stick checks, slot coverage reads, lane closures, rush gap control, pressure-induced turnovers, net-front clears." },
+
+    { "DefReadsPG", "Defensive Reads per Game",
+      "Defensive reads divided by games played; measures defensive anticipation." },
+
+    { "Turnovers", "Turnovers",
+      "Total turnovers committed by the player due to poor decisions, forced errors, or failed plays." },
+
+    { "TurnoversPG", "Turnovers per Game",
+      "Total turnovers divided by games played." },
+
+    { "TurnoverRiskIndex", "Turnover Risk Index",
+      "Turnovers divided by Zone Entries; measures risk level during transition play." },
+
+    { "DefImpactScore", "Defensive Impact Score",
+      "Blended metric combining reads, slot coverage, stick checks, and penalty avoidance. Simplified formula: (Defensive Reads ×0.7) – (Turnovers ×0.3)." },
+
+    // ─────────────────────────────
+    // Derived / Blended Metrics
+    // ─────────────────────────────
+    { "PassShotRatio", "Pass–Shot Ratio",
+      "Total Passes divided by Total Shots; indicates pass-first vs shot-first tendencies." },
+
+    { "OZActivationScore", "OZ Activation Score",
+      "Measures offensive zone engagement. Formula: (OZ Pass Share ×0.6) + (Zone Entries per Game ×0.4)." },
+
+    { "TransitionEfficiency", "Transition Efficiency",
+      "Overall carrying efficiency: (Entry Success ×0.7) – (Turnover Risk ×0.3)." },
+
+    { "ConsistencyIndex", "Consistency Index",
+      "1 – (Standard deviation of game-by-game performance ÷ average performance). Higher = more consistent." },
+
+    // ─────────────────────────────
+    // Composite Metrics
+    // ─────────────────────────────
+    { "CompositeAnomalyScore", "Composite Anomaly Score",
+      "Z-score–based anomaly detection blending shooting, entries, defensive reads, and turnovers. Formula: Z(ShotsPG) + Z(EntriesPG) + Z(DefReadsPG) – Z(TurnoversPG)." },
+
+    { "ImpactScore", "Impact Score",
+      "General contribution metric using weighted shooting, transition, and defensive impact components." },
+
+    // ─────────────────────────────
+    // Player Identification & Roles
+    // ─────────────────────────────
+    { "PlayerArchetype", "Player Archetype",
+      "Dynamic role classification based on multiple weighted metrics. Formula structure: IF passing > threshold THEN Distributor; IF entries & speed > threshold THEN Transition Carrier; IF shots > threshold THEN Volume Shooter; IF defensive reads > threshold THEN Defensive Anchor; IF balanced metrics THEN Two-Way Reliability; IF turnovers high + entries high THEN High-Risk Creator." },
+
+    { "PlayerName", "Player Name",
+      "Name selected from slicer." },
+
+    { "PlayerPosition", "Player Position",
+      "Player’s listed position: F, D, C, W." },
+
+    { "Handedness", "Handedness",
+      "Left or right shooting orientation." }
+}
+)
+
+IF Pass-First Behavior (High Pass-Shot Ratio, High OZ Pass Share)
+    → OZ Distributor
+
+IF High Zone Entries per Game + High Entry Success %
+    → Transition Carrier
+
+IF Very High Shots per Game + High Shot Danger Level
+    → Volume Shooter
+
+IF High Defensive Reads per Game + Low Turnovers
+    → Defensive Anchor
+
+IF Moderate contributions across passing, shooting, entries, and defense
+    → Two-Way Reliability
+
+IF High Zone Entries + High Turnovers + Medium Pass-Shot Ratio
+    → High-Risk Creator
+
+IF High Defensive Reads, High PK Reads, Low Entries
+    → Primary PK Handler (future)
+
+
+
+
+
+
+
+
+
 Abs Residual (12M, Monitorable) =
 VAR lm =
     [Latest Month]
