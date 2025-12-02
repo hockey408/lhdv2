@@ -1,3 +1,27 @@
+Dim_Date =
+VAR StartDate = DATE(2015,1,1)
+VAR EndDate   = TODAY() + 365   -- 1 year future buffer
+RETURN
+ADDCOLUMNS (
+    CALENDAR ( StartDate, EndDate ),
+    "Year", YEAR ( [Date] ),
+    "Quarter", "Q" & FORMAT ( [Date], "Q" ),
+    "MonthNum", MONTH ( [Date] ),
+    "MonthName", FORMAT ( [Date], "MMM" ),
+    "MonthName_Long", FORMAT ( [Date], "MMMM" ),
+    "YearMonth", FORMAT ( [Date], "YYYY-MM" ),
+    "Month_End",
+        EOMONTH ( [Date], 0 ),
+    "Is_Month_End?",
+        IF ( [Date] = EOMONTH ( [Date], 0 ), 1, 0 ),
+    "Is_Current_Month",
+        IF ( YEAR([Date]) = YEAR(TODAY()) &&
+             MONTH([Date]) = MONTH(TODAY()), 1, 0 )
+)
+
+
+
+
 R2 By RC (All History) =
 VAR curRC =
     SELECTEDVALUE ( RC_Code_Model_Base[RC_CODE] )
