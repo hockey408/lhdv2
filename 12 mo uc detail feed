@@ -1,3 +1,168 @@
+/* ================= RC Sidecar Movement Decomposition =====================
+   - Input: RC_CODE + current month_end
+   - Compares current vs prior month
+   - Classifies each account's contribution to this RC as:
+        * New to RC
+        * Closed from RC
+        * Transfer In from other RC
+        * Transfer Out to other RC
+        * Continuing – Net Draw
+        * Continuing – Net Paydown
+        * Continuing – No Change
+   - Output: counts + exposure deltas by driver (RC-level summary)
+   ======================================================================== */
+
+WITH
+/* 0) Parameters – EDIT THESE */
+params AS (
+    SELECT
+        -- RC you want to analyze
+        'YOUR_RC_CODE_HERE'::VARCHAR(50) AS p_rc_code,
+        -- Current month_end you want to analyze
+        DATE '2025-09-30'               AS curr_me
+),
+
+/* 1) Determine prior month_end (simple ADD_MONTHS; swap to max(<curr_me) if needed) */
+param_dates AS (
+    SELECT
+        p.p_rc_code,
+        p.curr_me,
+        ADD_MONTHS(p.curr_me, -1)::DATE AS prev_me
+    FROM params p
+),
+
+/* 2) Base snapshot for JUST the two months, all RCs (so we can see transfers) */
+base_two AS (
+    SELECT
+        b.Account_Identifier,
+        CAST(b.END_OF_MONTH_DATE AS DATE)        AS month_end,
+        b.RC_CODE,
+        SUM(b.SOURCE_SYSTEM_BALANCE)::FLOAT8     AS bal
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB b
+    CROSS JOIN param_dates d
+    WHERE b.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+      AND CAST(b.END_OF_MONTH_DATE AS DATE) IN (d.prev_me, d.curr_me)
+    GROUP BY
+        b.Account_Identifier,
+        CAST(b.END_OF_MONTH_DATE AS DATE),
+        b.RC_CODE
+),
+
+/* 3) Pivot each account to prev/curr state across ALL RCs */
+acct_pivot AS (
+    SELECT
+        a.Account_Identifier,
+
+        MAX(CASE WHEN a.month_end = d.prev_me THEN a.RC_CODE END)    AS rc_prev,
+        MAX(CASE WHEN a.month_end = d.curr_me THEN a.RC_CODE END)    AS rc_curr,
+
+        MAX(CASE WHEN a.month_end = d.prev_me THEN a.bal END)::FLOAT8 AS bal_prev,
+        MAX(CASE WHEN a.month_end = d.curr_me THEN a.bal END)::FLOAT8 AS bal_curr
+    FROM base_two a
+    CROSS JOIN param_dates d
+    GROUP BY
+        a.Account_Identifier
+),
+
+/* 4) Focus only on accounts that involve the selected RC in prev and/or curr */
+rc_involved AS (
+    SELECT
+        p.p_rc_code,
+        ap.Account_Identifier,
+        ap.rc_prev,
+        ap.rc_curr,
+        ap.bal_prev,
+        ap.bal_curr
+    FROM acct_pivot ap
+    CROSS JOIN param_dates p
+    WHERE ap.rc_prev = p.p_rc_code
+       OR ap.rc_curr = p.p_rc_code
+),
+
+/* 5) Compute balances from the PERSPECTIVE of the selected RC */
+rc_view AS (
+    SELECT
+        r.Account_Identifier,
+        r.p_rc_code,
+
+        r.rc_prev,
+        r.rc_curr,
+        COALESCE(r.bal_prev,0.0) AS bal_prev_raw,
+        COALESCE(r.bal_curr,0.0) AS bal_curr_raw,
+
+        /* Balance in this RC in prev vs curr (0 if account was in another RC at that time) */
+        CASE WHEN r.rc_prev = r.p_rc_code THEN COALESCE(r.bal_prev,0.0) ELSE 0.0 END AS bal_prev_rc,
+        CASE WHEN r.rc_curr = r.p_rc_code THEN COALESCE(r.bal_curr,0.0) ELSE 0.0 END AS bal_curr_rc
+    FROM rc_involved r
+),
+
+/* 6) Classify driver type for this RC */
+classified AS (
+    SELECT
+        v.Account_Identifier,
+        v.p_rc_code,
+
+        v.rc_prev,
+        v.rc_curr,
+        v.bal_prev_rc,
+        v.bal_curr_rc,
+        (v.bal_curr_rc - v.bal_prev_rc) AS delta_rc,
+
+        /* Counterparty RC for transfers (for optional detail) */
+        CASE
+            WHEN v.rc_prev <> v.p_rc_code AND v.rc_curr = v.p_rc_code THEN v.rc_prev
+            WHEN v.rc_prev = v.p_rc_code AND v.rc_curr <> v.p_rc_code THEN v.rc_curr
+            ELSE NULL
+        END AS counterparty_rc,
+
+        /* Movement classification */
+        CASE
+            WHEN v.rc_prev IS NULL AND v.rc_curr = v.p_rc_code THEN
+                'New to Portfolio into RC'
+
+            WHEN v.rc_prev = v.p_rc_code AND v.rc_curr IS NULL THEN
+                'Closed from Portfolio'
+
+            WHEN v.rc_prev <> v.p_rc_code AND v.rc_prev IS NOT NULL
+                 AND v.rc_curr = v.p_rc_code THEN
+                'Transfer In from Other RC'
+
+            WHEN v.rc_prev = v.p_rc_code
+                 AND (v.rc_curr <> v.p_rc_code OR v.rc_curr IS NULL) THEN
+                'Transfer Out to Other RC'
+
+            WHEN v.rc_prev = v.p_rc_code AND v.rc_curr = v.p_rc_code THEN
+                CASE
+                    WHEN v.bal_curr_rc > v.bal_prev_rc THEN 'Continuing – Net Draw'
+                    WHEN v.bal_curr_rc < v.bal_prev_rc THEN 'Continuing – Net Paydown'
+                    ELSE 'Continuing – No Change'
+                END
+
+            ELSE 'Other / Not Classified'
+        END AS driver_type
+    FROM rc_view v
+)
+
+/* 7) Summary for dashboard: movement by driver_type for this RC */
+SELECT
+    c.p_rc_code              AS RC_CODE,
+    c.driver_type,
+    COUNT(DISTINCT c.Account_Identifier)                     AS account_count,
+    SUM(c.bal_prev_rc)                                       AS exposure_prev_in_RC,
+    SUM(c.bal_curr_rc)                                       AS exposure_curr_in_RC,
+    SUM(c.delta_rc)                                          AS exposure_delta_in_RC
+FROM classified c
+GROUP BY
+    c.p_rc_code,
+    c.driver_type
+ORDER BY
+    c.p_rc_code,
+    driver_type;
+
+
+
+
+
 Hockey Player Analytics Dashboard – Full Meeting Prep Guide
 ==========================================================
 
