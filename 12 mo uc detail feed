@@ -1,3 +1,149 @@
+Hockey Player Analytics Dashboard – Full Meeting Prep Guide
+==========================================================
+
+1. Meeting Structure (20–40 minutes)
+------------------------------------
+Use this as your internal run-of-show:
+
+1. Quick intros & context (2–5 min)
+2. Big-picture: what the dashboard does & who it’s for (3–5 min)
+3. Live walkthrough with 1–2 example players (10–20 min)
+4. Questions + feedback (5–10 min)
+5. Next steps (5 min)
+
+Opening line:
+“This dashboard helps coaches and decision-makers understand HOW a player drives offensive impact beyond box score stats.”
+
+------------------------------------------------------------
+
+2. Core Narrative (Your Story)
+------------------------------
+Use these lines during your intro:
+
+“This dashboard is designed to provide a clear, data-driven picture of a player’s role and offensive impact. It combines volume stats like shots, passes, and zone entries with contextual metrics (OZ vs NZ activity, per-game rates, consistency over time). It helps answer:
+- What does this player actually do on the ice?
+- Where do they create value?
+- How consistent is their impact?
+
+Instead of digging through spreadsheets or watching hours of video first, this gives a fast high-level view and points you toward what’s worth reviewing on film.”
+
+------------------------------------------------------------
+
+3. Click-by-Click Demo Script
+-----------------------------
+
+Step 0 – Set the scene
+“Let me walk through how a coach or analyst might use this on a single player.”
+
+Step 1 – Player Header & Role Archetype
+Explain role behavior:
+- Player name, position, handedness
+- Role archetype based on shot volume, pass volume, zone entries
+Example: “This player is an OZ Distributor — meaning they create offense primarily through passing and facilitation rather than shot volume.”
+
+If the logic isn’t perfect:
+“The role engine is still evolving, but the idea is intuitive grouping to understand how a player tends to drive play.”
+
+Step 2 – Core Metrics Overview
+Walk through your top KPIs:
+- Shots per game
+- Passes per game / OZ passes
+- Zone entries per game
+- Efficiency metrics (if available)
+Script:
+“This gives a quick sense of whether the player drives play or supports it.”
+
+Step 3 – Zone / Action Breakdown
+Show OZ/NZ activity, shot maps, pass maps.
+Example:
+“You can see this player produces significantly more OZ passes than shots — suggesting a play-driver, not a finisher.”
+
+Step 4 – Game Log / Consistency
+If you have game-by-game visuals:
+“This shows whether the player is consistently driving play or has spiky output. Spikes might align with line changes or tactical shifts.”
+
+Step 5 – Player Comparison (optional)
+If available:
+“We can compare two players to quickly identify who drives transition vs who finishes plays.”
+
+Step 6 – Use Cases
+Close the demo with applied examples:
+- Pre-scouting
+- Roster decisions and call-ups
+- Player development tracking
+- Understanding system fit
+
+Ask:
+“How does this align with how you currently evaluate players? What else would be helpful to see here?”
+
+------------------------------------------------------------
+
+4. Smart Questions to Ask Them
+------------------------------
+
+Current Process:
+- “How are you currently evaluating players? Video? Spreadsheets? Third-party tools?”
+- “What are the biggest pain points in that process?”
+
+Decision-Making:
+- “When making lineup or role decisions, what information do you lean on most?”
+- “Do you feel you have enough process metrics like entries/passes, or are you stuck with basic box score stats?”
+
+Tool Fit:
+- “Which view felt most useful?”
+- “Anything missing that you expected to see?”
+- “If you had this for your roster tomorrow, what’s the first thing you’d want to analyze?”
+
+Future Work:
+- “Would you want a version customized to your team’s systems or terminology?”
+- “Who else on your staff would benefit from this?”
+
+------------------------------------------------------------
+
+5. Prep Checklist for Tonight
+-----------------------------
+
+Dashboard Cleanup:
+- Remove or hide unfinished tabs/pages
+- Ensure all slicers work
+- Fix or remove blank visuals and broken measures
+- Clean labeling and consistent formatting
+
+Player Prep:
+- Choose 2–3 players:
+  1. A strong OZ playmaker
+  2. A shooter / finisher
+  3. Optional: a third-line or depth player
+- Pre-select them for smooth demo transitions
+
+Talking Points:
+Write these three points on a physical notepad:
+1. “This tool clarifies HOW a player creates value — not just how many points they have.”
+2. “It’s built for real decisions: lines, matchups, development plans.”
+3. “It can be customized to your team’s exact needs and language.”
+
+Tech Prep:
+- Make sure Power BI loads cleanly
+- Have the PBIX already open before screensharing
+- Close all irrelevant apps/tabs to avoid lag
+- Test screen share if on Zoom/Teams
+
+------------------------------------------------------------
+
+6. Optional Closing Script for the Call
+---------------------------------------
+“I built this to give coaches and analysts a fast, intuitive picture of a player’s impact using process-driven metrics — entries, passes, shot creation, and zone activity. It’s customizable, scalable, and can be adapted to your team’s systems and needs. I’d love to hear what stood out to you and what would make it even more valuable.”
+
+------------------------------------------------------------
+
+End of Prep Guide
+==========================================================
+
+
+
+
+
+
 RCs Out of PI Band (Latest) :=
 VAR lm =
     CALCULATE (
