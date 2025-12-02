@@ -2,6 +2,39 @@ R2 By RC (All History) =
 VAR curRC =
     SELECTEDVALUE ( RC_Code_Model_Base[RC_CODE] )
 
+-- Force: use ALL rows for this RC, not what the visual passes
+VAR t =
+    ADDCOLUMNS (
+        FILTER (
+            ALL ( RC_Code_Model_Base ),
+            RC_Code_Model_Base[RC_CODE] = curRC
+                && RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO"
+        ),
+        "ActualY",   RC_Code_Model_Base[Actual],
+        "ForecastY", RC_Code_Model_Base[Forecast_Selected]
+    )
+
+VAR nRows = COUNTROWS ( t )
+VAR meanY = AVERAGEX ( t, [ActualY] )
+VAR ss_tot = SUMX ( t, POWER ( [ActualY] - meanY, 2 ) )
+VAR ss_res = SUMX ( t, POWER ( [ActualY] - [ForecastY], 2 ) )
+
+RETURN
+IF (
+    nRows <= 1
+        || ss_tot = 0
+        || ISBLANK ( meanY ),
+    BLANK(),
+    1 - DIVIDE ( ss_res, ss_tot )
+)
+
+
+
+
+R2 By RC (All History) =
+VAR curRC =
+    SELECTEDVALUE ( RC_Code_Model_Base[RC_CODE] )
+
 -- Aggregate to RC × Month level
 VAR t =
     ADDCOLUMNS (
