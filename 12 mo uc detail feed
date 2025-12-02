@@ -1,3 +1,42 @@
+Out of PI Band (Latest) =
+VAR rc =
+    SELECTEDVALUE ( RC_Code_Model_Base[RC_DESCRIPTION] )
+VAR rc_code =
+    CALCULATE (
+        SELECTEDVALUE ( RC_Code_Model_Base[RC_CODE] ),
+        RC_Code_Model_Base[RC_DESCRIPTION] = rc
+    )
+VAR lm =
+    CALCULATE ( MAX ( RC_Code_Model_Base[MONTH_END] ), ALL ( RC_Code_Model_Base ) )
+VAR actual_ =
+    CALCULATE (
+        SELECTEDVALUE ( RC_Code_Model_Base[Actual] ),
+        RC_Code_Model_Base[RC_CODE] = rc_code,
+        RC_Code_Model_Base[MONTH_END] = lm
+    )
+VAR lo_ =
+    CALCULATE (
+        SELECTEDVALUE ( RC_Code_Model_Base[PI_Lo] ),
+        RC_Code_Model_Base[RC_CODE] = rc_code,
+        RC_Code_Model_Base[MONTH_END] = lm
+    )
+VAR hi_ =
+    CALCULATE (
+        SELECTEDVALUE ( RC_Code_Model_Base[PI_Hi] ),
+        RC_Code_Model_Base[RC_CODE] = rc_code,
+        RC_Code_Model_Base[MONTH_END] = lm
+    )
+RETURN
+IF (
+    ISBLANK ( actual_ ) || ISBLANK ( lo_ ) || ISBLANK ( hi_ ),
+    BLANK (),
+    IF ( actual_ < lo_ || actual_ > hi_, 1, 0 )
+)
+
+
+
+
+
 /* Clean up temp tables */
 IF OBJECT_ID('tempdb..#FLUX')   IS NOT NULL DROP TABLE #FLUX;
 IF OBJECT_ID('tempdb..#CARDS')  IS NOT NULL DROP TABLE #CARDS;
