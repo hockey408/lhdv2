@@ -1,3 +1,9 @@
+The syntax for 'start' is incorrect. (DAX(VAR lm = [Latest Month]VAR start = [Last 12M Start]RETURNCALCULATE ( SUM ( RC_Code_Model_Base[AbsResid] ), RC_Code_Model_Base[month_end] >= start, RC_Code_Model_Base[month_end] <= lm, RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO", [Monitorable_Flag] = 1))).
+
+
+
+
+
 Abs Residual (12M, Monitorable) =
 VAR lm   = [Latest Month]
 VAR start = [Last 12M Start]
