@@ -1,3 +1,169 @@
+/* ======================= RC ACCOUNT-LEVEL MOVEMENT DRILLDOWN ==========================
+   INPUTS (EDIT IN PARAMS):
+     - p_rc_code : RC to analyze
+     - curr_me   : month-end to compare
+   OUTPUT:
+     Account-level movement classification:
+        * New to RC
+        * Closed from RC
+        * Transfer In from other RC
+        * Transfer Out to other RC
+        * Continuing Draw / Paydown / No Change
+     PLUS account attributes:
+        ACCOUNT_KEY, CUSTOMER, FACILITY, STATUS, NA, COAMT, etc.
+   ===================================================================================== */
+
+WITH
+/* 0) PARAMETERS — EDIT THESE */
+params AS (
+    SELECT
+        'YOUR_RC_CODE_HERE'::VARCHAR(50) AS p_rc_code,
+        DATE '2025-09-30'               AS curr_me
+),
+param_dates AS (
+    SELECT
+        p.*,
+        ADD_MONTHS(p.curr_me, -1)::DATE AS prev_me
+    FROM params p
+),
+
+/* 1) Pull the two months of data (prev + curr) for ALL RCs */
+base AS (
+    SELECT
+        CAST(END_OF_MONTH_DATE AS DATE) AS month_end,
+        RC_CODE,
+        RC_DESCRIPTION,
+        CIS_CUSTOMER_NUMBER,
+        FACILITY_ID,
+        ACCOUNT_IDENTIFIER,
+        ACCOUNT_KEY,
+        ACCOUNT_NAME,
+        NON_ACCRUAL_FLAG,
+        CONTRACT_SOURCE_SYSTEM,
+        SOURCE_SYSTEM_BALANCE::FLOAT8 AS bal,
+        CHARGE_OFF_AMOUNT_MTD::FLOAT8 AS chargeoff_amt_mtd,
+        PROD_HIER_LEVEL_5,
+        STATUS_CODE
+    FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB b
+    CROSS JOIN param_dates d
+    WHERE b.GL_ACCOUNT_HIER_LEVEL_4 = 'Total Loans'
+      AND CAST(b.END_OF_MONTH_DATE AS DATE) IN (d.prev_me, d.curr_me)
+),
+
+/* 2) Pivot each account into prev/curr state */
+acct_pivot AS (
+    SELECT
+        a.ACCOUNT_IDENTIFIER,
+
+        MAX(CASE WHEN a.month_end = d.prev_me THEN a.RC_CODE END) AS rc_prev,
+        MAX(CASE WHEN a.month_end = d.curr_me THEN a.RC_CODE END) AS rc_curr,
+
+        MAX(CASE WHEN a.month_end = d.prev_me THEN a.bal END)::FLOAT8 AS bal_prev,
+        MAX(CASE WHEN a.month_end = d.curr_me THEN a.bal END)::FLOAT8 AS bal_curr,
+
+        /* Bring forward all other metadata (safe because they don't change by month) */
+        MAX(a.ACCOUNT_KEY)             AS ACCOUNT_KEY,
+        MAX(a.CIS_CUSTOMER_NUMBER)     AS CIS_CUSTOMER_NUMBER,
+        MAX(a.FACILITY_ID)             AS FACILITY_ID,
+        MAX(a.ACCOUNT_NAME)            AS ACCOUNT_NAME,
+        MAX(a.NON_ACCRUAL_FLAG)        AS NON_ACCRUAL_FLAG,
+        MAX(a.CONTRACT_SOURCE_SYSTEM)  AS CONTRACT_SOURCE_SYSTEM,
+        MAX(a.PROD_HIER_LEVEL_5)       AS PROD_HIER_LEVEL_5,
+        MAX(a.STATUS_CODE)             AS STATUS_CODE,
+        MAX(a.CHARGE_OFF_AMOUNT_MTD)   AS CHARGE_OFF_AMOUNT_MTD
+    FROM base a
+    CROSS JOIN param_dates d
+    GROUP BY
+        a.ACCOUNT_IDENTIFIER
+),
+
+/* 3) Filter only accounts involved in this RC prev or curr */
+rc_in_scope AS (
+    SELECT
+        ap.*,
+        d.p_rc_code,
+        d.prev_me,
+        d.curr_me
+    FROM acct_pivot ap
+    CROSS JOIN param_dates d
+    WHERE ap.rc_prev = d.p_rc_code
+       OR ap.rc_curr = d.p_rc_code
+),
+
+/* 4) Compute balances from this RC’s perspective */
+rc_view AS (
+    SELECT
+        *,
+        CASE WHEN rc_prev = p_rc_code THEN bal_prev ELSE 0 END AS bal_prev_rc,
+        CASE WHEN rc_curr = p_rc_code THEN bal_curr ELSE 0 END AS bal_curr_rc,
+        (CASE WHEN rc_curr = p_rc_code THEN bal_curr ELSE 0 END
+        - CASE WHEN rc_prev = p_rc_code THEN bal_prev ELSE 0 END) AS delta_rc
+    FROM rc_in_scope
+),
+
+/* 5) Classify the movement driver */
+classified AS (
+    SELECT
+        v.*,
+
+        /* Identify which RC this account came from / went to */
+        CASE
+            WHEN v.rc_prev <> v.p_rc_code AND v.rc_curr = v.p_rc_code THEN v.rc_prev
+            WHEN v.rc_prev = v.p_rc_code AND v.rc_curr <> v.p_rc_code THEN v.rc_curr
+            ELSE NULL
+        END AS counterparty_rc,
+
+        CASE
+            WHEN v.rc_prev IS NULL AND v.rc_curr = v.p_rc_code THEN
+                'New to Portfolio into RC'
+            WHEN v.rc_prev = v.p_rc_code AND v.rc_curr IS NULL THEN
+                'Closed from Portfolio'
+            WHEN v.rc_prev <> v.p_rc_code AND v.rc_prev IS NOT NULL
+                 AND v.rc_curr = v.p_rc_code THEN
+                'Transfer In from Other RC'
+            WHEN v.rc_prev = v.p_rc_code AND (v.rc_curr <> v.p_rc_code OR v.rc_curr IS NULL) THEN
+                'Transfer Out to Other RC'
+            WHEN v.rc_prev = v.p_rc_code AND v.rc_curr = v.p_rc_code THEN
+                CASE
+                    WHEN v.bal_curr_rc > v.bal_prev_rc THEN 'Continuing – Net Draw'
+                    WHEN v.bal_curr_rc < v.bal_prev_rc THEN 'Continuing – Net Paydown'
+                    ELSE 'Continuing – No Change'
+                END
+            ELSE 'Other'
+        END AS driver_type
+    FROM rc_view v
+)
+
+SELECT
+    p_rc_code AS RC_CODE,
+    curr_me   AS MONTH_END,
+    Account_Identifier,
+    ACCOUNT_KEY,
+    CIS_CUSTOMER_NUMBER,
+    FACILITY_ID,
+    ACCOUNT_NAME,
+    NON_ACCRUAL_FLAG,
+    CONTRACT_SOURCE_SYSTEM,
+    PROD_HIER_LEVEL_5,
+    STATUS_CODE,
+    CHARGE_OFF_AMOUNT_MTD,
+
+    rc_prev,
+    rc_curr,
+    counterparty_rc,
+
+    bal_prev_rc,
+    bal_curr_rc,
+    delta_rc,
+
+    driver_type
+FROM classified
+ORDER BY driver_type, delta_rc DESC;
+
+
+
+
+
 /* ================= RC Sidecar Movement Decomposition =====================
    - Input: RC_CODE + current month_end
    - Compares current vs prior month
