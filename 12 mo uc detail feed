@@ -1,3 +1,82 @@
+RadarAxes =
+DATATABLE (
+    "Axis", STRING,
+    {
+        { "Offense" },
+        { "Transition" },
+        { "Defense" },
+        { "Decision-Making" }
+    }
+)
+
+Radar Value :=
+VAR Axis = SELECTEDVALUE ( RadarAxes[Axis] )
+RETURN
+    SWITCH (
+        Axis,
+        "Offense",          [Offense Score],
+        "Transition",       [Transition Score],
+        "Defense",          [Defense Score],
+        "Decision-Making",  [Decision-Making Score],
+        BLANK ()
+    )
+
+Player Summary :=
+VAR Off   = [Offense Score]
+VAR Tran  = [Transition Score]
+VAR Def   = [Defense Score]
+VAR Dec   = [Decision-Making Score]
+VAR Name  = SELECTEDVALUE ( Players[player_name], "This player" )
+
+VAR TopArea =
+    MAXX (
+        {
+            ROW ( "Label", "Offense",         "Score", Off ),
+            ROW ( "Label", "Transition",      "Score", Tran ),
+            ROW ( "Label", "Defense",         "Score", Def ),
+            ROW ( "Label", "Decision-Making", "Score", Dec )
+        },
+        [Score]
+    )
+
+VAR TopLabel = TopArea[Label]
+
+VAR WeakArea =
+    MINX (
+        {
+            ROW ( "Label", "Offense",         "Score", Off ),
+            ROW ( "Label", "Transition",      "Score", Tran ),
+            ROW ( "Label", "Defense",         "Score", Def ),
+            ROW ( "Label", "Decision-Making", "Score", Dec )
+        },
+        [Score]
+    )
+
+VAR WeakLabel = WeakArea[Label]
+
+RETURN
+Name & " currently profiles strongest in "
+    & TopLabel
+    & " and has the most room to grow in "
+    & WeakLabel
+    & "."
+
+
+Coaching Focus :=
+VAR WeakArea = /* reuse WeakArea logic above, or simplify */
+    "Transition"  -- placeholder if you want to hard-code during testing
+RETURN
+"Coaching focus: lean into reps that improve " & WeakArea & "."
+
+
+
+
+
+
+
+
+
+
 Offense Score :=
 VAR ShotsPG =
     [Shots per Game]
