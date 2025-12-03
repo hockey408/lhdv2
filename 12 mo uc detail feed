@@ -1,3 +1,42 @@
+Offense Score :=
+VAR ShotsPG =
+    [Shots per Game]
+
+VAR ShotQual =
+    [Shot Quality %] / 100    -- remove /100 if your measure is already 0–1
+
+VAR OZPassShare =
+    DIVIDE ( [OZ Passes], [Total Passes] )
+
+VAR MaxShotsPG =
+    MAXX ( ALL ( Players ), [Shots per Game] )
+
+VAR MaxShotQual =
+    MAXX ( ALL ( Players ), [Shot Quality %] / 100 )
+
+VAR MaxOZShare =
+    MAXX ( ALL ( Players ), DIVIDE ( [OZ Passes], [Total Passes] ) )
+
+VAR ShotsNorm =
+    DIVIDE ( ShotsPG, MaxShotsPG )
+
+VAR ShotQualNorm =
+    DIVIDE ( ShotQual, MaxShotQual )
+
+VAR OZShareNorm =
+    DIVIDE ( OZPassShare, MaxOZShare )
+
+RETURN
+    100 *
+        ( 0.4 * ShotsNorm
+        + 0.3 * ShotQualNorm
+        + 0.3 * OZShareNorm )
+
+
+
+
+
+
 Shots per Game :=
 DIVIDE ( [Total Shots], [Games Played] )
 
