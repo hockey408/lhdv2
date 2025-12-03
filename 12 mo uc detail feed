@@ -1,3 +1,129 @@
+Latest Month =
+MAX ( RC_Code_Model_Base[month_end] )
+
+Last 12M Start =
+EDATE ( [Latest Month], -11 )
+
+Monitorable_Flag =
+IF ( RC_Code_Model_Base[Severity_0_100] > 0, 1 )
+
+-- =========================
+-- 12M AGGREGATES
+-- =========================
+
+Exposure (12M, Monitorable) =
+VAR lm = [Latest Month]
+VAR startDate = [Last 12M Start]
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[Actual] ),
+    FILTER (
+        ALL ( RC_Code_Model_Base[month_end] ),
+        RC_Code_Model_Base[month_end] >= startDate &&
+        RC_Code_Model_Base[month_end] <= lm
+    ),
+    RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+    [Monitorable_Flag] = 1
+)
+
+Abs Residual (12M, Monitorable) =
+VAR lm = [Latest Month]
+VAR startDate = [Last 12M Start]
+RETURN
+CALCULATE (
+    SUM ( RC_Code_Model_Base[AbsResid] ),
+    FILTER (
+        ALL ( RC_Code_Model_Base[month_end] ),
+        RC_Code_Model_Base[month_end] >= startDate &&
+        RC_Code_Model_Base[month_end] <= lm
+    ),
+    RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+    [Monitorable_Flag] = 1
+)
+
+Error Ratio (12M, Monitorable) =
+DIVIDE (
+    [Abs Residual (12M, Monitorable)],
+    [Exposure (12M, Monitorable)]
+)
+
+-- =========================
+-- WEIGHTED R2 (12M)
+-- =========================
+
+R2 x Exposure (12M, Monitorable) =
+VAR lm = [Latest Month]
+VAR startDate = [Last 12M Start]
+RETURN
+CALCULATE (
+    SUMX (
+        RC_Code_Model_Base,
+        RC_Code_Model_Base[R2_by_Model] * RC_Code_Model_Base[Actual]
+    ),
+    FILTER (
+        ALL ( RC_Code_Model_Base[month_end] ),
+        RC_Code_Model_Base[month_end] >= startDate &&
+        RC_Code_Model_Base[month_end] <= lm
+    ),
+    RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+    [Monitorable_Flag] = 1
+)
+
+Weighted Avg R2 (12M, Monitorable) =
+DIVIDE (
+    [R2 x Exposure (12M, Monitorable)],
+    [Exposure (12M, Monitorable)]
+)
+
+-- =========================
+-- MONTHLY TRENDS
+-- =========================
+
+R2 (Monthly, Monitorable) =
+VAR thisMonth = SELECTEDVALUE ( RC_Code_Model_Base[month_end] )
+VAR num =
+    CALCULATE (
+        SUMX (
+            RC_Code_Model_Base,
+            RC_Code_Model_Base[R2_by_Model] * RC_Code_Model_Base[Actual]
+        ),
+        RC_Code_Model_Base[month_end] = thisMonth,
+        RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+        [Monitorable_Flag] = 1
+    )
+VAR den =
+    CALCULATE (
+        SUM ( RC_Code_Model_Base[Actual] ),
+        RC_Code_Model_Base[month_end] = thisMonth,
+        RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+        [Monitorable_Flag] = 1
+    )
+RETURN
+DIVIDE ( num, den )
+
+Abs Resid (Monthly, Monitorable) =
+CALCULATE (
+    SUM ( RC_Code_Model_Base[AbsResid] ),
+    RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+    [Monitorable_Flag] = 1
+)
+
+Exposure (Monthly, Monitorable) =
+CALCULATE (
+    SUM ( RC_Code_Model_Base[Actual] ),
+    RC_Code_Model_Base[RC_CODE] <> "TOTAL_PORTFOLIO",
+    [Monitorable_Flag] = 1
+)
+
+Error Ratio (Monthly, Monitorable) =
+DIVIDE (
+    [Abs Resid (Monthly, Monitorable)],
+    [Exposure (Monthly, Monitorable)]
+)
+
+
+
+
 MetricDefinitions =
 DATATABLE(
     "MetricKey", STRING,
