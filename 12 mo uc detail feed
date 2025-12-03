@@ -1,3 +1,39 @@
+R2_By_Model =
+VAR meanY =
+    CALCULATE (
+        AVERAGE ( RC_Code_Model_Base[Actual] ),
+        ALLEXCEPT (
+            RC_Code_Model_Base,
+            RC_Code_Model_Base[RC_CODE],
+            RC_Code_Model_Base[Best_Model]
+        )
+    )
+VAR SS_Total =
+    SUMX (
+        RC_Code_Model_Base,
+        VAR y = RC_Code_Model_Base[Actual]
+        RETURN
+            IF ( NOT ISBLANK ( y ), ( y - meanY) ^ 2 )
+    )
+VAR SS_Residual =
+    SUMX (
+        RC_Code_Model_Base,
+        VAR y    = RC_Code_Model_Base[Actual]
+        VAR yhat = RC_Code_Model_Base[Forecast_Selected]
+        RETURN
+            IF ( NOT ISBLANK ( yhat ), ( y - yhat ) ^ 2 )
+    )
+RETURN
+IF (
+    SS_Total <= 0,
+    BLANK(),
+    1 - DIVIDE ( SS_Residual, SS_Total )
+)
+
+
+
+
+
 Latest Month =
 MAX ( RC_Code_Model_Base[month_end] )
 
