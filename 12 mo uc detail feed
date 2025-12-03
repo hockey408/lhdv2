@@ -1,3 +1,127 @@
+Shots per Game :=
+DIVIDE ( [Total Shots], [Games Played] )
+
+Passes per Game :=
+DIVIDE ( [Total Passes], [Games Played] )
+
+Entries per Game :=
+DIVIDE ( [Zone_entries], [Games Played] )
+
+Def Reads per Game :=
+DIVIDE ( [Defensive reads per game], 1 ) 
+-- if you already have "per game" you can just reference it directly,
+-- or replace with DIVIDE( [Defensive Reads], [Games Played] )
+
+Turnovers per Game :=
+DIVIDE ( [Turnovers], [Games Played] )
+
+
+
+Offense Score :=
+VAR ShotsPG      = [Shots per Game]
+VAR ShotQual     = [Shot Quality %]          -- 0–1 or 0–100; I'll assume 0–1
+VAR OZPassShare  = DIVIDE ( [OZ Passes], [Total Passes] )
+
+VAR MaxShotsPG =
+    MAXX ( ALL ( Players ), [Shots per Game] )
+
+VAR MaxShotQual =
+    MAXX ( ALL ( Players ), [Shot Quality %] )
+
+VAR MaxOZShare =
+    MAXX ( ALL ( Players ), DIVIDE ( [OZ Passes], [Total Passes] ) )
+
+VAR ShotsNorm      = DIVIDE ( ShotsPG, MaxShotsPG )
+VAR ShotQualNorm   = DIVIDE ( ShotQual, MaxShotQual )
+VAR OZShareNorm    = DIVIDE ( OZPassShare, MaxOZShare )
+
+RETURN
+    100 *
+    ( 0.4 * ShotsNorm
+    + 0.3 * ShotQualNorm
+    + 0.3 * OZShareNorm )
+
+
+
+Transition Score :=
+VAR EntriesPG      = [Entries per Game]
+VAR EntrySuccess   = [Zone Entry Success %]      -- 0–1 or 0–100
+VAR TO_Risk        = DIVIDE ( [Turnovers], [Zone_entries] )
+
+VAR MaxEntriesPG =
+    MAXX ( ALL ( Players ), [Entries per Game] )
+
+VAR MaxEntrySuccess =
+    MAXX ( ALL ( Players ), [Zone Entry Success %] )
+
+VAR MaxTORisk =
+    MAXX ( ALL ( Players ), TO_Risk )
+
+VAR EntriesNorm     = DIVIDE ( EntriesPG, MaxEntriesPG )
+VAR SuccessNorm     = DIVIDE ( EntrySuccess, MaxEntrySuccess )
+VAR RiskNorm        = DIVIDE ( TO_Risk, MaxTORisk )
+
+RETURN
+    100 *
+    ( 0.45 * EntriesNorm
+    + 0.45 * SuccessNorm
+    + 0.10 * ( 1 - RiskNorm ) )
+
+Defense Score :=
+VAR DefReadsPG = [Def Reads per Game]
+VAR TurnoversPG = [Turnovers per Game]
+
+VAR MaxDefReadsPG =
+    MAXX ( ALL ( Players ), [Def Reads per Game] )
+
+VAR MaxTurnoversPG =
+    MAXX ( ALL ( Players ), [Turnovers per Game] )
+
+VAR DefNorm   = DIVIDE ( DefReadsPG, MaxDefReadsPG )
+VAR TONorm    = DIVIDE ( TurnoversPG, MaxTurnoversPG )
+
+RETURN
+    100 *
+    ( 0.7 * DefNorm
+    + 0.3 * ( 1 - TONorm ) )
+
+Decision-Making Score :=
+VAR PassShot = DIVIDE ( [Total Passes], [Total Shots] )
+VAR TO_PG    = [Turnovers per Game]
+
+VAR MaxPassShot =
+    MAXX ( ALL ( Players ), DIVIDE ( [Total Passes], [Total Shots] ) )
+
+VAR MaxTO_PG =
+    MAXX ( ALL ( Players ), [Turnovers per Game] )
+
+VAR PassShotNorm = DIVIDE ( PassShot, MaxPassShot )
+VAR TONorm       = DIVIDE ( TO_PG, MaxTO_PG )
+
+RETURN
+    100 *
+    ( 0.6 * PassShotNorm
+    + 0.4 * ( 1 - TONorm ) )
+
+Overall IQ Score :=
+DIVIDE (
+    [Offense Score]
+  + [Transition Score]
+  + [Defense Score]
+  + [Decision-Making Score],
+    4
+)
+
+
+
+
+
+
+
+
+
+
+
 /* ================ Query 3: Curr Month Chargeoff (Dynamic) ================ */
 
 WITH latest_curr AS (
