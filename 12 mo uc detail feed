@@ -1,3 +1,58 @@
+/* ================ Query 3: Curr Month Chargeoff (Dynamic) ================ */
+
+WITH latest_curr AS (
+  SELECT MAX(End_of_Month_Date) AS curr_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+),
+params AS (
+  SELECT
+    curr_eom,
+    CURRENT_TIMESTAMP AS query_run_ts
+  FROM latest_curr
+)
+
+SELECT
+  (SELECT query_run_ts FROM params) AS QUERY_RUN_TIMESTAMP,
+  END_OF_MONTH_DATE,
+  CIS_CUSTOMER_NUMBER,
+  ACCOUNT_NAME,
+  CONTRACT_SOURCE_SYSTEM,
+  FACILITY_ID,
+  ACCOUNT_IDENTIFIER,
+  ACCOUNT_KEY,
+  CHARGE_OFF_AMOUNT_MTD,
+  CASE
+    WHEN Contract_Source_System IN ('AL','CU','LN','LO','UU','US','TA','LJ','CF','FRDS-EXCPTN','FRDS_EXCPTN')
+         THEN 'L-SVB'
+    WHEN Contract_Source_System = 'ALL'
+         AND GL_ACCOUNT_CODE IN
+             ('1051872','1061833','1041344','1041211','1041345','1041364','1041210',
+              '1042127','1042213','1042048','1042368','1042408','1042409','1042424',
+              '1100001','1142067','1042886','1043008')
+         THEN 'L-SVB'
+    WHEN Contract_Source_System IN ('ADJ','ALL','ALS','FDR','FISERV','GGSL','GL','LEA','PCFS','PSL','SBO')
+         THEN 'L-FCB'
+    WHEN Contract_Source_System IN ('ACAR01','ACAR01-EXCPTN','HUBFSV','HUBFSV-EXCPTN',
+                                    'INFL05','INFL05-EXCPTN','INFL10','INFL10-EXCPTN',
+                                    'LNIQ01','LNIQ01-EXCPTN','MSP001','SBO001','SBO001-EXCPTN',
+                                    'STKY01','STKY01-EXCPTN','STRAO1','STRAO1-EXCPTN','STRAT1','STRAT1-EXCPTN')
+         THEN 'L-CIT'
+    ELSE 'NULL-Need to Research'
+  END AS Bank_Code
+FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+WHERE END_OF_MONTH_DATE = (SELECT curr_eom FROM params)
+  AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+  AND CHARGE_OFF_AMOUNT_MTD <> 0
+ORDER BY
+  END_OF_MONTH_DATE,
+  CIS_CUSTOMER_NUMBER,
+  FACILITY_ID,
+  ACCOUNT_KEY;
+
+
+
+
+
 /* ================ Query 3: Curr Month Chargeoff ================ */
 SELECT
         END_OF_MONTH_DATE,
