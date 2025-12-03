@@ -1,3 +1,52 @@
+Player Summary :=
+VAR PlayerName =
+    SELECTEDVALUE ( Players[player_name], "This player" )
+
+VAR OffScore  = [Offense Score]
+VAR TransScore = [Transition Score]
+VAR DefScore  = [Defense Score]
+VAR DecScore  = [Decision-Making Score]
+
+-- find strongest area
+VAR MaxScore1 = MAX ( OffScore, TransScore )
+VAR MaxScore2 = MAX ( DefScore, DecScore )
+VAR TopScore  = MAX ( MaxScore1, MaxScore2 )
+
+VAR TopLabel =
+    SWITCH (
+        TRUE (),
+        TopScore = OffScore,      "offense",
+        TopScore = TransScore,    "transition play",
+        TopScore = DefScore,      "defensive impact",
+        "decision-making"
+    )
+
+-- find weakest area
+VAR MinScore1 = MIN ( OffScore, TransScore )
+VAR MinScore2 = MIN ( DefScore, DecScore )
+VAR LowScore  = MIN ( MinScore1, MinScore2 )
+
+VAR WeakLabel =
+    SWITCH (
+        TRUE (),
+        LowScore = OffScore,      "offense",
+        LowScore = TransScore,    "transition play",
+        LowScore = DefScore,      "defensive impact",
+        "decision-making"
+    )
+
+RETURN
+    PlayerName
+        & " currently profiles strongest in "
+        & TopLabel
+        & " and has the most room to grow in "
+        & WeakLabel
+        & "."
+
+
+
+
+
 RadarAxes =
 DATATABLE (
     "Axis", STRING,
