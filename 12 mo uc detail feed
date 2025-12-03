@@ -1,6 +1,107 @@
 WITH latest_curr AS (
   SELECT MAX(End_of_Month_Date) AS curr_eom
   FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+),
+
+/* 1) All loans (NA + accruing) for current EOM only */
+base_all AS (
+  SELECT
+    End_of_Month_Date,
+    UPPER(TRIM(Account_Key))         AS Account_Key,
+    UPPER(TRIM(Account_Identifier))  AS Account_Identifier,
+    UPPER(TRIM(Facility_ID))         AS Facility_ID,
+    UPPER(TRIM(CIS_Customer_Number)) AS CIS_Customer_Number,
+    Account_Name,
+    Contract_Source_System,
+    PROD_HIER_LEVEL_5,
+    RBC_Code,
+    Status_Code_Description,
+    GL_ACCOUNT_HIER_LEVEL_4,
+    GL_ACCOUNT_CODE,
+    Non_Accrual_Flag,
+    Source_System_Balance            AS SSB,
+    CHARGE_OFF_AMOUNT_MTD           AS CO_MTD
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
+  WHERE End_of_Month_Date = (SELECT curr_eom FROM latest_curr)
+    AND GL_ACCOUNT_HIER_LEVEL_4 IN ('Total Loans','Lns Held for Sale')
+),
+
+/* 2) CIS’s that have at least one NA, negative SSB account (current EOM) */
+neg_cis AS (
+  SELECT DISTINCT
+    CIS_Customer_Number
+  FROM base_all
+  WHERE Non_Accrual_Flag = 'Y'
+    AND SSB < 0
+),
+
+/* 3) Pull all accounts for those CIS clusters (NA + accruing, pos + neg) */
+cis_clusters AS (
+  SELECT
+    b.End_of_Month_Date,
+    b.CIS_Customer_Number,
+    b.Account_Key,
+    b.Account_Identifier,
+    b.Facility_ID,
+    b.Account_Name,
+    b.Contract_Source_System,
+    b.PROD_HIER_LEVEL_5,
+    b.RBC_Code,
+    b.Status_Code_Description,
+    b.GL_ACCOUNT_HIER_LEVEL_4,
+    b.GL_ACCOUNT_CODE,
+    b.Non_Accrual_Flag,
+    b.SSB,
+    b.CO_MTD,
+    CASE WHEN b.Non_Accrual_Flag = 'Y' THEN 1 ELSE 0 END AS Is_NA,
+    CASE WHEN b.SSB < 0 THEN 1 ELSE 0 END AS Is_Negative_SSB,
+
+    /* CIS-cluster rollups (current EOM x CIS) */
+    SUM(b.SSB)    OVER (PARTITION BY b.CIS_Customer_Number) AS CIS_Cluster_SSB,
+    SUM(b.CO_MTD) OVER (PARTITION BY b.CIS_Customer_Number) AS CIS_Cluster_CO_MTD,
+    SUM(CASE WHEN b.Non_Accrual_Flag = 'Y' AND b.SSB < 0 THEN b.SSB ELSE 0 END)
+      OVER (PARTITION BY b.CIS_Customer_Number) AS CIS_Neg_NA_SSB
+  FROM base_all b
+  JOIN neg_cis n
+    ON b.CIS_Customer_Number = n.CIS_Customer_Number
+)
+
+/* 4) Final output */
+SELECT
+  End_of_Month_Date,
+  CIS_Customer_Number,
+  Account_Key,
+  Account_Identifier,
+  Facility_ID,
+  Account_Name,
+  Contract_Source_System,
+  PROD_HIER_LEVEL_5,
+  RBC_Code,
+  Status_Code_Description,
+  GL_ACCOUNT_HIER_LEVEL_4,
+  GL_ACCOUNT_CODE,
+  Non_Accrual_Flag,
+  SSB,
+  CO_MTD,
+  Is_NA,
+  Is_Negative_SSB,
+  CIS_Cluster_SSB,
+  CIS_Cluster_CO_MTD,
+  CIS_Neg_NA_SSB
+FROM cis_clusters
+ORDER BY
+  CIS_Customer_Number,
+  Facility_ID,
+  Non_Accrual_Flag DESC,
+  Account_Key;
+
+
+
+
+
+WITH latest_curr AS (
+  SELECT MAX(End_of_Month_Date) AS curr_eom
+  FROM V_SECURE_PORTFOLIO_DETAIL_LOANHUB
   WHERE Non_Accrual_Flag = 'Y'
 ),
 latest_prev AS (
