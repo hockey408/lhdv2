@@ -1,3 +1,13 @@
+Coaching Focus :=
+VAR WeakArea = /* reuse WeakArea logic above, or simplify */
+    "Transition"  -- placeholder if you want to hard-code during testing
+RETURN
+"Coaching focus: lean into reps that improve " & WeakArea & "."
+
+
+
+
+
 Player Summary :=
 VAR PlayerName =
     SELECTEDVALUE ( Players[player_name], "This player" )
